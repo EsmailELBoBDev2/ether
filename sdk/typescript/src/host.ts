@@ -538,6 +538,13 @@ export interface EtherHost {
   collections: {
     upsert(collection: Record<string, unknown>): MaybePromise<void>;
   };
+  /** Screens and surfaces (screens capability): tell open screens that your data changed. */
+  screens?: {
+    /** Open screens and surfaces of this plugin read their sources again now. */
+    invalidate(): MaybePromise<{ streams: number }>;
+    /** New values for your records, sent to open screens already showing them (at most 100). */
+    putRecords(records: Array<{ type: string; id: string; value: unknown }>): MaybePromise<{ streams: number }>;
+  };
   folders: {
     list(root: string, path?: string): MaybePromise<FolderEntry[]>;
     stat(root: string, path: string): MaybePromise<FolderEntry>;
@@ -937,6 +944,14 @@ export function createHostedClient(): EtherHost {
         callHost("collections.upsert", [collection]);
       },
     },
+    screens: {
+      invalidate(): { streams: number } {
+        return callHost("screens.invalidate", []) as { streams: number };
+      },
+      putRecords(records: Array<{ type: string; id: string; value: unknown }>): { streams: number } {
+        return callHost("screens.putRecords", [records]) as { streams: number };
+      },
+    },
     folders: {
       list(root: string, path = ""): FolderEntry[] {
         if (g.ether?.folders) return g.ether.folders.list(root, path) ?? [];
@@ -1309,6 +1324,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     collections: {
       async upsert(collection: Record<string, unknown>): Promise<void> {
         await callJson("POST", "/ether/plugin-host/collections/upsert", collection);
+      },
+    },
+    screens: {
+      async invalidate(): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/invalidate", {})) as { streams: number };
+      },
+      async putRecords(records: Array<{ type: string; id: string; value: unknown }>): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/records", { records })) as { streams: number };
       },
     },
     folders: {

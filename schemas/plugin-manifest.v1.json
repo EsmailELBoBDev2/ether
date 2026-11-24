@@ -71,7 +71,8 @@
               "kind_resolver",
               "frontend_adapter",
               "matcher",
-              "live_events"
+              "live_events",
+              "screens"
             ]
           },
           "type": "array",
@@ -1718,6 +1719,52 @@
             "screens": {
               "items": {
                 "properties": {
+                  "actions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "args": {
+                          "additionalProperties": {
+                            "properties": {
+                              "enum": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "max": {
+                                "type": "integer"
+                              },
+                              "min": {
+                                "type": "integer"
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "type": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        },
+                        "confirm": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "contentRating": {
+                    "type": "string"
+                  },
+                  "default": {
+                    "type": "boolean"
+                  },
                   "feed": {
                     "type": "string"
                   },
@@ -1731,6 +1778,18 @@
                     "type": "string"
                   },
                   "id": {
+                    "type": "string"
+                  },
+                  "pages": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  "placement": {
                     "type": "string"
                   },
                   "sections": {

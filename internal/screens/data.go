@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/screendoc"
 )
 
@@ -47,6 +48,9 @@ type DataResponse struct {
 	Records map[string]RecordEntry `json:"records"`
 	Errors  map[string]SourceError `json:"errors,omitempty"`
 	Live    *LiveRef               `json:"live,omitempty"`
+
+	// refresh is the soonest re-read a plugin source asked for.
+	refresh time.Duration
 }
 
 // DataRequest asks for one page's or surface's sources.
@@ -83,7 +87,7 @@ type LiveDetails interface {
 // Per-source budgets on a data read. A source that misses its budget answers
 // a retryable timeout; its late result still lands in the hub's cache.
 const (
-	builtinSourceBudget = 2 * time.Second
+	builtinSourceBudget = 2500 * time.Millisecond
 	pluginSourceBudget  = 4 * time.Second
 	maxSourceBytes      = screendoc.MaxDocumentBytes
 	maxResponseBytes    = 1 << 20
@@ -93,7 +97,9 @@ const (
 type target struct {
 	kind         string
 	wireID       string
+	localID      string
 	page         string
+	actions      map[string]plugins.ScreenAction
 	plugin       *docPlugin
 	doc          *screendoc.Compiled
 	presentation string
@@ -121,7 +127,7 @@ func (s *Service) findTarget(ctx context.Context, viewer *core.User, kind, id, p
 		if page == "index" {
 			pres = screendoc.PresentSection
 		}
-		return target{kind: kind, wireID: t.WireID, page: page, plugin: t.plugin, doc: d, presentation: pres}, nil
+		return target{kind: kind, wireID: t.WireID, localID: t.Meta.ID, page: page, plugin: t.plugin, doc: d, presentation: pres, actions: t.Meta.Actions}, nil
 	case "surface":
 		t, ok := s.docs.FindSurface(ctx, viewer, c.Frontend, id)
 		if !ok {
@@ -131,7 +137,7 @@ func (s *Service) findTarget(ctx context.Context, viewer *core.User, kind, id, p
 		if d == nil {
 			return target{}, ErrNoVariant
 		}
-		return target{kind: kind, wireID: t.WireID, plugin: t.plugin, doc: d, presentation: t.Meta.Presentation}, nil
+		return target{kind: kind, wireID: t.WireID, localID: t.Meta.ID, plugin: t.plugin, doc: d, presentation: t.Meta.Presentation}, nil
 	}
 	return target{}, core.ErrNotFound
 }
@@ -203,10 +209,15 @@ type readCtx struct {
 	now    time.Time
 	favs   *favoriteSet
 	images ImageSigner
+	// clientLocale is the request's locale, handed to plugin calls.
+	clientLocale string
 
 	mu      sync.Mutex
 	records map[string]any
 	events  map[string]*eventFetch
+	// refresh is the soonest re-read a plugin source asked for while
+	// someone watches (0: none).
+	refresh time.Duration
 }
 
 type eventFetch struct {
@@ -306,7 +317,7 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 	if err != nil {
 		return DataResponse{}, err
 	}
-	rc := &readCtx{ctx: ctx, s: s, viewer: viewer, t: t, b: b, loc: loc, now: s.now(), favs: favs, images: req.Images,
+	rc := &readCtx{ctx: ctx, s: s, viewer: viewer, t: t, b: b, loc: loc, now: s.now(), favs: favs, images: req.Images, clientLocale: req.Locale,
 		records: map[string]any{}, events: map[string]*eventFetch{}}
 	out := DataResponse{Sources: map[string]any{}, Records: map[string]RecordEntry{}}
 	type result struct {
@@ -351,6 +362,7 @@ func (s *Service) Data(ctx context.Context, viewer *core.User, req DataRequest) 
 	}
 	rc.mu.Lock()
 	recs := rc.records
+	out.refresh = rc.refresh
 	rc.mu.Unlock()
 	out.Rev = s.revs.stamp(recs, out.Records)
 	for id, v := range out.Sources {
@@ -420,6 +432,8 @@ func (rc *readCtx) resolve(ctx context.Context, src screendoc.Source) (any, erro
 		return rc.watch(ctx, src)
 	case screendoc.FromViewer:
 		return rc.viewerSource(ctx)
+	case screendoc.FromPlugin:
+		return rc.pluginSource(ctx, src)
 	}
 	if rc.s.extra != nil {
 		return rc.s.extra.Resolve(ctx, rc.viewer, ExtraSource{PluginID: rc.t.plugin.pluginID, From: src.From, Args: src.Args, Fill: rc.b.fill, Record: rc.addRecord})
@@ -460,34 +474,66 @@ func (rc *readCtx) dayStart(t time.Time) time.Time {
 	return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, rc.loc)
 }
 
-// fetchEvents reads one feed's events between from and to, sharing one hub
-// query per read. The hub is asked for whole UTC days, so viewers in every
-// time zone share its cache; the caller filters to the local window.
+// fetchEvents reads one feed's events between from and to. It asks the hub
+// one whole UTC day at a time, so every viewer in every time zone (and the
+// hub's own polling) shares the same cached queries; the caller filters to
+// the local window. Days are fetched in parallel and shared within the read.
 func (rc *readCtx) fetchEvents(ctx context.Context, feed, league string, from, to time.Time) ([]core.LiveEvent, error) {
 	hub := rc.s.hubDeps()
 	if hub == nil {
 		return nil, core.ErrNotAvailable
 	}
-	f := startOfDayUTC(from)
-	tt := startOfDayUTC(to.Add(-time.Nanosecond)).Add(24 * time.Hour)
-	key := feed + "\x00" + league + "\x00" + f.Format(time.RFC3339) + "\x00" + tt.Format(time.RFC3339)
-	rc.mu.Lock()
-	ef, ok := rc.events[key]
-	if !ok {
-		ef = &eventFetch{done: make(chan struct{})}
-		rc.events[key] = ef
+	var days []time.Time
+	for d := startOfDayUTC(from); d.Before(to); d = d.Add(24 * time.Hour) {
+		days = append(days, d)
+		if len(days) > 14 {
+			break
+		}
 	}
-	rc.mu.Unlock()
-	if !ok {
-		ef.events, ef.err = hub.Events(rc.ctx, rc.viewer, EventQuery{PluginID: rc.t.plugin.pluginID, Feed: feed, From: f, To: tt, League: league})
-		close(ef.done)
+	fetches := make([]*eventFetch, len(days))
+	for i, d := range days {
+		key := feed + "\x00" + league + "\x00" + d.Format("2006-01-02")
+		rc.mu.Lock()
+		ef, ok := rc.events[key]
+		if !ok {
+			ef = &eventFetch{done: make(chan struct{})}
+			rc.events[key] = ef
+		}
+		rc.mu.Unlock()
+		if !ok {
+			go func(ef *eventFetch, d time.Time) {
+				ef.events, ef.err = hub.Events(rc.ctx, rc.viewer, EventQuery{PluginID: rc.t.plugin.pluginID, Feed: feed, From: d, To: d.Add(24 * time.Hour), League: league})
+				close(ef.done)
+			}(ef, d)
+		}
+		fetches[i] = ef
 	}
-	select {
-	case <-ef.done:
-		return ef.events, ef.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	seen := map[string]bool{}
+	var out []core.LiveEvent
+	var firstErr error
+	for _, ef := range fetches {
+		select {
+		case <-ef.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if ef.err != nil {
+			if firstErr == nil {
+				firstErr = ef.err
+			}
+			continue
+		}
+		for _, ev := range ef.events {
+			if !seen[ev.ID] {
+				seen[ev.ID] = true
+				out = append(out, ev)
+			}
+		}
 	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
 }
 
 // window gives the local window for a query.

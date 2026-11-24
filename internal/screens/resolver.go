@@ -43,11 +43,15 @@ type Service struct {
 	hub   LiveFeedHub
 	watch WatchTargetResolver
 
-	docs     *DocRegistry
-	live     LiveSubscriber
-	revs     *revStore
-	extra    ExtraSources
-	topicKey []byte
+	docs       *DocRegistry
+	live       LiveSubscriber
+	caller     PluginCaller
+	answers    *answerCache
+	actionRate rateLimiter
+	pushes     pluginWatch
+	revs       *revStore
+	extra      ExtraSources
+	topicKey   []byte
 }
 
 // NewService constructs a screen resolver service.
@@ -73,6 +77,7 @@ func NewService(opts ServiceOptions) *Service {
 		watch:     opts.Watch,
 		docs:      opts.Documents,
 		revs:      newRevStore(nowFn),
+		answers:   newAnswerCache(),
 		topicKey:  key,
 	}
 }

@@ -153,3 +153,78 @@ func TestDocumentScreensServeAndReadSportsData(t *testing.T) {
 		t.Fatal("unchanged record changed revision")
 	}
 }
+
+type fakeCaller struct {
+	calls  int
+	answer string
+}
+
+func (f *fakeCaller) CallScreen(_ context.Context, _ *core.User, _, path string, _ any, _ bool) (int, []byte, error) {
+	f.calls++
+	return 200, []byte(f.answer), nil
+}
+
+type fakeSigner struct{}
+
+func (fakeSigner) Plugin(pluginID, url string) string {
+	if strings.HasPrefix(url, "https://cdn.allowed.example/") {
+		return "/vela/v0/images/signed"
+	}
+	return ""
+}
+func (fakeSigner) Channel(string) string { return "" }
+
+// A plugin's answer reaches the client only through Ether's envelopes: images
+// signed on its own hosts, https links, Ether-keyed records; bare URLs and
+// unknown envelopes are dropped, and a shared answer is asked for once.
+func TestPluginSourceEnvelopes(t *testing.T) {
+	ctx := context.Background()
+	files := map[string][]byte{"screens/news.json": []byte(`{"schema":1,"kind":"screen","renderer":19,
+		"sources":{"front":{"from":"plugin","route":"front","scope":"shared"}},"tree":{"type":"box"}}`)}
+	man := plugins.Manifest{ID: "org.example.news", Version: "1.0.0", Name: "News", Ether: &plugins.EtherBlock{
+		Capabilities: []plugins.Capability{plugins.CapScreens},
+		Contributes:  plugins.Contributes{Screens: []plugins.ScreenMeta{{ID: "news", Title: "News", Pages: map[string]plugins.DocumentPaths{"index": {"screens/news.json"}}}}},
+	}}
+	reg := NewDocRegistry(DocRegistryOptions{})
+	if err := reg.Sync(plugins.Record{ID: man.ID, Version: man.Version, Enabled: true, Manifest: man}, files, nil); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(ServiceOptions{Documents: reg, Hub: &fakeHub{}})
+	caller := &fakeCaller{answer: `{"value":{"hero":{"$image":"https://cdn.allowed.example/a.jpg"},"evil":{"$image":"https://tracker.example/p.gif"},
+		"bare":"https://example.com/x","link":{"$link":"https://example.com/story"},"http":{"$link":"http://example.com"},
+		"story":{"$record":{"type":"story","id":"s1"}},"ghost":{"$record":{"type":"story","id":"nope"}},"list":[{"$item":{"kind":"x","id":"1"}},"kept"],
+		"$script":"x"},"records":[{"type":"story","id":"s1","value":{"title":"Hi","thumb":{"$image":"https://cdn.allowed.example/t.jpg"}}}],"maxAgeSec":60}`}
+	svc.SetPluginCaller(caller)
+	client := ClientInfo{Frontend: "vela", Renderer: 19}
+	read := func() DataResponse {
+		res, err := svc.Data(ctx, &core.User{ID: 3}, DataRequest{Kind: "screen", ID: "news", Page: "index", Images: fakeSigner{}, ClientInfo: client})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	res := read()
+	front, _ := json.Marshal(res.Sources["front"])
+	got := map[string]any{}
+	_ = json.Unmarshal(front, &got)
+	if got["hero"] != "/vela/v0/images/signed" || got["evil"] != nil || got["bare"] != nil || got["http"] != nil || got["ghost"] != nil {
+		t.Fatalf("front = %s", front)
+	}
+	if link, _ := got["link"].(map[string]any); link["href"] != "https://example.com/story" || link["host"] != "example.com" {
+		t.Fatalf("link = %v", got["link"])
+	}
+	if list, _ := got["list"].([]any); len(list) != 1 || list[0] != "kept" {
+		t.Fatalf("list = %v", got["list"])
+	}
+	if _, ok := got["$script"]; ok {
+		t.Fatal("unknown $ key survived")
+	}
+	story, _ := json.Marshal(res.Records["p:story:s1"].Value)
+	if !strings.Contains(string(story), `"thumb":"/vela/v0/images/signed"`) {
+		t.Fatalf("record = %s", story)
+	}
+	read()
+	if caller.calls != 1 {
+		t.Fatalf("shared source asked %d times, want 1", caller.calls)
+	}
+}

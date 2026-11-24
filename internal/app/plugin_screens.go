@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,8 +50,11 @@ func (a *App) buildDocRegistry(mgr *plugins.Manager) *screens.DocRegistry {
 			reg.Remove(r.ID)
 			return
 		}
+		// Texts are read whenever a document is served, long after this
+		// sync's context has ended.
+		id := r.ID
 		text := func(locale, key string) (string, bool) {
-			return mgr.ResolveText(ctx, r.ID, key, locale)
+			return mgr.ResolveText(context.Background(), id, key, locale)
 		}
 		if err := reg.Sync(r, files, text); err != nil {
 			a.log.Warn("plugin screens: documents rejected", "plugin", r.ID, "err", err)
@@ -349,9 +354,78 @@ func (s surfaceScreens) ScreenAction(ctx context.Context, viewer *frontend.Viewe
 	return json.Marshal(map[string]any{"records": res.Records, "sources": res.Sources})
 }
 
-// pluginAction runs a plugin-declared action (stage E3).
-func (s surfaceScreens) pluginAction(context.Context, *frontend.Viewer, frontend.ScreenActionRequest) (json.RawMessage, error) {
-	return nil, frontend.ErrNotFound
+// pluginAction runs a plugin-declared action.
+func (s surfaceScreens) pluginAction(ctx context.Context, viewer *frontend.Viewer, req frontend.ScreenActionRequest) (json.RawMessage, error) {
+	ans, err := s.app.pluginsRT.screens.PluginAction(ctx, viewer, screens.ActionRequest{
+		Kind: req.Kind, ID: req.ID, Page: req.Page, Action: req.Action, Params: req.Params, Context: req.Context,
+		Args: req.Args, TZ: req.TZ, Images: req.Images, ClientInfo: s.client(req.Client),
+	})
+	if errors.Is(err, screens.ErrActionRate) {
+		return nil, frontend.ErrScreenRateLimited
+	}
+	if err != nil {
+		return nil, mapScreensError(err)
+	}
+	return json.Marshal(ans)
+}
+
+// screenPluginCaller reaches a plugin's /ether/v1/screens|surfaces routes.
+// Viewer-scoped calls carry the viewer exactly as a frontend adapter call
+// does, so the plugin can use its viewer-bound host services.
+type screenPluginCaller struct{ mgr *plugins.Manager }
+
+func (c screenPluginCaller) CallScreen(ctx context.Context, viewer *core.User, pluginID, path string, body any, viewerScoped bool) (int, []byte, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req := plugins.Request{PluginID: pluginID, Method: "POST", Path: path, Body: raw, Headers: map[string]string{"Content-Type": "application/json"}}
+	if viewerScoped && viewer != nil && viewer.ID > 0 {
+		req.Headers["X-Ether-Viewer"] = strconv.FormatInt(viewer.ID, 10)
+		req.Headers["X-Ether-Viewer-Name"] = viewerDisplayName(viewer)
+		if viewer.MaxContentRating != "" {
+			req.Headers["X-Ether-Viewer-Max-Rating"] = viewer.MaxContentRating
+		}
+	}
+	resp, err := c.mgr.Call(ctx, pluginID, req)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.Status, resp.Body, nil
+}
+
+func viewerDisplayName(v *core.User) string {
+	if strings.TrimSpace(v.Title) != "" {
+		return v.Title
+	}
+	return v.Username
+}
+
+// screenPushes receives screens.invalidate and screens.putRecords.
+type screenPushes struct{ svc *screens.Service }
+
+func (p screenPushes) Invalidate(pluginID string) int { return p.svc.Invalidate(pluginID) }
+
+func (p screenPushes) PutRecords(ctx context.Context, pluginID string, raw json.RawMessage) (int, error) {
+	var in []struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return 0, fmt.Errorf("%w: records must be a list of {type, id, value}", plugins.ErrPermissionDenied)
+	}
+	recs := make([]screens.PutRecord, 0, len(in))
+	for _, r := range in {
+		var v any
+		if len(r.Value) > 0 {
+			if err := json.Unmarshal(r.Value, &v); err != nil {
+				return 0, err
+			}
+		}
+		recs = append(recs, screens.PutRecord{Type: r.Type, ID: r.ID, Value: v})
+	}
+	return p.svc.PutRecords(ctx, pluginID, recs)
 }
 
 var _ frontend.PluginScreens = surfaceScreens{}

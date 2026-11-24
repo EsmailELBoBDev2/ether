@@ -759,6 +759,16 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "screens.invalidate":
+		n, err := b.h.ScreensInvalidate(ctx)
+		return result(map[string]int{"streams": n}, err)
+	case "screens.putRecords":
+		var raw json.RawMessage = json.RawMessage(`[]`)
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 {
+			raw = args[0]
+		}
+		n, err := b.h.ScreensPutRecords(ctx, raw)
+		return result(map[string]int{"streams": n}, err)
 	case "ai.complete":
 		var req AICompleteRequest
 		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {

@@ -933,7 +933,19 @@ type adapterViewerGrant struct {
 }
 
 func isFrontendAdapterPath(path string) bool {
+	return isFrontendAdapterRoute(path) || isViewerScreenPath(path)
+}
+
+// isFrontendAdapterRoute is strictly a frontend adapter's own traffic.
+func isFrontendAdapterRoute(path string) bool {
 	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+
+// isViewerScreenPath is a screen's viewer-scoped source or action call: like
+// an adapter call, it carries the authenticated viewer so the plugin can use
+// the viewer-bound host services (kinds.visible, kinds.state, its KV).
+func isViewerScreenPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/screens/") && len(path) > len("/ether/v1/screens/")
 }
 
 // bindAdapterViewer attaches the authenticated viewer from X-Ether-Viewer to

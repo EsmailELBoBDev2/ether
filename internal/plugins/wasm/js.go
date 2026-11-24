@@ -283,6 +283,8 @@ globalThis.ether = (() => {
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
                setWatchState: (v) => call("viewers.setWatchState", [v]) },
     collections: { upsert: (c) => call("collections.upsert", [c]) },
+    screens: { invalidate: () => call("screens.invalidate", []),
+               putRecords: (records) => call("screens.putRecords", [records == null ? [] : records]) },
     kinds: { upsert: (kind, items) => call("kinds.upsert", [kind, items == null ? [] : items]),
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),

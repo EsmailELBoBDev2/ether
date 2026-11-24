@@ -8010,6 +8010,15 @@ type Host interface {
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate makes every open screen and surface of this plugin
+	// read its sources again now (screens capability). It returns how many
+	// open streams heard it; nobody watching means nothing happens.
+	ScreensInvalidate(ctx context.Context) (int, error)
+	// ScreensPutRecords pushes new values for the plugin's own records
+	// ([{type, id, value}], at most 100) to open screens already showing
+	// them (screens capability).
+	ScreensPutRecords(ctx context.Context, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded text or JSON-Schema-validated completion against
 	// the owner's configured language model (Settings -> Integrations -> Language
 	// model). Requires permissions.ai: "complete" (or "complete+search" to also
@@ -11977,7 +11986,7 @@ func extractCallSearchQuery(req Request) string {
 		}
 		return ""
 	}
-	if isFrontendAdapterPath(req.Path) {
+	if isFrontendAdapterRoute(req.Path) {
 		return queryParamFromRequest(req, "q", "query", "search")
 	}
 	return ""
@@ -12747,7 +12756,7 @@ func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AIComplet
 		if searchQuery == "" {
 			if q, ok := stremioCatalogSearchQuery(path); ok {
 				searchQuery = q
-			} else if isFrontendAdapterPath(path) {
+			} else if isFrontendAdapterRoute(path) {
 				searchQuery = queryParamFromRequest(Request{Path: path}, "q", "query", "search")
 			}
 		}
@@ -18227,7 +18236,27 @@ type adapterViewerGrant struct {
 
 ``````
 func isFrontendAdapterPath(path string) bool {
+	return isFrontendAdapterRoute(path) || isViewerScreenPath(path)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isFrontendAdapterRoute
+
+``````
+// isFrontendAdapterRoute is strictly a frontend adapter's own traffic.
+func isFrontendAdapterRoute(path string) bool {
 	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isViewerScreenPath
+
+``````
+// isViewerScreenPath is a screen's viewer-scoped source or action call: like
+// an adapter call, it carries the authenticated viewer so the plugin can use
+// the viewer-bound host services (kinds.visible, kinds.state, its KV).
+func isViewerScreenPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/screens/") && len(path) > len("/ether/v1/screens/")
 }
 ``````
 
@@ -19726,6 +19755,16 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "screens.invalidate":
+		n, err := b.h.ScreensInvalidate(ctx)
+		return result(map[string]int{"streams": n}, err)
+	case "screens.putRecords":
+		var raw json.RawMessage = json.RawMessage(`[]`)
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 {
+			raw = args[0]
+		}
+		n, err := b.h.ScreensPutRecords(ctx, raw)
+		return result(map[string]int{"streams": n}, err)
 	case "ai.complete":
 		var req AICompleteRequest
 		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
@@ -27339,6 +27378,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// ScreensInvalidate and ScreensPutRecords are the screens pushes
+	// (docs/plugin-screens.md); both need the screens capability.
+	ScreensInvalidate(ctx context.Context, pluginID string) (int, error)
+	ScreensPutRecords(ctx context.Context, pluginID string, records json.RawMessage) (int, error)
+
 	// AIComplete runs a bounded completion against the owner's configured
 	// language model (requires permissions.ai: "complete", or "complete+search"
 	// when viewerToken identifies an active frontend-adapter search call; #702).
@@ -27460,6 +27504,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/media/probe", h.mediaProbe)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
+	mux.HandleFunc("POST /ether/plugin-host/screens/invalidate", h.screensInvalidate)
+	mux.HandleFunc("POST /ether/plugin-host/screens/records", h.screensPutRecords)
 	h.mux = mux
 	return h
 }
@@ -28212,6 +28258,36 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.screensInvalidate
+
+``````
+func (h *HostHandler) screensInvalidate(w http.ResponseWriter, r *http.Request) {
+	n, err := h.host.ScreensInvalidate(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.screensPutRecords
+
+``````
+func (h *HostHandler) screensPutRecords(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Records json.RawMessage `json:"records"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	n, err := h.host.ScreensPutRecords(r.Context(), pluginIDOf(r), body.Records)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"streams": n})
 }
 ``````
 
@@ -32360,7 +32436,8 @@ func ViewerRequestPath(path string) bool {
 		}
 	}
 	return (strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)) ||
-		strings.HasPrefix(path, "/ether/v1/live/")
+		strings.HasPrefix(path, "/ether/v1/live/") ||
+		strings.HasPrefix(path, "/ether/v1/screens/")
 }
 ``````
 
@@ -32521,6 +32598,12 @@ func DeadlineFor(path string) time.Duration {
 		return 10 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/live/"):
 		return 15 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/screens/"):
+		// A screen's data read or action: a viewer is waiting on it.
+		if strings.Contains(p, "/actions/") {
+			return 8 * time.Second
+		}
+		return 4 * time.Second
 	default:
 		return 30 * time.Second
 	}
@@ -32870,6 +32953,8 @@ globalThis.ether = (() => {
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
                setWatchState: (v) => call("viewers.setWatchState", [v]) },
     collections: { upsert: (c) => call("collections.upsert", [c]) },
+    screens: { invalidate: () => call("screens.invalidate", []),
+               putRecords: (records) => call("screens.putRecords", [records == null ? [] : records]) },
     kinds: { upsert: (kind, items) => call("kinds.upsert", [kind, items == null ? [] : items]),
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
              items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
@@ -34197,7 +34282,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.playlists": 20, "kinds.playlist": 20, "kinds.playlistCreate": 50, "kinds.playlistUpdate": 50, "kinds.playlistDelete": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
-	"ai.complete": 200, "media.probe": 100,
+	"ai.complete": 200, "media.probe": 100, "screens.invalidate": 10, "screens.putRecords": 20,
 }
 ``````
 
@@ -36329,10 +36414,15 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.contributes.ruleConditions[].label` | `string` | true | {"maxLength":40} |
 | `ether.contributes.ruleConditions[].operators` | `array` | false | {} |
 | `ether.contributes.screens` | `array` | false | {} |
+| `ether.contributes.screens[].actions` | `object` | false | {"additionalProperties":{"properties":{"args":{"additionalProperties":{"properties":{"enum":{"items":{"type":"string"},"type":"array"},"max":{"type":"integer"},"min":{"type":"integer"},"required":{"type":"boolean"},"type":{"type":"string"}},"type":"object"},"type":"object"},"confirm":{"type":"string"},"rate":{"type":"string"}},"type":"object"}} |
+| `ether.contributes.screens[].contentRating` | `string` | false | {} |
+| `ether.contributes.screens[].default` | `boolean` | false | {} |
 | `ether.contributes.screens[].feed` | `string` | false | {} |
 | `ether.contributes.screens[].frontends` | `array` | false | {} |
 | `ether.contributes.screens[].icon` | `string` | false | {} |
 | `ether.contributes.screens[].id` | `string` | false | {} |
+| `ether.contributes.screens[].pages` | `object` | false | {"additionalProperties":{"items":{"type":"string"},"type":"array"}} |
+| `ether.contributes.screens[].placement` | `string` | false | {} |
 | `ether.contributes.screens[].sections` | `array` | false | {} |
 | `ether.contributes.screens[].sections[].entityKind` | `string` | false | {} |
 | `ether.contributes.screens[].sections[].feed` | `string` | false | {} |
@@ -36495,7 +36585,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
               "kind_resolver",
               "frontend_adapter",
               "matcher",
-              "live_events"
+              "live_events",
+              "screens"
             ]
           },
           "type": "array",
@@ -38142,6 +38233,52 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
             "screens": {
               "items": {
                 "properties": {
+                  "actions": {
+                    "additionalProperties": {
+                      "properties": {
+                        "args": {
+                          "additionalProperties": {
+                            "properties": {
+                              "enum": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "max": {
+                                "type": "integer"
+                              },
+                              "min": {
+                                "type": "integer"
+                              },
+                              "required": {
+                                "type": "boolean"
+                              },
+                              "type": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "object"
+                        },
+                        "confirm": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "object"
+                  },
+                  "contentRating": {
+                    "type": "string"
+                  },
+                  "default": {
+                    "type": "boolean"
+                  },
                   "feed": {
                     "type": "string"
                   },
@@ -38155,6 +38292,18 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                     "type": "string"
                   },
                   "id": {
+                    "type": "string"
+                  },
+                  "pages": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  "placement": {
                     "type": "string"
                   },
                   "sections": {
@@ -70909,6 +71058,13 @@ export interface EtherHost {
   collections: {
     upsert(collection: Record<string, unknown>): MaybePromise<void>;
   };
+  /** Screens and surfaces (screens capability): tell open screens that your data changed. */
+  screens?: {
+    /** Open screens and surfaces of this plugin read their sources again now. */
+    invalidate(): MaybePromise<{ streams: number }>;
+    /** New values for your records, sent to open screens already showing them (at most 100). */
+    putRecords(records: Array<{ type: string; id: string; value: unknown }>): MaybePromise<{ streams: number }>;
+  };
   folders: {
     list(root: string, path?: string): MaybePromise<FolderEntry[]>;
     stat(root: string, path: string): MaybePromise<FolderEntry>;
@@ -71308,6 +71464,14 @@ export function createHostedClient(): EtherHost {
         callHost("collections.upsert", [collection]);
       },
     },
+    screens: {
+      invalidate(): { streams: number } {
+        return callHost("screens.invalidate", []) as { streams: number };
+      },
+      putRecords(records: Array<{ type: string; id: string; value: unknown }>): { streams: number } {
+        return callHost("screens.putRecords", [records]) as { streams: number };
+      },
+    },
     folders: {
       list(root: string, path = ""): FolderEntry[] {
         if (g.ether?.folders) return g.ether.folders.list(root, path) ?? [];
@@ -71680,6 +71844,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     collections: {
       async upsert(collection: Record<string, unknown>): Promise<void> {
         await callJson("POST", "/ether/plugin-host/collections/upsert", collection);
+      },
+    },
+    screens: {
+      async invalidate(): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/invalidate", {})) as { streams: number };
+      },
+      async putRecords(records: Array<{ type: string; id: string; value: unknown }>): Promise<{ streams: number }> {
+        return (await callJson("POST", "/ether/plugin-host/screens/records", { records })) as { streams: number };
       },
     },
     folders: {
@@ -72140,6 +72312,14 @@ export function lintCopy(raw: string, max = 0): string {
 
 ``````
 export type * from "./types.ts";
+export { asset, entity, event, image, link, record } from "./screens.ts";
+export type {
+  ScreenActionAnswer,
+  ScreenActionRequest,
+  ScreenRecord,
+  ScreenSourceAnswer,
+  ScreenSourceRequest,
+} from "./kinds.ts";
 export { PluginHttpError } from "./types.ts";
 export {
   plugin,
@@ -72509,8 +72689,72 @@ export interface KindHandlers<S = Record<string, unknown>> {
   live: Map<string, KindLiveProvider<S>>;
   liveFeeds: Map<string, LiveFeedProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
+  /** Screen and surface sources and actions, keyed "<screen>/<name>" (docs/plugin-screens.md). */
+  screenSources?: Map<string, ScreenSourceHandler<S>>;
+  screenActions?: Map<string, ScreenActionHandler<S>>;
   setup?: SetupTester<S>;
 }
+
+/** What Ether sends a screen source: the document's arguments with their holes filled. */
+export interface ScreenSourceRequest {
+  /** The screen (or surface) id and its page. */
+  screen: string;
+  route: string;
+  page: string;
+  args: Record<string, string>;
+  locale: string;
+  /** The viewer's IANA time zone. */
+  tz: string;
+}
+
+/** A source answer. Images, links, records, events and entities go through the envelope helpers. */
+export interface ScreenSourceAnswer {
+  value: unknown;
+  records?: ScreenRecord[];
+  /** How long Ether may reuse this answer (5..3600 s, default 60; viewer-scoped answers at most 60). */
+  maxAgeSec?: number;
+  /** While a viewer has the page open, ask again after this many seconds (at least 10). */
+  nextRefreshSec?: number;
+}
+
+export interface ScreenRecord {
+  type: string;
+  id: string;
+  value: unknown;
+}
+
+export interface ScreenActionRequest {
+  screen: string;
+  action: string;
+  page: string;
+  args: Record<string, unknown>;
+  params: Record<string, string>;
+  locale: string;
+  tz: string;
+}
+
+/** An action answer: patches the client applies at once. */
+export interface ScreenActionAnswer {
+  records?: ScreenRecord[];
+  /** Whole-source replacements, by source id. */
+  sources?: Record<string, unknown>;
+  /** Sources Ether reads again before answering. */
+  refresh?: string[];
+  /** Plain text, at most 200 characters. */
+  toast?: string;
+  /** A Vela navigate action: { action: "navigate", args: { page, ...params } }. */
+  navigate?: { action: "navigate"; args: Record<string, string> };
+}
+
+export type ScreenSourceHandler<S = Record<string, unknown>> = (
+  req: ScreenSourceRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenSourceAnswer>;
+
+export type ScreenActionHandler<S = Record<string, unknown>> = (
+  req: ScreenActionRequest,
+  ctx: PluginContext<S>,
+) => MaybePromise<ScreenActionAnswer | void>;
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
   return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), liveFeeds: new Map(), frontend: new Map() };
@@ -72636,6 +72880,27 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     if (!handlers.setup) return err(404, "not_found", "Setup test handler is not registered.");
     const input = { step: String(body.step || parts[1]), fields: body.fields as Record<string, unknown> | undefined };
     return ok(await handlers.setup.testSetup(input, ctx));
+  }
+
+  if (parts.length === 4 && (parts[0] === "screens" || parts[0] === "surfaces") && (parts[2] === "sources" || parts[2] === "actions")) {
+    if (method !== "POST") return err(405, "method_not_allowed", "Screen routes use POST.");
+    const screen = parts[1] ?? "";
+    const name = parts[3] ?? "";
+    const key = `${screen}/${name}`;
+    const page = String(body.page ?? "");
+    const locale = String(body.locale ?? "en");
+    const tz = String(body.tz ?? "UTC");
+    if (parts[2] === "sources") {
+      const handler = handlers.screenSources?.get(key) ?? handlers.screenSources?.get(`*/${name}`);
+      if (!handler) return err(404, "not_found", `No screen source "${name}" is registered for "${screen}".`);
+      const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, string>;
+      return ok(await handler({ screen, route: name, page, args, locale, tz }, ctx));
+    }
+    const handler = handlers.screenActions?.get(key) ?? handlers.screenActions?.get(`*/${name}`);
+    if (!handler) return err(404, "not_found", `No screen action "${name}" is registered for "${screen}".`);
+    const args = (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, unknown>;
+    const params = (body.params && typeof body.params === "object" ? body.params : {}) as Record<string, string>;
+    return ok((await handler({ screen, action: name, page, args, params, locale, tz }, ctx)) ?? {});
   }
 
   if (parts.length >= 3 && parts[0] === "live") {
@@ -73264,6 +73529,10 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onLive(kind: string, provider: KindLiveProvider<S>): void;
   onLiveFeed(feed: string, provider: LiveFeedProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
+  /** Answers a document's `plugin` source: `screen` is the screen or surface id ("*" for any). */
+  onScreenSource(screen: string, route: string, handler: import("./kinds.ts").ScreenSourceHandler<S>): void;
+  /** Runs a manifest-declared screen action. */
+  onScreenAction(screen: string, action: string, handler: import("./kinds.ts").ScreenActionHandler<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -73952,6 +74221,12 @@ export function plugin<S = Record<string, unknown>>(
     onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
     onLiveFeed: (feed, provider) => { kindHandlers.liveFeeds.set(feed, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
+    onScreenSource: (screen, route, handler) => {
+      (kindHandlers.screenSources ??= new Map()).set(`${screen}/${route}`, handler);
+    },
+    onScreenAction: (screen, action, handler) => {
+      (kindHandlers.screenActions ??= new Map()).set(`${screen}/${action}`, handler);
+    },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };
 
@@ -73963,6 +74238,65 @@ export function plugin<S = Record<string, unknown>>(
   }
 
   return instance;
+}
+
+``````
+
+## Source: sdk/typescript/src/screens.ts
+
+``````
+/**
+ * Plugin screens and surfaces (docs/plugin-screens.md): helpers for the
+ * answers of `plugin` sources and actions. A plugin never puts a URL or an
+ * Ether key in its data directly; it wraps them in envelopes, and Ether
+ * rewrites each one for the viewer who opened the screen:
+ *
+ * - image(url): a picture on one of your permissions.network hosts, served
+ *   to the client through Ether's signed image proxy (asset("icons/x.svg")
+ *   for a file in your package);
+ * - link(url): an https page the viewer may open on a phone or the web;
+ * - record(type, id): a reference to one of your records (sent once,
+ *   patched live by screens.putRecords);
+ * - event(feed, id) and entity(feed, kind, id): your live events and
+ *   entities, resolved and filtered by Ether.
+ *
+ * A string that is a bare URL is dropped by Ether, so use the helpers.
+ */
+
+export interface ImageEnvelope { $image: string }
+export interface LinkEnvelope { $link: string }
+export interface RecordEnvelope { $record: { type: string; id: string } }
+export interface EventEnvelope { $event: { feed: string; id: string } }
+export interface EntityEnvelope { $entity: { feed: string; kind: string; id: string } }
+
+/** A picture on one of your permissions.network hosts. */
+export function image(url: string): ImageEnvelope {
+  return { $image: url };
+}
+
+/** A file in your plugin package (icons, artwork). */
+export function asset(path: string): ImageEnvelope {
+  return { $image: `asset:${path.replace(/^\/+/, "")}` };
+}
+
+/** An https page; Vela offers it on phones and the web, never on TV. */
+export function link(url: string): LinkEnvelope {
+  return { $link: url };
+}
+
+/** A reference to one of your records; send its value in `records`. */
+export function record(type: string, id: string): RecordEnvelope {
+  return { $record: { type, id } };
+}
+
+/** One of your live feed's events. */
+export function event(feed: string, id: string): EventEnvelope {
+  return { $event: { feed, id } };
+}
+
+/** One of your live feed's entities (a team, a driver). */
+export function entity(feed: string, kind: string, id: string): EntityEnvelope {
+  return { $entity: { feed, kind, id } };
 }
 
 ``````

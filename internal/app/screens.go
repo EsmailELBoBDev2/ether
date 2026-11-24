@@ -33,6 +33,8 @@ func (a *App) buildScreensService(mgr *plugins.Manager) *screens.Service {
 		Now:       time.Now,
 		Documents: a.buildDocRegistry(mgr),
 	})
+	svc.SetPluginCaller(screenPluginCaller{mgr: mgr})
+	mgr.SetScreenPush(screenPushes{svc: svc})
 	mgr.OnSync(func(ctx context.Context, r plugins.Record) {
 		reg.Sync(r, func(key string) string {
 			text, _ := mgr.ResolveText(ctx, r.ID, key, "en")

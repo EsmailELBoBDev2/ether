@@ -123,7 +123,9 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 		defer stop()
 		sent := map[string]int64{}
 		floor := since
+		var refresh time.Duration
 		push := func() bool {
+			refresh = 0
 			for _, ot := range topics {
 				req := ot.topic.Request()
 				req.Sources = topicSources(ot.target, ot.topic)
@@ -136,6 +138,9 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 						return false
 					}
 					continue
+				}
+				if res.refresh > 0 && (refresh == 0 || res.refresh < refresh) {
+					refresh = res.refresh
 				}
 				changed := map[string]RecordEntry{}
 				for k, e := range res.Records {
@@ -172,11 +177,50 @@ func (s *Service) Stream(ctx context.Context, viewer *core.User, tokens []string
 		if !push() {
 			return
 		}
+		signals, unwatch := s.watchPlugins(pluginsOf(topics))
+		defer unwatch()
 		for {
+			var refreshC <-chan time.Time
+			var refreshTimer *time.Timer
+			if refresh > 0 {
+				refreshTimer = time.NewTimer(refresh)
+				refreshC = refreshTimer.C
+			}
+			stopTimer := func() {
+				if refreshTimer != nil {
+					refreshTimer.Stop()
+				}
+			}
 			select {
 			case <-sctx.Done():
+				stopTimer()
 				return
+			case <-refreshC:
+				// A plugin source asked to be re-read this often while open.
+				if !push() {
+					return
+				}
+			case sig := <-signals:
+				stopTimer()
+				if len(sig.records) > 0 {
+					// Pushed records go to streams that already show them.
+					changed := map[string]RecordEntry{}
+					for k, e := range sig.records {
+						if _, shown := sent["r:"+k]; shown && e.Rev > sent["r:"+k] {
+							changed[k] = e
+							sent["r:"+k] = e.Rev
+						}
+					}
+					if len(changed) > 0 && !send(sctx, out, "records", map[string]any{"records": changed}) {
+						return
+					}
+					continue
+				}
+				if !push() {
+					return
+				}
 			case _, ok := <-updates:
+				stopTimer()
 				if !ok {
 					return
 				}

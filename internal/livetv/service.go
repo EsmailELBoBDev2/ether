@@ -2165,38 +2165,116 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	if err != nil {
 		return nil, nil, err
 	}
-	channels := make([]Channel, 0, len(cs))
-	programmes := make([]Programme, 0, len(cs)*2)
-	for _, c := range cs {
-		if !c.Enabled {
-			continue
-		}
-		if c.Kind == "virtual" && c.Personal == nil && !readyVirtual[c.ID] {
-			continue
-		}
-		ps, err := s.programmesLimit(ctx, c, now, until, 2)
-		if err != nil {
-			if errors.Is(err, core.ErrPreparing) {
+	channels := make([]Channel, 0, min(len(cs), max(limit, 1)))
+	programmes := make([]Programme, 0, 2*min(len(cs), max(limit, 1)))
+	// Channels are read a batch at a time (one guide query per batch, never
+	// one per channel) and the walk stops once the row is full.
+	for start := 0; start < len(cs); start += programmesAtBatch {
+		chunk := make([]Channel, 0, programmesAtBatch)
+		for _, c := range cs[start:min(start+programmesAtBatch, len(cs))] {
+			if !c.Enabled || c.Kind == "virtual" && c.Personal == nil && !readyVirtual[c.ID] {
 				continue
 			}
+			chunk = append(chunk, c)
+		}
+		guide, err := s.programmesLimitBatch(ctx, chunk, now, until, 2)
+		if err != nil {
 			return nil, nil, err
 		}
-		var current *Programme
-		if len(ps) > 0 {
-			current = &ps[0]
-		}
-		if !s.allowedProgramme(ctx, u, c, current) {
-			continue
-		}
-		c.StreamURL = ""
-		c.StreamSources = nil
-		channels = append(channels, s.personalChannel(ctx, c, u))
-		programmes = append(programmes, ps...)
-		if limit > 0 && len(channels) >= limit {
-			break
+		for i, c := range chunk {
+			ps, ok := guide[i]
+			if !ok {
+				ps, err = s.programmesLimit(ctx, c, now, until, 2)
+				if err != nil {
+					if errors.Is(err, core.ErrPreparing) {
+						continue
+					}
+					return nil, nil, err
+				}
+			}
+			var current *Programme
+			if len(ps) > 0 {
+				current = &ps[0]
+			}
+			if !s.allowedProgramme(ctx, u, c, current) {
+				continue
+			}
+			c.StreamURL = ""
+			c.StreamSources = nil
+			channels = append(channels, s.personalChannel(ctx, c, u))
+			programmes = append(programmes, ps...)
+			if limit > 0 && len(channels) >= limit {
+				return channels, programmes, nil
+			}
 		}
 	}
 	return channels, programmes, nil
+}
+
+// programmesLimitBatch reads up to limit programmes in [from, until) for
+// every guide-backed channel of cs in one query. Personal and virtual
+// channels are absent from the result (their guide is built elsewhere);
+// a guide channel with nothing on maps to an empty list.
+func (s *Service) programmesLimitBatch(ctx context.Context, cs []Channel, from, until time.Time, limit int) (map[int][]Programme, error) {
+	out := make(map[int][]Programme, len(cs))
+	type pair struct{ source, channel string }
+	want := map[pair][]int{}
+	var order []pair
+	for i, c := range cs {
+		if c.Personal != nil || c.Kind == "virtual" {
+			continue
+		}
+		if c.GuideID == "" || guideSource(c) == "" {
+			out[i] = nil
+			continue
+		}
+		k := pair{guideSource(c), c.GuideID}
+		if _, ok := want[k]; !ok {
+			order = append(order, k)
+		}
+		want[k] = append(want[k], i)
+		out[i] = nil
+	}
+	if len(order) == 0 || limit <= 0 {
+		return out, nil
+	}
+	values := make([]string, len(order))
+	args := make([]any, 0, 2*len(order)+2)
+	for i, k := range order {
+		values[i] = "(?,?)"
+		args = append(args, k.source, k.channel)
+	}
+	args = append(args, from.UnixMilli(), until.UnixMilli())
+	rows, err := s.o.DB.QueryContext(ctx, `WITH ch(source_id, channel_id) AS (VALUES `+strings.Join(values, ",")+`)
+SELECT p.source_id, p.channel_id, p.data FROM livetv_programmes p JOIN ch ON p.source_id=ch.source_id AND p.channel_id=ch.channel_id
+WHERE p.end_ms>? AND p.start_ms<? ORDER BY p.source_id, p.channel_id, p.start_ms`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	got := map[pair]int{}
+	for rows.Next() {
+		var k pair
+		var b []byte
+		if err := rows.Scan(&k.source, &k.channel, &b); err != nil {
+			return nil, err
+		}
+		if got[k] >= limit {
+			continue
+		}
+		var p Programme
+		if err := json.Unmarshal(b, &p); err != nil {
+			return nil, err
+		}
+		got[k]++
+		for _, i := range want[k] {
+			q := p
+			q.ChannelID = cs[i].ID
+			q.ID = fmt.Sprintf("%s-%d", cs[i].ID, q.Start.UnixMilli())
+			out[i] = append(out[i], q)
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) programmesLimit(ctx context.Context, c Channel, from, until time.Time, limit int) ([]Programme, error) {

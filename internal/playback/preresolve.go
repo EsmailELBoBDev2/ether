@@ -31,6 +31,12 @@ const (
 	// before resolving itself. A usenet RAR can sit in probe/prefetch
 	// for tens of seconds; a cached debrid remux must not wait behind it.
 	takeWarmBudget = 400 * time.Millisecond
+	// takeWarmOpeningWait bounds how long a Play that joined a warm-up
+	// (play probe or promoted) waits, after the source is published, for
+	// usenet to prove the opening. A prefetch that outlasts it is left to
+	// finish in the background; Play opens the remembered or a freshly
+	// resolved source instead of hanging on it (#779).
+	takeWarmOpeningWait = 10 * time.Second
 )
 
 // parityRetainWarm is nil in production, so warm-up eviction is unchanged.
@@ -71,11 +77,14 @@ type warmEntry struct {
 	// that Resolve saw. A later catalogue correction must not reuse it.
 	originalAudio    bool
 	originalLanguage string
-	// opened is closed once the opening window is proven. For debrid/HTTP
-	// that is the probe; for usenet it is a successful opening prefetch.
-	// nil means the entry predates this field and is treated as proven.
-	opened chan struct{}
-	openDo sync.Once
+	// opened is closed once the opening is settled: proven, or abandoned
+	// when the warm-up ends without proof (openProven false). For
+	// debrid/HTTP the probe proves it; for usenet a successful opening
+	// prefetch. nil means the entry predates this field and is treated as
+	// proven.
+	opened     chan struct{}
+	openDo     sync.Once
+	openProven atomic.Bool
 	// detailOnly marks the viewer's last played release, warmed for a
 	// detail page's tracks only: it is never prefetched and Play never
 	// opens it.
@@ -108,14 +117,32 @@ func (e *warmEntry) isPromoted() bool {
 }
 
 func (e *warmEntry) markOpeningReady() {
+	e.settleOpening(true)
+}
+
+// abandonOpening settles an opening the warm-up never proved: the opening
+// prefetch failed or its context ended. A waiter must not block on a
+// warm-up that is gone (#779).
+func (e *warmEntry) abandonOpening() {
+	e.settleOpening(false)
+}
+
+func (e *warmEntry) settleOpening(proven bool) {
 	if e == nil {
 		return
 	}
 	e.openDo.Do(func() {
+		e.openProven.Store(proven)
 		if e.opened != nil {
 			close(e.opened)
 		}
 	})
+}
+
+// openingProven reports, once opened is closed, whether Play may consume
+// the entry.
+func (e *warmEntry) openingProven() bool {
+	return e.opened == nil || e.openProven.Load()
 }
 
 func usenetWarm(res *core.Resolution) bool {
@@ -665,6 +692,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 			}
 			m.mu.Unlock()
 			e.ready.Do(func() { close(e.done) })
+			// Every exit settles the opening. An unproven one is never
+			// consumed by Play, but nobody waits on it either.
+			e.abandonOpening()
 		}()
 		var ctx context.Context
 		var cancel context.CancelFunc
@@ -1066,8 +1096,11 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 					m.markBad(res.Release.ID, "opening prefetch: "+err.Error())
 				}
 				m.log.Warn("prepared opening rejected", "key", key, "release", res.Release.ID, "err", err)
-			} else if ctx.Err() == nil {
-				m.log.Debug("opening prefetch incomplete", "key", key, "err", err)
+			} else {
+				// Play will not consume this unproven source; it opens the
+				// remembered or a freshly resolved one. The entry stays for
+				// the detail page's tracks.
+				m.log.Info("opening prefetch incomplete", "key", key, "release", res.Release.ID, "err", err, "warmupEnded", ctx.Err() != nil)
 			}
 			return
 		}
@@ -1510,12 +1543,8 @@ func (m *Manager) takeWarmResolution(ctx context.Context, id identity, profile c
 		case <-ctx.Done():
 			return nil
 		}
-		if e.opened != nil {
-			select {
-			case <-e.opened:
-			case <-ctx.Done():
-				return nil
-			}
+		if e.opened != nil && !waitWarmChan(ctx, e.opened, time.Now().Add(takeWarmOpeningWait)) {
+			return nil
 		}
 	} else {
 		deadline := time.Now().Add(takeWarmBudget)
@@ -1527,6 +1556,10 @@ func (m *Manager) takeWarmResolution(ctx context.Context, id identity, profile c
 			// Let Play resolve a cached debrid remux instead of waiting.
 			return nil
 		}
+	}
+	if !e.openingProven() {
+		// The warm-up ended without proving the usenet opening (#779).
+		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

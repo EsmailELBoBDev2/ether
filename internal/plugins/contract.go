@@ -1052,7 +1052,7 @@ func (e *KindBrowseExpand) ExpandsLevel(level string) bool {
 // KindImportDecl declares a kind's playlist import support.
 type KindImportDecl struct {
 	// Links names the sites whose playlist links the plugin reads (for apps
-	// to show, e.g. "deezer", "spotify"); empty when it reads none.
+	// to show, e.g. "deezer"); empty when it reads none.
 	Links []string `json:"links,omitempty"`
 	// Identify: the plugin answers /identify, which file imports need.
 	Identify bool `json:"identify,omitempty"`

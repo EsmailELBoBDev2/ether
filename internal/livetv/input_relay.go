@@ -211,7 +211,13 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if source == "" && c.SourceID != "" && (src.ID == stableID(c.ID, "playlist") || len(c.StreamSources) <= 1) {
 		source = c.SourceID
 	}
-	lease, err := s.leaseLogin(ss.ctx, source, src.URL, headers)
+	leaseKey := src.URL
+	if ss.archiveInput {
+		// The archive was built for the primary account and opens a distinct
+		// connection even when another viewer requests the same time range.
+		leaseKey = "vod:archive:" + randomID()
+	}
+	lease, err := s.leaseLogin(ss.ctx, source, leaseKey, headers)
 	if err != nil {
 		return err
 	}
@@ -221,7 +227,7 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 			s.releaseLogin(lease)
 		}
 	}()
-	if lease != nil {
+	if lease != nil && !ss.archiveInput {
 		src.URL = lease.raw
 		headers = lease.headers
 	}
@@ -667,7 +673,7 @@ func (s *Service) serveInputRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// Separate video/audio playlists of a demuxed HLS master align their
 	// starting windows on open before ffmpeg begins demuxing.
-	if !root && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
+	if !root && !g.finite && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
 		return
 	}
 	select {
@@ -780,7 +786,9 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		http.Error(w, "upstream manifest unavailable", http.StatusBadGateway)
 		return
 	}
-	if hls {
+	if hls && g.finite {
+		b = selectedHLSMaster(b, base, g.variantCaps)
+	} else if hls {
 		if isMasterPlaylist(b) {
 			if raw == g.rootURL() && g.peekManifest(raw) == nil {
 				g.setManifest(newCachedManifest(raw, b, base, true))

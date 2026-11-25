@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -872,6 +873,12 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if req.InputURL == "" {
 		return nil, errors.New("transcode: StartHLS: empty input URL")
 	}
+	if req.ArchiveInput {
+		u, err := url.Parse(req.InputURL)
+		if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil {
+			return nil, core.ErrEncoderInputUnverified
+		}
+	}
 	if req.InputLease != nil && req.LiveInput {
 		// Scoped VOD inputs cannot expand a playlist into provider requests
 		// carrying the private header. Ordinary live input remains unchanged.
@@ -1343,6 +1350,8 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	}
 	s := &Session{
 		mediaGeneration:         mediaGeneration,
+		archiveInput:            req.ArchiveInput,
+		archiveTrim:             req.ArchiveTrim,
 		serialRungs:             req.QualityRungs,
 		copyOrigin:              copyOrigin,
 		androidMatroskaHLS:      d.AndroidMatroskaHLS,

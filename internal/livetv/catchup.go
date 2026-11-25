@@ -3,55 +3,34 @@ package livetv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+
+	"github.com/braedonsaunders/ether/internal/transcode"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-// CatchUpRequest selects either a guide programme or an explicit archive range.
-type CatchUpRequest struct {
-	ChannelID, ProgrammeID string
-	Start                  time.Time
-	Duration               time.Duration
-	StartOver              bool
-	ClampStart             bool
-}
+type CatchUpRequest = frontend.CatchUpRequest
+type CatchUpInfo = frontend.CatchUpInfo
+type CatchUpError = frontend.CatchUpError
 
-type CatchUpInfo struct {
-	ID, ChannelID, ProgrammeID, Title string
-	Start, End, ProgrammeEnd          time.Time
-	StartOver                         bool
-	Origin                            time.Duration
-	MediaGeneration                   string
-	Decision                          core.Decision
-}
-
-var ErrInvalidCatchUpRange = errors.New("invalid catch-up range")
-
-type CatchUpError struct {
-	Code        string
-	ArchiveDays int
-	EarliestAt  time.Time
-}
-
-func (e *CatchUpError) Error() string {
-	switch e.Code {
-	case "catchup_not_supported":
-		return "This channel has no catch-up archive."
-	case "catchup_outside_archive":
-		return "The requested range starts outside the channel archive."
-	default:
-		return "The provider has no playable archive for this range."
-	}
-}
+var ErrInvalidCatchUpRange = frontend.ErrInvalidCatchUpRange
 
 func archiveUnavailable() error { return &CatchUpError{Code: "catchup_unavailable"} }
 
 type catchUpSession struct {
-	info  CatchUpInfo
-	hls   core.HLSSession
-	input *session
+	previous        []*catchUpSession
+	retryAt         time.Time
+	releaseProvider func()
+	info            CatchUpInfo
+	hls             core.HLSSession
+	input           *session
 }
 
 func (s *Service) catchUpSelection(ctx context.Context, u *core.User, c Channel, req CatchUpRequest, now time.Time) (CatchUpInfo, error) {
@@ -65,23 +44,26 @@ func (s *Service) catchUpSelection(ctx context.Context, u *core.User, c Channel,
 	days := min(c.Archive.Days, 30)
 	earliest := now.Add(-time.Duration(days) * 24 * time.Hour)
 	if req.ProgrammeID != "" {
-		ps, err := s.programmes(ctx, c, earliest, now.Add(time.Second))
+		stamp, ok := strings.CutPrefix(req.ProgrammeID, c.ID+"-")
+		startMS, err := strconv.ParseInt(stamp, 10, 64)
+		if !ok || err != nil {
+			return info, core.ErrNotFound
+		}
+		at := time.UnixMilli(startMS)
+		if at.Before(earliest) || at.After(now) {
+			return info, &CatchUpError{Code: "catchup_outside_archive", ArchiveDays: days, EarliestAt: earliest.UTC()}
+		}
+		p, found, err := s.programmeAt(ctx, c, at)
 		if err != nil {
 			return info, err
 		}
-		for _, p := range ps {
-			if p.ID != req.ProgrammeID {
-				continue
-			}
-			if !s.allowedProgramme(ctx, u, c, &p) {
-				return info, core.ErrUnauthorized
-			}
-			info.ProgrammeID, info.Title, info.Start, info.ProgrammeEnd = p.ID, p.Item.Title, p.Start, p.End
-			break
-		}
-		if info.ProgrammeID == "" {
+		if !found || p.ID != req.ProgrammeID {
 			return info, core.ErrNotFound
 		}
+		if !s.allowedProgramme(ctx, u, c, &p) {
+			return info, core.ErrUnauthorized
+		}
+		info.ProgrammeID, info.Title, info.Start, info.ProgrammeEnd = p.ID, p.Item.Title, p.Start, p.End
 		if info.ProgrammeEnd.After(now) != req.StartOver {
 			return info, ErrInvalidCatchUpRange
 		}
@@ -149,6 +131,11 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 	}
 	c.Transcode = c.Transcode || policy.Transcode
 	info.ID = liveSessionID()
+	if caps.Remote && s.o.RemoteUploadCap != nil {
+		if limit, fromBudget := s.o.RemoteUploadCap(ctx, info.ID, true, true, caps.MaxBitrateKbps, 0); fromBudget && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+			caps.MaxBitrateKbps = limit
+		}
+	}
 	if clientSessionID == "" {
 		clientSessionID = caps.ClientID
 	}
@@ -169,7 +156,7 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 	}
 	s.nextSubscription++
 	ss := &session{
-		ephemeral: true, streamGrant: randomID(), user: *u, caps: caps, last: now,
+		archiveInput: true, ephemeral: true, streamGrant: randomID(), user: *u, caps: caps, last: now,
 		info: SessionInfo{ID: info.ID, SubscriptionID: s.nextSubscription, ActivityID: liveSessionID(),
 			ClientSessionID: clientSessionID, UserID: u.ID, Channel: c, StartedAt: now},
 		view: core.PlaySession{ID: info.ID, PlaybackGroup: info.ID, UserID: u.ID, Username: u.Username,
@@ -246,23 +233,26 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo) (*catchUpSession, error) {
 	ctx, cancel := ss.bindContext(ctx)
 	defer cancel()
-	ctx, timeout := context.WithTimeout(ctx, 20*time.Second)
+	ctx, timeout := context.WithTimeout(ctx, 20*time.Second+s.stabilityReserve(ss.info.Channel))
 	defer timeout()
 	tc := s.transcoder()
 	if tc == nil {
 		return nil, core.ErrNotAvailable
 	}
 	c := ss.info.Channel
-	// W-A1 supplies this method. The optional seam lets both worker branches
-	// compile while they are landing independently.
-	builder, ok := any(s).(interface {
-		ArchiveURL(context.Context, Channel, time.Time, time.Duration) (string, error)
-	})
-	if !ok {
-		return nil, archiveUnavailable()
-	}
 	duration := info.End.Sub(info.Start) - info.Origin
-	raw, err := builder.ArchiveURL(ctx, c, info.Start.Add(info.Origin), duration)
+	start := info.Start.Add(info.Origin)
+	raw, err := s.ArchiveURL(ctx, c, start, duration)
+	var trim time.Duration
+	if err == nil && (c.Archive.Mode == "xtream" || c.Archive.Mode == "xc") && strings.Contains(raw, "/timeshift/") {
+		// The provider accepts minute timestamps. Ask for the enclosing
+		// range and discard the leading partial minute at the encoder.
+		rounded := start.Truncate(time.Minute)
+		trim = start.Sub(rounded)
+		if trim > 0 {
+			raw, err = s.ArchiveURL(ctx, c, rounded, duration+trim)
+		}
+	}
 	if err != nil {
 		return nil, archiveUnavailable()
 	}
@@ -286,6 +276,17 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 	if err != nil || len(prefix) == 0 {
 		return nil, s.catchUpSourceError(ctx, c.SourceID, err)
 	}
+	if strings.HasPrefix(string(prefix), "#EXTM3U") && c.SourceID != "" {
+		s.inputRelay.mu.Lock()
+		g := s.inputRelay.bySess[stage]
+		s.inputRelay.mu.Unlock()
+		if g != nil && g.login == nil {
+			opened.releaseProvider, err = s.inputRelay.taps.reserve(c.SourceID, s.sourceConnectionLimit(c.SourceID), false)
+			if err != nil {
+				return nil, s.catchUpSourceError(ctx, c.SourceID, err)
+			}
+		}
+	}
 	input, err := s.relayInput(stage)
 	if err != nil {
 		return nil, s.catchUpSourceError(ctx, c.SourceID, err)
@@ -293,6 +294,20 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 	probe, err := s.probeSessionInput(ctx, stage)
 	if err != nil || probe == nil || !probe.HasPlayableMedia() {
 		return nil, s.catchUpSourceError(ctx, c.SourceID, err)
+	}
+	s.inputRelay.mu.Lock()
+	grant := s.inputRelay.bySess[stage]
+	s.inputRelay.mu.Unlock()
+	if grant != nil {
+		grant.mu.Lock()
+		tap := grant.tap
+		grant.mu.Unlock()
+		if tap != nil {
+			tap.mu.Lock()
+			tap.finitePlayback = true
+			tap.cond.Broadcast()
+			tap.mu.Unlock()
+		}
 	}
 	probe.Duration = duration
 	probe.Keyframes = nil
@@ -302,9 +317,12 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 	opened.info = info
 	opened.hls, err = tc.StartHLS(ss.ctx, core.HLSRequest{
 		SessionID: info.ID + "-" + info.MediaGeneration, MediaGeneration: info.MediaGeneration, InputURL: input,
-		Info: *probe, Decision: dec, SegmentDuration: cut,
+		Info: *probe, Decision: dec, SegmentDuration: cut, ArchiveInput: true, ArchiveTrim: trim, NoVideoTranscode: ss.caps.NoVideoTranscode,
 	})
 	if err != nil {
+		if errors.Is(err, frontend.ErrTooManyTranscodes) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+			return nil, err
+		}
 		return nil, Diagnose("catchup_output", err)
 	}
 	ready = true
@@ -325,7 +343,21 @@ func (c *catchUpSession) close(s *Service) {
 	if c == nil {
 		return
 	}
+	for _, previous := range c.previous {
+		previous.closeRange(s)
+	}
+	c.closeRange(s)
+}
+
+func (c *catchUpSession) releaseInput(s *Service) {
 	s.revokeInput(c.input)
+	if c.releaseProvider != nil {
+		c.releaseProvider()
+	}
+}
+
+func (c *catchUpSession) closeRange(s *Service) {
+	c.releaseInput(s)
 	if c.hls != nil {
 		c.hls.Close()
 	}
@@ -354,19 +386,29 @@ func (s *Service) SeekCatchUp(ctx context.Context, u *core.User, id string, offs
 		ss.mu.Unlock()
 		return CatchUpInfo{}, ErrInvalidCatchUpRange
 	}
-	if offset == info.End.Sub(info.Start) || offset == info.Origin {
+	if offset == info.End.Sub(info.Start) {
+		if len(current.previous) > 0 {
+			info.Origin = current.previous[0].info.Origin
+			info.MediaGeneration = current.previous[0].info.MediaGeneration
+		}
 		ss.mu.Unlock()
 		return info, nil
 	}
-	buffer, ok := current.hls.(interface{ HasBufferedPosition(time.Duration) bool })
-	if offset >= info.Origin && ok && buffer.HasBufferedPosition(offset-info.Origin) {
-		ss.mu.Unlock()
-		return info, nil
+	for _, chunk := range append(append([]*catchUpSession(nil), current.previous...), current) {
+		buffer, ok := chunk.hls.(interface{ HasBufferedPosition(time.Duration) bool })
+		if ok && offset >= chunk.info.Origin && offset < chunk.info.End.Sub(info.Start) && buffer.HasBufferedPosition(offset-chunk.info.Origin) {
+			if len(current.previous) > 0 {
+				info.Origin = current.previous[0].info.Origin
+				info.MediaGeneration = current.previous[0].info.MediaGeneration
+			}
+			ss.mu.Unlock()
+			return info, nil
+		}
 	}
 	ss.mu.Unlock()
 	// Release the current provider connection before opening a new range;
 	// even single-connection providers must support seeking.
-	s.revokeInput(current.input)
+	current.releaseInput(s)
 	info.Origin = offset
 	next, err := s.openCatchUp(ctx, ss, info)
 	if err != nil {
@@ -392,16 +434,116 @@ func minTime(a, b time.Time) time.Time {
 }
 
 func (s *Service) serveCatchUp(w http.ResponseWriter, r *http.Request, ss *session, archive *catchUpSession, n *int) {
-	if generation := r.URL.Query().Get("archive"); generation != "" && generation != archive.info.MediaGeneration {
-		http.NotFound(w, r)
-		return
-	}
 	if n == nil {
+		first := archive
+		if len(archive.previous) > 0 {
+			first = archive.previous[0]
+		}
+		if generation := r.URL.Query().Get("archive"); generation != "" && generation != first.info.MediaGeneration {
+			http.NotFound(w, r)
+			return
+		}
+		if archive.info.StartOver {
+			archive = s.extendStartOver(r.Context(), ss, archive)
+			s.serveStartOverPlaylist(w, r, archive)
+			return
+		}
 		archive.hls.ServePlaylist(w, r)
 		return
 	}
-	s.touchMedia(ss)
+	for _, previous := range archive.previous {
+		if strings.HasPrefix(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], "g-"+previous.info.MediaGeneration+"-") {
+			archive = previous
+			break
+		}
+	}
+	ss.mu.Lock()
+	ss.consumed, ss.mediaStarted, ss.last = true, true, s.clockNow()
+	ss.mu.Unlock()
 	s.activeCatchUpRead(w, r, ss, archive, *n)
+}
+
+// Extend only as the player reloads its playlist and the current range has
+// finished producing. A single provider connection works even at boundaries.
+func (s *Service) extendStartOver(ctx context.Context, ss *session, archive *catchUpSession) *catchUpSession {
+	if !ss.prepareMu.TryLock() {
+		return archive
+	}
+	defer ss.prepareMu.Unlock()
+	ss.mu.Lock()
+	current := ss.catchUp
+	closed := ss.closed
+	ss.mu.Unlock()
+	if closed || current != archive {
+		return archive
+	}
+	now := s.clockNow()
+	end := minTime(now.Truncate(time.Minute), archive.info.ProgrammeEnd)
+	if !now.Before(archive.info.ProgrammeEnd.Add(time.Minute)) {
+		end = archive.info.ProgrammeEnd
+	}
+	complete, ok := archive.hls.(interface{ ArchiveRangeComplete() bool })
+	if !end.After(archive.info.End) || now.Before(archive.retryAt) || !ok || !complete.ArchiveRangeComplete() {
+		return archive
+	}
+	archive.releaseInput(s)
+	info := archive.info
+	info.Origin = info.End.Sub(info.Start)
+	info.End = end
+	next, err := s.openCatchUp(ctx, ss, info)
+	if err != nil {
+		archive.retryAt = now.Add(30 * time.Second)
+		return archive
+	}
+	next.previous = append(append([]*catchUpSession(nil), archive.previous...), archive)
+	ss.mu.Lock()
+	if ss.closed {
+		ss.mu.Unlock()
+		next.closeRange(s)
+		return archive
+	}
+	ss.catchUp = next
+	ss.mu.Unlock()
+	return next
+}
+
+func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request, archive *catchUpSession) {
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodHead {
+		return
+	}
+	var content strings.Builder
+	target := 1
+	chunks := append(append([]*catchUpSession(nil), archive.previous...), archive)
+	for n, chunk := range chunks {
+		if keep, ok := chunk.hls.(interface{ Touch() }); ok {
+			keep.Touch()
+		}
+		playlist := httptest.NewRecorder()
+		chunk.hls.ServePlaylist(playlist, r)
+		if playlist.Code != http.StatusOK {
+			http.Error(w, "Archive output unavailable", http.StatusBadGateway)
+			return
+		}
+		if n > 0 {
+			content.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
+		for _, line := range strings.Split(playlist.Body.String(), "\n") {
+			if value, ok := strings.CutPrefix(line, "#EXT-X-TARGETDURATION:"); ok {
+				duration, _ := strconv.Atoi(value)
+				target = max(target, duration)
+			}
+			if strings.HasPrefix(line, "#EXTINF:") || strings.HasPrefix(line, "#EXT-X-MAP:") || strings.HasPrefix(line, "#EXT-X-DISCONTINUITY") || line != "" && !strings.HasPrefix(line, "#") {
+				content.WriteString(line + "\n")
+			}
+		}
+	}
+	fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", target)
+	_, _ = w.Write([]byte(content.String()))
+	if !archive.info.End.Before(archive.info.ProgrammeEnd) {
+		_, _ = w.Write([]byte("#EXT-X-ENDLIST\n"))
+	}
 }
 
 func (s *Service) activeCatchUpRead(w http.ResponseWriter, r *http.Request, ss *session, archive *catchUpSession, n int) {
@@ -410,4 +552,82 @@ func (s *Service) activeCatchUpRead(w http.ResponseWriter, r *http.Request, ss *
 	observed := s.observeContinuousMedia(w, ss)
 	defer observed.done()
 	archive.hls.ServeSegment(observed, r, n)
+}
+
+// TouchLiveSession renews an authorized playback lease without moving its position.
+func (s *Service) TouchLiveSession(ctx context.Context, u *core.User, id string) error {
+	ss, err := s.getSession(ctx, id, u)
+	if err != nil {
+		return err
+	}
+	ss.mu.Lock()
+	if !ss.closed {
+		ss.last = s.clockNow()
+	}
+	ss.mu.Unlock()
+	return nil
+}
+
+// ServeCatchUpTS streams the finite MPEG-TS rendition to Xtream clients.
+func (s *Service) ServeCatchUpTS(w http.ResponseWriter, r *http.Request, id string, u *core.User) {
+	ss, err := s.getSession(r.Context(), id, u)
+	if err != nil {
+		writeStreamError(w, err)
+		return
+	}
+	ss.mu.Lock()
+	archive := ss.catchUp
+	ss.mu.Unlock()
+	if archive == nil || archive.info.Decision.Container != transcode.ContainerMPEGTS {
+		writeStreamError(w, core.ErrNotAvailable)
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp2t")
+	if r.Method == http.MethodHead {
+		return
+	}
+	playlist := httptest.NewRecorder()
+	archive.hls.ServePlaylist(playlist, r)
+	if playlist.Code != http.StatusOK {
+		writeStreamError(w, core.ErrNotAvailable)
+		return
+	}
+	for _, line := range strings.Split(playlist.Body.String(), "\n") {
+		if r.Context().Err() != nil {
+			return
+		}
+		n, ok := transcode.ParseSegmentName(line)
+		if !ok || n < 0 {
+			continue
+		}
+		part := r.Clone(r.Context())
+		part.URL.Path = "/" + line
+		part.Header.Del("Range")
+		writer := &archiveTSWriter{ResponseWriter: w, header: make(http.Header)}
+		s.serveCatchUp(writer, part, ss, archive, &n)
+		if writer.failed || writer.err != nil {
+			return
+		}
+		_ = http.NewResponseController(w).Flush()
+	}
+}
+
+// Each segment supplies its own HTTP headers. Only the bytes belong in the
+// continuous response.
+type archiveTSWriter struct {
+	http.ResponseWriter
+	header http.Header
+	failed bool
+	err    error
+}
+
+func (w *archiveTSWriter) Header() http.Header    { return w.header }
+func (w *archiveTSWriter) WriteHeader(status int) { w.failed = status >= 400 }
+func (w *archiveTSWriter) Write(p []byte) (int, error) {
+	if w.failed {
+		return len(p), nil
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.err = err
+	return n, err
 }

@@ -750,7 +750,7 @@ func (s *Service) reserveVODProvider(ctx context.Context, id string, limit int, 
 		if ss.inputSource.AuthSourceID != "" {
 			source = ss.inputSource.AuthSourceID
 		}
-		if source == id {
+		if !ss.archiveInput && source == id {
 			channels[ss.info.Channel.ID] = true
 		}
 	}

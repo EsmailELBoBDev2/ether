@@ -538,7 +538,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		if max := s.sourceConnectionLimit(c.SourceID); max > 0 {
 			playing := map[string]bool{}
 			for _, other := range s.sessions {
-				if other.info.Channel.SourceID == c.SourceID {
+				if !other.archiveInput && other.info.Channel.SourceID == c.SourceID {
 					playing[other.info.Channel.ID] = true
 				}
 			}
@@ -1709,7 +1709,7 @@ func (s *Service) sourceConnectionsInUse(sourceID string) int {
 	playing := map[string]bool{}
 	s.mu.Lock()
 	for _, other := range s.sessions {
-		if other.info.Channel.SourceID == sourceID {
+		if !other.archiveInput && other.info.Channel.SourceID == sourceID {
 			playing[other.info.Channel.ID] = true
 		}
 	}
@@ -1717,7 +1717,7 @@ func (s *Service) sourceConnectionsInUse(sourceID string) int {
 		playing[chID] = true
 	}
 	s.mu.Unlock()
-	return len(playing) + s.inputRelay.taps.externalCount(sourceID)
+	return max(len(playing), s.inputRelay.taps.open(sourceID)) + s.inputRelay.taps.externalCount(sourceID)
 }
 
 func (s *Service) providerConnectionCapError(sourceID string, maxConns, inUse int, cause error) error {

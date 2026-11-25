@@ -16,6 +16,8 @@ import (
 
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
+	ArchiveInput   bool
+	ArchiveTrim    time.Duration
 	waitDecode     bool // only argv construction may spend the bounded admission budget
 	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
@@ -452,7 +454,7 @@ func buildCodecArgs(s runSpec) []string {
 		}
 		args = append(args, "-format_whitelist", "concat,mpegts", "-protocol_whitelist", protocols)
 	} else {
-		args = append(args, inputSafetyArgs(s.Input, s.LiveInput)...)
+		args = append(args, inputSafetyArgs(s.Input, s.LiveInput || s.ArchiveInput)...)
 	}
 	var httpArgs []string
 	if !pceBounded {
@@ -512,7 +514,7 @@ func buildCodecArgs(s runSpec) []string {
 	if s.LoopInput {
 		args = append(args, "-stream_loop", "-1")
 	}
-	if s.Start > 0 && !pceOutputSeek {
+	if s.Start > 0 && !pceOutputSeek && !s.ArchiveInput {
 		seek := secs(s.Start)
 		noAccurateSeek := false
 		if s.CopyOrigin && d.VideoCopy {
@@ -614,6 +616,15 @@ func buildCodecArgs(s runSpec) []string {
 			seek = pcePrelude
 		}
 		args = append(args, "-ss", secs(seek), "-output_ts_offset", secs(s.Start))
+	}
+
+	if s.ArchiveInput {
+		if trim := s.ArchiveTrim + s.Start; trim > 0 {
+			args = append(args, "-ss", secs(trim))
+		}
+		if remain := s.Info.Duration - s.Start; remain > 0 {
+			args = append(args, "-t", secs(remain))
+		}
 	}
 
 	// ---- mapping

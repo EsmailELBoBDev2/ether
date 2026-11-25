@@ -277,18 +277,20 @@ type upstreamTap struct {
 	ctype      string
 	openErr    error
 
-	mu      sync.Mutex
-	cond    *sync.Cond
-	ring    []byte
-	written int64 // bytes received from upstream
-	err     error // set when upstream ends
-	closed  bool
-	refs    map[*inputGrant]struct{}
-	readers int
-	idle    *time.Timer
-	ctx     context.Context
-	cancel  context.CancelFunc
-	body    io.Closer
+	mu             sync.Mutex
+	cond           *sync.Cond
+	ring           []byte
+	written        int64 // bytes received from upstream
+	err            error // set when upstream ends
+	closed         bool
+	finite         bool
+	finitePlayback bool
+	refs           map[*inputGrant]struct{}
+	readers        int
+	idle           *time.Timer
+	ctx            context.Context
+	cancel         context.CancelFunc
+	body           io.Closer
 
 	// Parallel replacement race state (TS only, guarded by mu).
 	raceActive bool
@@ -404,7 +406,7 @@ func (r *tapRegistry) acquireOrManifest(key, source string, limit int, g *inputG
 	if source != "" && limit > 0 && len(r.bySource[source])+r.external[source] >= limit {
 		return nil, nil, false, ErrProviderBusy
 	}
-	t = &upstreamTap{key: key, source: source, reg: r, ready: make(chan struct{}), refs: map[*inputGrant]struct{}{g: {}}}
+	t = &upstreamTap{finite: g.finite, key: key, source: source, reg: r, ready: make(chan struct{}), refs: map[*inputGrant]struct{}{g: {}}}
 	t.cond = sync.NewCond(&t.mu)
 	r.byKey[key] = t
 	if source != "" {
@@ -557,6 +559,46 @@ func (t *upstreamTap) fill(body io.Reader) {
 		if err != nil {
 			t.close(err)
 			return
+		}
+	}
+}
+
+func (t *upstreamTap) fillArchive(body io.Reader, idle *time.Timer) {
+	buf := make([]byte, 64<<10)
+	for {
+		t.mu.Lock()
+		idle.Stop()
+		for {
+			if t.closed {
+				t.mu.Unlock()
+				return
+			}
+			var consumed int64
+			if t.finitePlayback && len(t.active) > 0 {
+				consumed = t.written
+				for rd := range t.active {
+					consumed = min(consumed, rd.off)
+				}
+			}
+			capacity := int64(len(t.ring)) - (t.written - consumed)
+			if capacity > 0 {
+				t.mu.Unlock()
+				idle.Reset(relayIOTimeout)
+				n, err := body.Read(buf[:min(len(buf), int(capacity))])
+				idle.Stop()
+				t.mu.Lock()
+				if !t.closed && n > 0 {
+					t.writeLocked(buf[:n])
+					t.cond.Broadcast()
+				}
+				t.mu.Unlock()
+				if err != nil {
+					t.close(err)
+					return
+				}
+				break
+			}
+			t.cond.Wait()
 		}
 	}
 }
@@ -813,6 +855,9 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 	copy(p, t.ring[at:at+n])
 	if rd != nil {
 		rd.off = off + int64(n)
+		if t.finite {
+			t.cond.Broadcast()
+		}
 	}
 	return n, off + int64(n), nil
 }
@@ -914,7 +959,7 @@ func (t *upstreamTap) attach() {
 func (t *upstreamTap) detach() {
 	t.mu.Lock()
 	t.readers--
-	if t.readers == 0 && !t.closed {
+	if t.readers == 0 && !t.closed && !t.finite {
 		if t.idle == nil {
 			t.idle = time.AfterFunc(tapIdle, func() {
 				t.mu.Lock()
@@ -956,6 +1001,9 @@ func (t *upstreamTap) dropReader(rd *tapReader) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.active, rd)
+	if t.finite {
+		t.cond.Broadcast()
+	}
 	if _, ok := t.refs[rd.g]; ok && rd.g != nil {
 		if t.resume == nil {
 			t.resume = map[*inputGrant]tapResume{}
@@ -991,7 +1039,7 @@ func (g *inputGrant) setTap(t *upstreamTap) {
 }
 
 func (g *inputGrant) setManifest(cm *cachedManifest) {
-	if g == nil || cm == nil || !cm.isMaster {
+	if g == nil || cm == nil || !cm.isMaster && !g.finite {
 		return
 	}
 	g.mu.Lock()
@@ -1056,7 +1104,7 @@ func (g *inputGrant) consumeManifest(raw string) *cachedManifest {
 		return nil
 	}
 	cm := g.manifest
-	if !cm.isMaster {
+	if !cm.isMaster && !g.finite {
 		g.manifest = nil
 	}
 	return cm
@@ -1079,7 +1127,10 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 	}
 	var t *upstreamTap
 	refreshed := false
-	for {
+	if g.finite && tExisting != nil {
+		t = tExisting
+	}
+	for t == nil {
 		var directGen uint64
 		if g.direct != nil {
 			var invalidated bool
@@ -1116,7 +1167,7 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 			s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
 			return true
 		}
-		if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" && !steadyTS {
+		if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" && !steadyTS && !g.finite {
 			return false
 		}
 		source, limit := s.tapSource(g)
@@ -1157,6 +1208,7 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 					if nextRaw, rerr := g.refreshDirect(r.Context(), directGen); rerr == nil {
 						raw = nextRaw
 						refreshed = true
+						t = nil
 						continue
 					}
 				}
@@ -1201,6 +1253,10 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 	defer t.detach()
 	t.mu.Lock()
 	off := t.joinLocked(g, r.URL.Query().Get(relayJoinQuery))
+	if g.finite && off > 0 {
+		t.mu.Unlock()
+		return true
+	}
 	rd := t.addReaderLocked(g, off)
 	t.mu.Unlock()
 	defer t.dropReader(rd)
@@ -1370,7 +1426,7 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	// Three packets (or two sync bytes when HTTP/2 delivers one TS packet in
 	// its initial DATA frame) decide whether this is a transport stream the
 	// reserve can index and splice; anything else is relayed as before.
-	ts := tsPrefixWithType(body, ctype)
+	ts := !g.finite && tsPrefixWithType(body, ctype)
 	t.mu.Lock()
 	now := time.Now()
 	t.body = closer
@@ -1384,19 +1440,16 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	}
 	t.mu.Unlock()
 	close(t.ready)
+	if g.finite {
+		go t.fillArchive(body, idle)
+		return
+	}
 	if !ts {
 		go func() { defer idle.Stop(); t.fill(body) }()
 		return
 	}
 	// The stall watchdog replaces the idle timeout for a transport stream.
 	idle.Stop()
-	if g.finite {
-		go func() {
-			err := t.fillTS(body)
-			t.close(err)
-		}()
-		return
-	}
 	go s.pumpTap(t, raw, body)
 	go t.watch()
 }

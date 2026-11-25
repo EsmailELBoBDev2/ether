@@ -623,7 +623,11 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 		if admitted != nil {
 			b.steadyBitrate = admitted.shape.bitrateKbps
 		}
-		if c.DVRMinutes > 0 {
+		b.dvrCache = s.liveDVRCache()
+		if c.Kind == "iptv" {
+			b.dvr = s.timeshiftWindow(c)
+			b.dvrLiveWindow = s.latencyPolicy().PlaylistWindow()
+		} else if c.DVRMinutes > 0 {
 			b.dvr = time.Duration(c.DVRMinutes) * time.Minute
 		}
 		return b, nil

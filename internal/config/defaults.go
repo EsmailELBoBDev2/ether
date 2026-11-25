@@ -16,6 +16,9 @@ func randomID(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// DefaultCacheBudgetBytes is the default segment cache capacity per node.
+const DefaultCacheBudgetBytes = 50 << 30
+
 // Defaults returns a fresh config for a new install.
 func Defaults(dataDir string) Config {
 	return Config{
@@ -49,7 +52,7 @@ func Defaults(dataDir string) Config {
 		},
 		Cache: Cache{
 			Dir:                  filepath.Join(dataDir, "cache"),
-			BudgetBytes:          50 << 30,
+			BudgetBytes:          DefaultCacheBudgetBytes,
 			PrefetchNextEpisode:  true,
 			PrefetchBytes:        64 << 20,
 			KeepInProgressWarm:   true,

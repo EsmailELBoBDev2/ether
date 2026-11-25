@@ -1104,7 +1104,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 	ss.startDeadline = stage.startDeadline
 	ss.broadcast = stage.broadcast
 	s.transferInput(stage, ss)
-	if ss.owned != nil && ss.owned.relay != nil {
+	if ss.owned != nil && ss.owned.relay != nil && !ss.owned.relay.shared {
 		ss.owned.relay.bind(ss)
 	}
 	ss.mu.Unlock()

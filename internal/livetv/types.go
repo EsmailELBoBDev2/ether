@@ -444,22 +444,25 @@ type Options struct {
 	Graphics        core.ChannelGraphics
 	GuideProvider   guideprovider.Provider
 
-	ConfirmAdmission   func(context.Context, *core.User, bool, time.Time) (*core.User, error)
-	CanPlay            func(*core.User, bool, time.Time) bool
-	StreamLimit        func(*core.User) int
-	RemoteUploadCap    func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
-	DB                 *sql.DB
-	Catalog            core.Catalog
-	Collections        core.Collections
-	Playback           core.Playback
-	Transcoder         core.Transcoder
-	HTTPClient         *http.Client
-	LogoHTTP           *http.Client // optional test transport for the logo index; nil uses the guarded client
-	LogoIndexURL       func() string
-	HealthSweepMinutes func() int    // 0 defaults to 15; negative disables
-	LatencyProfile     func() string // owner preference; nil means Automatic
-	Stability          func() string // server-wide stability preset; nil or "" is balanced (reserve_policy.go)
-	Now                func() time.Time
+	ConfirmAdmission     func(context.Context, *core.User, bool, time.Time) (*core.User, error)
+	CanPlay              func(*core.User, bool, time.Time) bool
+	StreamLimit          func(*core.User) int
+	RemoteUploadCap      func(ctx context.Context, sessionID string, remote bool, allowTranscoding bool, existingCapKbps int, demandKbps int) (capKbps int, fromBudget bool)
+	DB                   *sql.DB
+	Catalog              core.Catalog
+	Collections          core.Collections
+	Playback             core.Playback
+	Transcoder           core.Transcoder
+	HTTPClient           *http.Client
+	LogoHTTP             *http.Client // optional test transport for the logo index; nil uses the guarded client
+	LogoIndexURL         func() string
+	HealthSweepMinutes   func() int // 0 defaults to 15; negative disables
+	TimeshiftMinutes     func() int
+	TimeshiftBudgetBytes func() int64
+	TimeshiftDir         string
+	LatencyProfile       func() string // owner preference; nil means Automatic
+	Stability            func() string // server-wide stability preset; nil or "" is balanced (reserve_policy.go)
+	Now                  func() time.Time
 	// Logger receives credential-safe import, playback and delivery diagnostics.
 	Logger *slog.Logger
 	// Events receives Live TV domain events when non-nil.

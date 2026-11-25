@@ -524,9 +524,12 @@ Ether checks the NZB vault first. A miss uses the originating indexer's normal
 grab limits and stores the NZB in the vault. A temporary grab refusal leaves
 other candidates available. Installed plugins with `kind_resolver` and
 `permissions.sources` can request NZBs. Background requests also need the
-`+check` grant and use the background allowance. Plugin HTTP calls to configured
-indexers are refused. Existing `nzb:<download link>` sources for supported
-configured indexer endpoints still use the shared grab path.
+`+check` grant and use the background allowance. Ether refuses plugin HTTP
+calls to configured indexer hosts and keeps indexer URLs and API keys in
+server configuration. Sidecars use this same sources API. Their own HTTP
+clients run under OS or container network policy, so operators can restrict
+direct access there. Existing `nzb:<download link>` sources for configured
+indexer endpoints still use the shared grab path.
 
 Use `Context.RequestNZB` in Go, `requestNzb(ctx, ref)` in TypeScript, or
 `client.kinds.request_nzb(ref)` in Python. The SDKs also expose the

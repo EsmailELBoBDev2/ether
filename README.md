@@ -213,6 +213,15 @@ Design versioned poster overlays (`Cinema`, `Spotlight`, `Essential`) with IMDb,
 ### Adaptive media cache, guided recovery, and PostgreSQL clustering
 Dial your storage footprint from **Pass-through (0 GiB)** to **Everyday (32 GiB)** up to **Edge library (20 TiB)** with household-aware movie preloading and rolling TV episode windows on local disk or a **Shared NAS**. **Maintenance › Backups & import** provides 1-click guided restore with automatic rollback, in-app service restart, and a startup status and recovery page. Start on standalone SQLite, and when you need multi-node scale, migrate to an active-active multi-node cluster on a **PostgreSQL 14+ database you provide** through the guided **Cluster** wizard (Ether does not make PostgreSQL itself highly available). On **Kubernetes**, the Helm chart (`packaging/helm/ether`, see [docs/kubernetes.md](docs/kubernetes.md)) can also run **server roles**: besides full nodes, a pod can be a dedicated **source** or **transcode** (CPU or GPU) node, and playback moves to another node with no stall if one is lost mid-stream. Specialist roles are Kubernetes-only and need PostgreSQL; the normal installers and Docker Compose always run one full server.
 
+Backups include the NZB vault by default. Local snapshots reuse unchanged
+encrypted vault packs on filesystems that support hard links. Keep each backup
+archive with its matching `.packs` directory, or download an encrypted backup
+that includes every pack in a single file. Retention removes old snapshots and
+their links while newer snapshots keep the packs they need. Backup storage still
+grows with the vault itself. A cluster with node-local vault storage backs up
+the packs visible to the node that takes the snapshot. Use shared vault storage
+to include all packs in a single cluster backup.
+
 <table>
   <tr>
     <td width="50%" valign="top">

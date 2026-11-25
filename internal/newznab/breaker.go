@@ -348,7 +348,7 @@ func (c *Client) settleBreaker(ctx context.Context, tk breakerTicket, err error,
 			IndexerName:         c.Name(),
 			Kind:                c.indexerKind(),
 			ConsecutiveFailures: failures,
-			Error:               err.Error(),
+			Error:               classifyIndexerError(err),
 		})
 	} else if tk.probe && !failed {
 		c.log.Info("indexer is answering again", "indexer", c.Name())

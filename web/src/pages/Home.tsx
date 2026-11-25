@@ -80,20 +80,11 @@ function GettingStarted({ sessions }: { sessions: NowPlaying[] }) {
   const cfg = config.data;
   const people = viewers.data;
   if (!cfg || !people) return null;
-  const catalogStep = dashboard?.setupSteps?.find((s) => s.id === "catalog");
-  const catalogStats = dashboard?.sections?.catalog as
-    { browsableMovies?: number; movies?: number; lastSync?: string } | undefined;
-  const tmdbReady =
-    Boolean(cfg.catalog?.tmdbKey?.trim()) ||
-    (catalogStep
-      ? catalogStep.complete
-      : Boolean(catalogStats?.browsableMovies || catalogStats?.movies || catalogStats?.lastSync));
   const apps = Object.entries(cfg.frontends ?? {})
     .filter(([, row]) => row?.enabled)
     .map(([id]) => id);
   const profile = cfg.quality?.default?.trim() || "4K";
   const steps = [
-    { id: "tmdb", todo: !tmdbReady, label: t("Add a TMDB key"), to: "/services/tmdb" },
     { id: "source", todo: !sourceReady(cfg), label: t("Add a source"), to: "/sources" },
     {
       id: "plex",
@@ -781,9 +772,7 @@ function RowsPanel({
         <EmptyState
           icon={<Film />}
           title={t("No row data yet")}
-          description={t(
-            "No plays yet. The library stays empty until a TMDB key syncs the catalogue, and a debrid account or a Usenet provider can play it.",
-          )}
+          description={t("Play a title to see it here.")}
           className="py-6"
         />
       ) : (

@@ -39,7 +39,20 @@ describe("Metadata episode orders", () => {
     const overrides = new Map<number, { groupId: string; specials: string }>();
     const { fake } = renderAppWith("/metadata/episodes", (method, path, body) => {
       if (path === "/catalog/search")
-        return { items: [{ key: SHOW, title: "Fixture Show", type: "show" }] };
+        return {
+          items: [
+            {
+              key: SHOW,
+              title: "Fixture Show",
+              type: "show",
+              episodeOrder: {
+                effective: { source: "tmdb", kind: "aired" },
+                libraryDefault: { source: "tmdb", kind: "aired" },
+                libraryName: "TV Shows",
+              },
+            },
+          ],
+        };
       if (!path.startsWith(`/metadata/shows/${SHOW}`)) return undefined;
       if (path.endsWith("/groups"))
         return [{ id: "dvd", name: "DVD order", type: 3, episode_count: 2 }];

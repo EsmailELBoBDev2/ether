@@ -345,6 +345,11 @@ function SourcePicker({
           )}
         </p>
       </div>
+      {sources.some((source) => source.unavailable === "metadata_source_unavailable") ? (
+        <p className="text-sm text-fg-muted">
+          {t("Some discovery rows need a metadata source that provides lists.")}
+        </p>
+      ) : null}
       <div className="relative">
         <Search
           size={14}

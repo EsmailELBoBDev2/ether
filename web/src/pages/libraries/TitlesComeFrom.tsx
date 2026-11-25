@@ -36,22 +36,13 @@ export function TitlesComeFrom({
   const cappedAttached = attached.filter(
     (source) => !source.lastError && Boolean(catalogueCapNote(source)),
   );
-  const manageHref =
-    ids.length === 1
-      ? library.source === "builtin" || attached[0]?.id.startsWith("tmdb-")
-        ? "/services/tmdb"
-        : attached[0]?.pluginId
-          ? `/plugins/installed?plugin=${encodeURIComponent(attached[0].pluginId)}&tab=setup`
-          : "/services"
-      : "/services";
-  const manageLabel =
-    ids.length === 1
-      ? library.source === "builtin" || attached[0]?.id.startsWith("tmdb-")
-        ? t("Manage TMDB")
-        : attached[0]
-          ? t("Manage {app}", { app: attached[0].owner })
-          : t("Manage in Integrations")
-      : t("Manage in Integrations");
+  const plugin = ids.length === 1 ? attached[0] : undefined;
+  const manageHref = plugin?.pluginId
+    ? `/plugins/installed?plugin=${encodeURIComponent(plugin.pluginId)}&tab=setup`
+    : "/services/overview";
+  const manageLabel = plugin?.pluginId
+    ? t("Manage {app}", { app: plugin.owner })
+    : t("Manage in Integrations");
   const mediaType = String(library.mediaType ?? "movie");
   const save = () => {
     if (draft) {
@@ -68,7 +59,9 @@ export function TitlesComeFrom({
           title={t("Catalogue sources")}
           description={
             library.source === "builtin"
-              ? t("Always {source}.", { source: attached[0] ? sourceLabel(attached[0]) : "TMDB" })
+              ? attached[0]
+                ? t("Always {source}.", { source: sourceLabel(attached[0]) })
+                : undefined
               : library.source === "plugin"
                 ? t("Comes from the {plugin} plugin.", {
                     plugin: attached[0]?.owner ?? library.pluginName ?? t("Plugin"),

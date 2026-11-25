@@ -350,7 +350,7 @@ describe("Getting started", () => {
           const body = await response.json();
           body.sections.sessions = [];
           body.setupSteps = [
-            { id: "catalog", title: "TMDB API key", complete: false, required: true },
+            { id: "catalog", title: "Metadata sources", complete: false, required: false },
           ];
           return new Response(JSON.stringify(body), { status: 200 });
         }
@@ -365,10 +365,7 @@ describe("Getting started", () => {
       };
     });
     const steps = await screen.findByRole("region", { name: "Next steps" }, WAIT);
-    expect(within(steps).getByRole("link", { name: "Add a TMDB key" })).toHaveAttribute(
-      "href",
-      "/services/tmdb",
-    );
+    expect(within(steps).queryByRole("link", { name: "Add a metadata source" })).toBeNull();
     expect(within(steps).getByRole("link", { name: "Add a source" })).toHaveAttribute(
       "href",
       "/sources",

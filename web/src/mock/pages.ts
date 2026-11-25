@@ -21,6 +21,7 @@ import type { FakeTitle } from "./data";
 
 interface Deps {
   catalog: FakeTitle[];
+  metadataListsAvailable: () => boolean;
   card: (t: FakeTitle) => TitleCard;
   libraries: () => PageLibrary[];
   viewers: () => { id: number; title: string }[];
@@ -569,7 +570,11 @@ export function createPagesMock(deps: Deps) {
     for (const r of page.rows) used.set(r.source.kind, (used.get(r.source.kind) ?? 0) + 1);
     const sources: PageSource[] = builtinSources().map((s) => {
       const fits = pageLibs.filter((l) => (s.needs ?? []).every((n) => capsOf(l).includes(n)));
-      const available = s.homeOnly ? !lib : (s.needs ?? []).length === 0 || fits.length > 0;
+      const missingMetadata =
+        ["trending", "popular", "airing-today", "upcoming"].includes(s.kind) &&
+        !deps.metadataListsAvailable();
+      const available =
+        !missingMetadata && (s.homeOnly ? !lib : (s.needs ?? []).length === 0 || fits.length > 0);
       const refs =
         s.kind === "collection"
           ? deps.collections().map((c, i) => ({ value: String(c.id ?? i + 1), label: c.name }))
@@ -588,7 +593,11 @@ export function createPagesMock(deps: Deps) {
       return {
         ...s,
         available,
-        unavailable: available ? undefined : "No library here has what it needs",
+        unavailable: missingMetadata
+          ? "metadata_source_unavailable"
+          : available
+            ? undefined
+            : "No library here has what it needs",
         libraries: fits.map((l) => l.id),
         used: used.get(s.kind) ?? 0,
         refs,

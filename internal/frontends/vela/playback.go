@@ -35,16 +35,17 @@ type client struct {
 	HDR              []string                               `json:"hdr,omitempty"`
 }
 type playSession struct {
-	id                  string
-	item                frontend.RatingKey
-	titleID             string
-	channelID           string
-	liveProgrammeKey    string
-	liveEvent           *frontend.LiveEventRef
-	client              client
-	declaredCaps        frontend.ClientCaps
-	activeVersionHandle string
-	activeReleaseID     string
+	id               string
+	item             frontend.RatingKey
+	titleID          string
+	channelID        string
+	liveProgrammeKey string
+	liveEvent        *frontend.LiveEventRef
+	client           client
+	declaredCaps     frontend.ClientCaps
+	// active is the admitted version handle and the release the session
+	// reads now; pollPlayingRelease moves it after an in-session failover.
+	active activeVersion
 	// versionsCold: the version menu was built before the title's search
 	// finished; snapshots rebuild it from the cached results until it is not.
 	versionsCold      bool
@@ -445,7 +446,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		mvGroup = s.Multiview.GroupID
 		mvTile = s.Multiview.Tile
 	}
-	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos, multiviewGroup: mvGroup, multiviewTile: mvTile}
+	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, channelID: b.ChannelID, client: b.Client, declaredCaps: declared.Client, active: planActiveVersion(plan), scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos, multiviewGroup: mvGroup, multiviewTile: mvTile}
 	if b.ChannelID != "" && i.host.LiveEventLink != nil {
 		if progKey, ref, err := i.host.LiveEventLink.LiveEventForChannel(r.Context(), v, b.ChannelID); err == nil {
 			ps.liveProgrammeKey = progKey
@@ -472,7 +473,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		alignUnobservedLivePosition(ps)
 	}
 	if b.TitleID != "" && i.versionsAvailable() {
-		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
+		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, planActiveVersion(plan), p)
 	}
 	i.refreshInitialTrickplay(r.Context(), i.access(r, v), s.ID, ps)
 	i.mu.Lock()
@@ -574,6 +575,7 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.refreshColdVersions(r, v, s)
+	i.pollPlayingRelease(r.Context(), v, requestDevice(r), r.PathValue("id"), s)
 	i.refreshSessionLiveEvent(r.Context(), v, s)
 	i.refreshSessionTrickplay(r.Context(), i.access(r, v), r.PathValue("id"), s)
 	s.mu.Lock()
@@ -586,25 +588,22 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 // one.
 func (i *instance) refreshColdVersions(r *http.Request, v *frontend.Viewer, s *playSession) {
 	s.mu.Lock()
-	cold, item, caps, handle, rel := s.versionsCold, s.item, s.declaredCaps, s.activeVersionHandle, s.activeReleaseID
+	cold, item, caps, active := s.versionsCold, s.item, s.declaredCaps, s.active
 	s.mu.Unlock()
 	if !cold || item == 0 || v == nil {
 		return
 	}
 	versionPlan := object{}
-	stillCold := i.attachPlaybackVersions(r.Context(), v, requestDevice(r), item, caps, handle, rel, versionPlan)
+	stillCold := i.attachPlaybackVersions(r.Context(), v, requestDevice(r), item, caps, active, versionPlan)
 	if _, ok := versionPlan["versions"]; !ok {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, field := range []string{"selectedVersionId", "versions", "rememberedChoice"} {
-		if val, exists := versionPlan[field]; exists {
-			s.plan[field] = val
-		} else if field == "rememberedChoice" {
-			delete(s.plan, field)
-		}
+	if s.active.release.ID != active.release.ID {
+		return // a failover moved the session meanwhile; its refresh wins
 	}
+	applyVersionPlan(s.plan, versionPlan)
 	s.versionsCold = stillCold
 }
 func stale(w http.ResponseWriter, s *playSession, source, seek uint64) bool {
@@ -1086,8 +1085,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.media = plan.Media
 		s.canBurn = canBurn
 		s.qualityRungs = nil
-		s.activeVersionHandle = plan.VersionHandle
-		s.activeReleaseID = plan.ReleaseID
+		s.active = planActiveVersion(plan)
 		s.plan["paths"] = paths
 		s.plan["selectedPathId"] = "primary"
 		s.plan["audioTracks"] = audioTracks
@@ -1141,21 +1139,15 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.item != 0 {
 			item, caps, dev := s.item, s.declaredCaps, requestDevice(r)
-			activeHandle, activeRel := plan.VersionHandle, plan.ReleaseID
+			active := planActiveVersion(plan)
 			versionPlan := object{}
 			cold := false
 			if !s.port(w, func() {
-				cold = i.attachPlaybackVersions(r.Context(), v, dev, item, caps, activeHandle, activeRel, versionPlan)
+				cold = i.attachPlaybackVersions(r.Context(), v, dev, item, caps, active, versionPlan)
 			}) {
 				return
 			}
-			for _, field := range []string{"selectedVersionId", "versions", "rememberedChoice"} {
-				if val, exists := versionPlan[field]; exists {
-					s.plan[field] = val
-				} else if field == "rememberedChoice" {
-					delete(s.plan, field)
-				}
-			}
+			applyVersionPlan(s.plan, versionPlan)
 			s.versionsCold = cold
 		}
 	case "replan":

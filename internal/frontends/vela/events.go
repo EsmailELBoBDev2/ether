@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// playingReleasePollEvery paces the live read that notices an in-session
+// failover to another release.
+const playingReleasePollEvery = 2 * time.Second
+
 // Subscribe only after a viewer opens playback. The broker owns stop and remote
 // control events; disabling the frontend cancels every subscription.
 func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device, id, scope string, s *playSession) {
@@ -44,6 +48,20 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 			}
 		}
 
+		// An in-session failover swaps the release under the same session;
+		// a cheap live read notices it so the menu names what plays now.
+		var playingC <-chan time.Time
+		if _, ok := i.host.Sessions.(frontend.PlayingReleaseReader); ok && i.versionsAvailable() {
+			s.mu.Lock()
+			vod := s.item != 0 && s.channelID == ""
+			s.mu.Unlock()
+			if vod {
+				pt := time.NewTicker(playingReleasePollEvery)
+				defer pt.Stop()
+				playingC = pt.C
+			}
+		}
+
 		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
 		output := t.C
@@ -52,6 +70,9 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 
 			case <-liveEventC:
 				i.refreshSessionLiveEvent(ctx, viewer, s)
+
+			case <-playingC:
+				i.pollPlayingRelease(ctx, viewer, device, id, s)
 
 			case <-trickplayC:
 				i.pollSessionTrickplay(ctx, viewer, device, id, s)

@@ -1538,6 +1538,13 @@ type StreamDecisionReader interface {
 	StreamDecision(context.Context, SessionAccess, string) (core.Decision, error)
 }
 
+// PlayingReleaseReader reports the release a session is reading now, after
+// any in-session failover. It reads live session state only; it never
+// resolves or searches.
+type PlayingReleaseReader interface {
+	PlayingRelease(context.Context, SessionAccess, string) (core.Release, core.MediaInfo, error)
+}
+
 // QualitySessions offers lazy variants of the pinned file using the broker ladder.
 // Preparation returns only after a real media segment has been published.
 type QualitySessions interface {

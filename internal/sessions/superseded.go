@@ -59,13 +59,12 @@ func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSe
 }
 
 func separatePlexPlayers(a, b *brokerSession) bool {
-	// Different titles with distinct playback IDs have their own stops.
-	if a.playbackID != "" && b.playbackID != "" {
-		return a.playbackID != b.playbackID
-	}
-	// Vela and Mave share a device ID across players. Their Plex decisions
-	// and starts identify the delivery, with the playback ID sent later on
-	// timelines. A range read in one player must leave the other playing.
+	// Vela and Mave share a device ID across players (music and video in one
+	// browser). Their Plex decisions and starts identify the delivery, with
+	// the playback ID sent later on timelines, so a start in one player must
+	// leave the other playing. Every other Plex client is one player per
+	// device: a new title replaces the old one, as PMS does, even when the
+	// client never reports the old one stopped.
 	webPlayer := func(product string) bool {
 		return strings.EqualFold(product, "Vela") || strings.EqualFold(product, "Mave")
 	}

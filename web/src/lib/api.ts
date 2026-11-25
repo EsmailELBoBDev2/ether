@@ -442,6 +442,7 @@ export const api = {
       ...(rules ? { rules } : {}),
     }),
   testDebrid: (p: DebridProvider) => post<TestResult>("/test/debrid", p),
+  testTVDB: (key: string) => post<TestResult>("/test/tvdb", { key }),
   testTMDB: (key: string) => post<TestResult>("/test/tmdb", { key }),
   testIntroDB: (apiKey: string) => post<TestResult>("/test/introdb", { apiKey }),
   testOpenSubtitles: (cfg: EtherConfig["openSubtitles"]) =>

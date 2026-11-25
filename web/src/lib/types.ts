@@ -453,6 +453,7 @@ export interface EtherConfig {
   };
   catalog: {
     tmdbKey: string;
+    tvdbKey: string;
     language: string;
     region: string;
     minPopularity: number;

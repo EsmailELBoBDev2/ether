@@ -354,6 +354,7 @@ function defaultConfig(): EtherConfig {
     },
     catalog: {
       tmdbKey: "",
+      tvdbKey: "",
       language: "en-US",
       region: "US",
       minPopularity: 5,
@@ -2528,6 +2529,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
             libraries: [{ id: 2, name: "TV Shows" }],
           },
           {
+            id: "tvdb",
+            name: "TheTVDB",
+            owner: "TheTVDB",
+            group: "builtin",
+            mediaTypes: ["show"],
+            health: "unknown",
+            libraries: [],
+          },
+          {
             id: "plugin:demo:book",
             name: "Books",
             owner: "Open Library",
@@ -4513,6 +4523,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "POST /test/usenet":
       case "POST /test/indexer":
       case "POST /test/debrid":
+      case "POST /test/tvdb":
       case "POST /test/tmdb":
       case "POST /test/introdb":
       case "POST /test/llm":

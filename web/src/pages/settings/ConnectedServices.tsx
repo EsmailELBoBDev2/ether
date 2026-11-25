@@ -39,6 +39,7 @@ import { localized, t, tn, tx } from "../../i18n";
 import { api, apiFetch, ApiError, errorMessage, type TestFn } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
+import { TvdbCatalogue } from "./TvdbCatalogue";
 import { TmdbCatalogueSettings } from "./TmdbCatalogueSettings";
 import { NewReleasesSettings } from "../libraries/browser/NewReleasesSettings";
 import type { AvailabilityConfig } from "../../lib/types";
@@ -1060,6 +1061,18 @@ export function ConnectedServices({
               posterCards={posterCards}
               posterSavedNote={posterSavedNote}
               onTmdbSetup={() => setTmdbSetup(true)}
+              onTvdbSave={(key) =>
+                enqueue(async () => {
+                  const res = await api.putSection("catalog", { tvdbKey: key });
+                  const section = asObj(res.value);
+                  const latest = model.current.draft;
+                  if (latest)
+                    applySection("catalog", section, {
+                      ...latest,
+                      catalog: { ...section, ...latest.catalog, tvdbKey: section.tvdbKey },
+                    });
+                })
+              }
               onRatingsSetup={toggleRatings}
               draft={draft}
               stored={stored}
@@ -1253,9 +1266,11 @@ function ServiceOverview({
   posterCards,
   posterSavedNote,
   onTmdbSetup,
+  onTvdbSave,
   onRatingsSetup,
 }: {
   onTmdbSetup: (next: boolean) => void;
+  onTvdbSave: (key: string) => Promise<void>;
   onRatingsSetup: (next: boolean) => void;
   posterCards: ReactNode;
   posterSavedNote?: ReactNode;
@@ -1320,7 +1335,7 @@ function ServiceOverview({
             <>
               <div className="w-full text-sm text-fg-muted">
                 {catalogue.data
-                  ?.filter((source) => source.group === "builtin")
+                  ?.filter((source) => source.id === "tmdb-movies" || source.id === "tmdb-tv")
                   .map((source) => (
                     <p key={source.id}>
                       {source.name}
@@ -1339,6 +1354,15 @@ function ServiceOverview({
               </Button>
             </>
           }
+        />
+        <TvdbCatalogue
+          storedKey={String(stored?.catalog?.tvdbKey ?? "")}
+          source={catalogue.data?.find((source) => source.id === "tvdb")}
+          locked={switchesHeld}
+          onSave={async (key) => {
+            await onTvdbSave(key);
+            void catalogue.reload();
+          }}
         />
         {catalogueGroups((catalogue.data ?? []).filter((source) => source.group !== "builtin")).map(
           (source) => (

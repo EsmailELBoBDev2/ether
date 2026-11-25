@@ -149,7 +149,12 @@ export function catalogueCountLabel(source: SyncCounts): string {
 }
 
 /** Says a sync was cut off at its limit and where to raise it; empty otherwise. */
-export function catalogueCapNote(source: SyncCounts): string {
+export function catalogueCapNote(source: SyncCounts & { id?: string }): string {
+  if (source.id === "tvdb") {
+    return catalogueCapped(source)
+      ? t("TheTVDB lists the first {limit} shows.", { limit: formatCount(source.limit ?? 0) })
+      : "";
+  }
   return catalogueCapped(source)
     ? t(
         "Only the first {limit} titles in this list sync. Raise Titles per list in the plugin's limits to sync more.",
@@ -158,4 +163,10 @@ export function catalogueCapNote(source: SyncCounts): string {
         },
       )
     : "";
+}
+
+export function tvdbSourceError(message?: string) {
+  if (message === "Enter a TheTVDB API key.") return t("Enter a TheTVDB API key.");
+  if (message === "TheTVDB rejected the API key.") return t("TheTVDB rejected the API key.");
+  return t("Could not load TheTVDB.");
 }

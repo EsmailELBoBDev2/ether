@@ -13,7 +13,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/stremio"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
+
+const tvdbCatalogueLimit = 100
+
+func materializedCatalogueSource(id string) bool {
+	return id == "tvdb" || strings.HasPrefix(id, "stremio:")
+}
 
 type forceCatalogueSyncKey struct{}
 
@@ -54,6 +61,9 @@ func (a *App) resolveCatalogueSource(ctx context.Context, id string) (catalogueS
 	}
 	if id == "tmdb-tv" {
 		return catalogueSourceRef{typ: "show"}, nil
+	}
+	if id == "tvdb" {
+		return catalogueSourceRef{typ: "show", limit: tvdbCatalogueLimit}, nil
 	}
 	parts := strings.SplitN(id, ":", 3)
 	if len(parts) != 3 || (parts[0] != "plugin" && parts[0] != "stremio") {
@@ -277,12 +287,25 @@ func (a *App) wireCatalogueSources() {
 				return nil
 			}
 		}
-		if a.collections == nil {
-			return fmt.Errorf("catalogue sources unavailable")
-		}
 		itemCtx, cancel := context.WithTimeout(ctx, catalogueSyncTimeout(ref.limit))
 		defer cancel()
-		res, err := a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, ref.typ)
+		var res collections.CatalogueSync
+		var err error
+		if id == "tvdb" {
+			ids, fetchErr := tvdb.SeriesIDs(itemCtx, a.cfg.Get().Catalog.TVDBKey, ref.limit)
+			err = fetchErr
+			if err == nil {
+				res.Listed = len(ids)
+				res.Titles, err = a.catalog.TVDBSourceTitles(itemCtx, ids)
+				if err != nil && itemCtx.Err() == nil {
+					err = fmt.Errorf("Could not match TheTVDB shows to TMDB.")
+				}
+			}
+		} else if a.collections != nil {
+			res, err = a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, ref.typ)
+		} else {
+			err = fmt.Errorf("catalogue sources unavailable")
+		}
 		if err == nil {
 			err = write(ctx, id, ref, res)
 		}
@@ -319,7 +342,7 @@ func (a *App) wireCatalogueSources() {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !strings.HasPrefix(id, "stremio:") {
+			if !materializedCatalogueSource(id) {
 				result(nil)
 				continue
 			}

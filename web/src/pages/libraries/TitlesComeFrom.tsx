@@ -1,4 +1,4 @@
-import { sourceName, sourceLabel } from "./CatalogueSources";
+import { sourceName, sourceLabel, tvdbSourceError } from "./CatalogueSources";
 import {
   Badge,
   Button,
@@ -38,7 +38,7 @@ export function TitlesComeFrom({
   );
   const manageHref =
     ids.length === 1
-      ? library.source === "builtin" || attached[0]?.group === "builtin"
+      ? library.source === "builtin" || attached[0]?.id.startsWith("tmdb-")
         ? "/services/tmdb"
         : attached[0]?.pluginId
           ? `/plugins/installed?plugin=${encodeURIComponent(attached[0].pluginId)}&tab=setup`
@@ -46,7 +46,7 @@ export function TitlesComeFrom({
       : "/services";
   const manageLabel =
     ids.length === 1
-      ? library.source === "builtin" || attached[0]?.group === "builtin"
+      ? library.source === "builtin" || attached[0]?.id.startsWith("tmdb-")
         ? t("Manage TMDB")
         : attached[0]
           ? t("Manage {app}", { app: attached[0].owner })
@@ -100,7 +100,8 @@ export function TitlesComeFrom({
           <div className="space-y-1 px-5 pb-4 text-sm text-danger">
             {failedAttached.map((source) => (
               <p key={source.id}>
-                {sourceLabel(source)}: {source.lastError}
+                {sourceLabel(source)}:{" "}
+                {source.id === "tvdb" ? tvdbSourceError(source.lastError) : source.lastError}
               </p>
             ))}
           </div>
@@ -172,7 +173,11 @@ export function TitlesComeFrom({
                     <span className="block font-medium">{sourceName(source)}</span>
                     <span className="block text-sm text-fg-muted">{sourceOwner(source)}</span>
                     {source.lastError ? (
-                      <span className="block text-sm text-danger">{source.lastError}</span>
+                      <span className="block text-sm text-danger">
+                        {source.id === "tvdb"
+                          ? tvdbSourceError(source.lastError)
+                          : source.lastError}
+                      </span>
                     ) : null}
                   </span>
                 </label>

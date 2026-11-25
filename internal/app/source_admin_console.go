@@ -76,6 +76,7 @@ func (a *App) remoteSourceAdminDeps(d *admin.Deps) {
 		if kind == "debrid" {
 			operation = sourceadmin.SpeedDebrid
 		}
+		playing, _ := a.providerSpeedPlayback()
 		response, err := a.callSourceAdmin(ctx, sourceadmin.Request{Operation: operation, ResourceID: id})
 		if err != nil || response.Speed == nil {
 			return speedtest.Result{Status: "unavailable"}
@@ -83,10 +84,13 @@ func (a *App) remoteSourceAdminDeps(d *admin.Deps) {
 		result := *response.Speed
 		// The source node measures delivery; this node observes playback.
 		if result.Status == "ok" {
+			if result.StreamsPlaying == 0 {
+				result.StreamsPlaying = playing
+			}
 			if typical, _ := a.playback.ProviderSpeedEvidence(); typical > 0 {
 				result.TypicalMbps = typical
-				a.saveSpeedResult(ctx, kind, id, result)
 			}
+			a.saveSpeedResult(ctx, kind, id, result)
 		}
 		return result
 	}

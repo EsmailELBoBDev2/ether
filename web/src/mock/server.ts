@@ -134,6 +134,7 @@ export interface FakeOptions {
   whatsNew?: boolean;
   /** Artificial latency for realism in the browser; 0 in tests. */
   latencyMs?: number;
+  fastUsenetSpeed?: boolean;
   /** Serve as a node of a three-node PostgreSQL cluster instead of a standalone server. */
   cluster?: boolean;
   /** Pin the server in a startup state (see mock/ops.ts), e.g. "migrating" or "failed:database_corrupt". */
@@ -3866,10 +3867,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
       ) {
         return json({ status: "unavailable" });
       }
-      const mbps = usenet ? 0.65 : 6.4;
+      const slow = usenet && !opts.fastUsenetSpeed;
+      const mbps = slow ? 0.65 : 6.4;
       const connections = usenet ? 4 : 1;
       return json({
         status: "ok",
+        at: new Date().toISOString(),
         seconds: 10,
         mbps,
         mbpsPerConnection: mbps / connections,
@@ -3878,8 +3881,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
         connections,
         opened: usenet ? 2 : 1,
         refused: 0,
-        misses: usenet ? 3 : 0,
-        spareOnly: usenet,
+        misses: slow ? 3 : 0,
+        spareOnly: slow,
+        streamsPlaying: slow ? 2 : 0,
       });
     }
 

@@ -20,6 +20,7 @@ type Result struct {
 	Opened            int       `json:"opened"`
 	Refused           int       `json:"refused"`
 	Misses            int       `json:"misses"`
+	StreamsPlaying    int       `json:"streamsPlaying,omitempty"`
 	SpareOnly         bool      `json:"spareOnly"`
 }
 

@@ -1,4 +1,9 @@
-import { ProviderSpeedButton, ProviderSpeedReport, useProviderSpeed } from "./provider-speed";
+import {
+  providerSpeedMetric,
+  ProviderSpeedButton,
+  ProviderSpeedReport,
+  useProviderSpeed,
+} from "./provider-speed";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { formatThroughput } from "../../lib/format";
 import { t, tn, tx } from "../../i18n";
@@ -484,9 +489,17 @@ export function DebridSources({
                     value: selectedStatus?.latency?.throughputBps
                       ? formatThroughput(selectedStatus.latency.throughputBps)
                       : "—",
+                    ...providerSpeedMetric(speedTest.measurement),
                   },
                 ]}
               />
+              {(speedTest.running || speedTest.result) && (
+                <ProviderSpeedReport
+                  kind="debrid"
+                  result={speedTest.result}
+                  running={speedTest.running}
+                />
+              )}
             </div>
           ) : null
         }
@@ -505,11 +518,6 @@ export function DebridSources({
         tools={
           draft ? (
             <>
-              <ProviderSpeedReport
-                kind="debrid"
-                result={speedTest.result}
-                running={speedTest.running}
-              />
               <TestButton
                 state={tests[draft.id] ?? { status: "idle" }}
                 onTest={() => runTest(draft.id, () => api.testDebrid(draft))}

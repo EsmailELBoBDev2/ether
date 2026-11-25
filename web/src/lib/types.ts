@@ -808,6 +808,7 @@ export interface Bootstrap {
 }
 export interface ProviderSpeedResult {
   status: string;
+  at?: string;
   seconds?: number;
   mbps?: number;
   mbpsPerConnection?: number;
@@ -818,6 +819,7 @@ export interface ProviderSpeedResult {
   refused?: number;
   misses?: number;
   spareOnly?: boolean;
+  streamsPlaying?: number;
 }
 
 export interface TestResult {

@@ -1,4 +1,9 @@
-import { ProviderSpeedButton, ProviderSpeedReport, useProviderSpeed } from "./provider-speed";
+import {
+  providerSpeedMetric,
+  ProviderSpeedButton,
+  ProviderSpeedReport,
+  useProviderSpeed,
+} from "./provider-speed";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { t, tn } from "../../i18n";
 import {
@@ -471,9 +476,17 @@ export function UsenetProviders({
                     key: "speed",
                     label: t("Speed"),
                     value: speed === null ? "—" : formatThroughput(speed),
+                    ...providerSpeedMetric(speedTest.measurement),
                   },
                 ]}
               />
+              {(speedTest.running || speedTest.result) && (
+                <ProviderSpeedReport
+                  kind="usenet"
+                  result={speedTest.result}
+                  running={speedTest.running}
+                />
+              )}
             </div>
           ) : null
         }
@@ -492,11 +505,6 @@ export function UsenetProviders({
         tools={
           draft ? (
             <>
-              <ProviderSpeedReport
-                kind="usenet"
-                result={speedTest.result}
-                running={speedTest.running}
-              />
               <TestButton
                 state={tests[draft.id] ?? { status: "idle" }}
                 onTest={() => runTest(draft.id, () => api.testUsenet(draft))}

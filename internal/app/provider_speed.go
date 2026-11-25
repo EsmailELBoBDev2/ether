@@ -49,16 +49,7 @@ func (a *App) testProviderSpeed(ctx context.Context, kind, id string) speedtest.
 	defer a.providerSpeedRuns.Delete(key)
 	ctx, cancel := context.WithTimeout(ctx, 16*time.Second)
 	defer cancel()
-	active := false
-	if a.playback != nil {
-		for _, s := range a.playback.Sessions() {
-			state := core.PlaySessionLiveness(s)
-			if !s.PreparedOnly && (state == core.SessionLivenessPlaying || state == core.SessionLivenessStarting) {
-				active = true
-				break
-			}
-		}
-	}
+	playing, active := a.providerSpeedPlayback()
 	switch kind {
 	case "usenet":
 		r = a.testUsenetSpeed(ctx, id, active)
@@ -68,6 +59,7 @@ func (a *App) testProviderSpeed(ctx context.Context, kind, id string) speedtest.
 		}
 	}
 	r.At = time.Now().UTC()
+	r.StreamsPlaying = playing
 	if r.Status == "ok" {
 		r.TypicalMbps, _ = a.playback.ProviderSpeedEvidence()
 	}
@@ -77,6 +69,26 @@ func (a *App) testProviderSpeed(ctx context.Context, kind, id string) speedtest.
 		a.saveSpeedResult(ctx, kind, id, r)
 	}
 	return r
+}
+
+// providerSpeedPlayback samples current playback before provider I/O begins.
+func (a *App) providerSpeedPlayback() (playing int, active bool) {
+	if a.playback == nil {
+		return 0, false
+	}
+	for _, s := range a.playback.Sessions() {
+		if s.PreparedOnly {
+			continue
+		}
+		switch core.PlaySessionLiveness(s) {
+		case core.SessionLivenessPlaying:
+			playing++
+			active = true
+		case core.SessionLivenessStarting:
+			active = true
+		}
+	}
+	return playing, active
 }
 
 func (a *App) testUsenetSpeed(ctx context.Context, id string, active bool) speedtest.Result {

@@ -71,7 +71,12 @@ type warmEntry struct {
 	runtime       time.Duration // title runtime, for size rules without a probe
 	res           *core.Resolution
 	sourceReady   bool // mu; a warm source is resolved before its probe completes
-	probe         *probeCache
+	// sourced is closed when sourceReady is first set, so a play-intent
+	// wait can tell a source search (never waited on) from a probe of a
+	// known source (bounded wait). nil on entries made elsewhere.
+	sourced  chan struct{}
+	sourceDo sync.Once
+	probe    *probeCache
 	// originalAudio is set when the warmed profile compares audio with
 	// the catalogue language. originalLanguage is the Title.Language
 	// that Resolve saw. A later catalogue correction must not reuse it.
@@ -110,6 +115,15 @@ func (e *warmEntry) markPromoted() {
 			close(e.promoted)
 		}
 	})
+}
+
+// markSourced records that the warm-up has a source and only its probe
+// (or opening) remains.
+func (e *warmEntry) markSourced() {
+	if e == nil || e.sourced == nil {
+		return
+	}
+	e.sourceDo.Do(func() { close(e.sourced) })
 }
 
 func (e *warmEntry) isPromoted() bool {
@@ -288,11 +302,18 @@ const defaultProbeMetadataWait = 1500 * time.Millisecond
 const maxProbeMetadataWait = 4 * time.Second
 
 // maxPlayProbeMetadataWait caps the bounded wait for explicit play-intent
-// metadata re-asks (such as Plezy's first play), where a cold remux resolve
-// can exceed the 4 s browsing allowance. Moving that wait onto the metadata
-// re-ask costs no time to first frame because the following stream request
-// adopts the same warm entry.
-const maxPlayProbeMetadataWait = 12 * time.Second
+// metadata reads (POST /playQueues, pre-play /library/metadata, Plezy's
+// first play) once the source is known: only its probe remains. It matches
+// the browsing cap; no client request is held longer for a probe.
+const maxPlayProbeMetadataWait = maxProbeMetadataWait
+
+// playProbeSearchWait is the longest a play-intent metadata read waits while
+// the source is still being searched. A search can take tens of seconds on
+// slow indexers; the queue or metadata response goes out with estimated
+// tracks instead, and the playback decision and stream requests, which wait
+// on the same flight, carry the probed ones. A search answered from cache
+// finds its source well inside this bound.
+const playProbeSearchWait = time.Second
 
 // probeMetadataWait is how long ProbeMetadata holds the caller for the probe.
 // A caller that declares a deadline owns the allowance: Plex Android and iOS
@@ -348,6 +369,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 	}
 	budget := playProbeMetadataWait(ctx)
 	deadline := time.Now().Add(budget)
+	searchDeadline := time.Now().Add(min(budget, playProbeSearchWait))
 
 	for attempt := 0; attempt < 2; attempt++ {
 		now := m.now()
@@ -358,7 +380,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 		}
 		if pf := m.activeFlightLocked(id); pf != nil {
 			m.mu.Unlock()
-			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+			return m.waitActivePrepare(ctx, pf, searchDeadline, deadline, id, user, key, caps)
 		}
 		e := m.warm[id]
 		if e != nil && !now.Before(e.expires) {
@@ -403,7 +425,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 			m.mu.Unlock()
 			if e == nil {
 				if pf != nil {
-					return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+					return m.waitActivePrepare(ctx, pf, searchDeadline, deadline, id, user, key, caps)
 				}
 				if m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 					return nil
@@ -417,7 +439,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 			e.markPromoted()
 		}
 
-		if err := waitFlightDone(ctx, e.done, deadline); err != nil {
+		if err := waitPlayProbe(ctx, e.done, e.sourced, searchDeadline, deadline); err != nil {
 			if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 				return nil
 			}
@@ -431,7 +453,7 @@ func (m *Manager) ProbePlayMetadata(ctx context.Context, user *core.User, key co
 		pf := m.activeFlightLocked(id)
 		m.mu.Unlock()
 		if pf != nil {
-			return m.waitActivePrepare(ctx, pf, deadline, id, user, key, caps)
+			return m.waitActivePrepare(ctx, pf, searchDeadline, deadline, id, user, key, caps)
 		}
 		if !wasSpeculative {
 			return core.ErrPrepareSlow
@@ -452,7 +474,17 @@ func (m *Manager) HasActivePrepare(user *core.User, key core.RatingKey, caps cor
 	return !m.closed && m.activeFlightLocked(id) != nil
 }
 
-func (m *Manager) waitActivePrepare(ctx context.Context, pf *flight, deadline time.Time, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+// waitActivePrepare joins a foreground Prepare. Prepare does not report
+// when its search ends, so the wait is the search bound unless this
+// viewer's warm entry already holds the source.
+func (m *Manager) waitActivePrepare(ctx context.Context, pf *flight, searchDeadline, deadline time.Time, id identity, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+	m.mu.Lock()
+	e := m.warm[id]
+	sourced := e != nil && (e.sourceReady || e.res != nil)
+	m.mu.Unlock()
+	if !sourced && searchDeadline.Before(deadline) {
+		deadline = searchDeadline
+	}
 	if err := waitFlightDone(ctx, pf.done, deadline); err != nil {
 		if errors.Is(err, core.ErrPrepareSlow) && m.hasExactPlayMetadata(ctx, id, user, key, caps) {
 			return nil
@@ -486,6 +518,38 @@ func (m *Manager) hasExactPlayMetadata(ctx context.Context, id identity, user *c
 		return true
 	}
 	return false
+}
+
+// waitPlayProbe waits for a play-intent warm-up: only until searchDeadline
+// while its source is still being searched, then until deadline for the
+// probe of the source it found.
+func waitPlayProbe(ctx context.Context, done, sourced <-chan struct{}, searchDeadline, deadline time.Time) error {
+	if deadline.Before(searchDeadline) {
+		searchDeadline = deadline
+	}
+	if sourced == nil {
+		return waitFlightDone(ctx, done, searchDeadline)
+	}
+	select {
+	case <-sourced:
+		return waitFlightDone(ctx, done, deadline)
+	default:
+	}
+	timer := time.NewTimer(time.Until(searchDeadline))
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-sourced:
+		return waitFlightDone(ctx, done, deadline)
+	case <-ctx.Done():
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return core.ErrPrepareSlow
+	case <-timer.C:
+		return core.ErrPrepareSlow
+	}
 }
 
 func waitFlightDone(ctx context.Context, done <-chan struct{}, deadline time.Time) error {
@@ -672,7 +736,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		fg = make(chan context.Context, 1)
 		promoted = make(chan struct{})
 	}
-	e := &warmEntry{offset: opts.StartOffset, profileKey: profileKey(profileObj), profileObj: profileObj, caps: caps, done: make(chan struct{}), opened: make(chan struct{}), foreground: fg, playProbe: playProbe, promoted: promoted, started: now, expires: now.Add(preResolveTTL)}
+	e := &warmEntry{offset: opts.StartOffset, profileKey: profileKey(profileObj), profileObj: profileObj, caps: caps, done: make(chan struct{}), opened: make(chan struct{}), sourced: make(chan struct{}), foreground: fg, playProbe: playProbe, promoted: promoted, started: now, expires: now.Add(preResolveTTL)}
 	m.warm[id] = e
 	u := *user
 	wallStarted := time.Now()
@@ -840,6 +904,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 			m.mu.Lock()
 			e.sourceReady = true
 			m.mu.Unlock()
+			e.markSourced()
 			if len(res.NZB) > 0 {
 				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
 			}

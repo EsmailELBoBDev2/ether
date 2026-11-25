@@ -429,6 +429,7 @@
     {
       "id": "stremio-native-desktop",
       "role": "policy",
+      "class": "computer",
       "family": "Stremio desktop (mpv)",
       "preset": "image",
       "notes": "Stremio's desktop shell plays through mpv, which renders HDR and Dolby Vision itself and tone-maps for an SDR display. Profile 7 plays its HDR10 base.",
@@ -441,6 +442,7 @@
     {
       "id": "stremio-native-android",
       "role": "policy",
+      "class": "mobile",
       "family": "Stremio native player (Android)",
       "preset": "image",
       "notes": "Stremio Android, Android TV and Nuvio play through ExoPlayer, libVLC or libmpv. Dolby Vision depends on the device decoder, which Ether cannot see, so it is off by default; profile 7 and 8.1 play their HDR10 base.",
@@ -456,6 +458,7 @@
     {
       "id": "nuvio-ios",
       "role": "policy",
+      "class": "mobile",
       "family": "Nuvio (iOS)",
       "preset": "text",
       "notes": "Nuvio on iOS plays HDR10 natively; Dolby Vision stays off by default.",
@@ -468,6 +471,7 @@
     {
       "id": "pm4k",
       "role": "policy",
+      "class": "tv",
       "family": "Kodi",
       "preset": "image",
       "dolbyVisionProfiles": [5, 7, 8],
@@ -479,6 +483,7 @@
     {
       "id": "apple-tv",
       "role": "policy",
+      "class": "tv",
       "family": "Apple TV",
       "preset": "text",
       "notes": "Dolby Vision profile 7 uses a compatible HDR base layer; TrueHD requires an audio transcode unless declared supported.",
@@ -494,6 +499,7 @@
     {
       "id": "ios",
       "role": "policy",
+      "class": "mobile",
       "family": "iOS",
       "preset": "text",
       "dolbyVisionProfiles": [5, 8],
@@ -507,6 +513,7 @@
     {
       "id": "browser",
       "role": "policy",
+      "class": "computer",
       "family": "Plex Web",
       "preset": "text",
       "notes": "Browser codec declarations govern playback; text subtitles remain sidecars.",
@@ -523,6 +530,7 @@
     {
       "id": "shield",
       "role": "policy",
+      "class": "tv",
       "family": "Android TV (Shield)",
       "preset": "image",
       "dolbyVisionProfiles": [5, 8],
@@ -531,6 +539,7 @@
     {
       "id": "android",
       "role": "policy",
+      "class": "mobile",
       "family": "Android / Google TV",
       "preset": "text",
       "match": {
@@ -543,6 +552,7 @@
     {
       "id": "fire-tv",
       "role": "policy",
+      "class": "tv",
       "family": "Fire TV",
       "preset": "text",
       "match": {"field": "identity", "op": "contains", "value": "fire tv"}
@@ -550,6 +560,7 @@
     {
       "id": "roku",
       "role": "policy",
+      "class": "tv",
       "family": "Roku",
       "preset": "text",
       "match": {"field": "identity", "op": "contains", "value": "roku"}
@@ -557,6 +568,7 @@
     {
       "id": "webos",
       "role": "policy",
+      "class": "tv",
       "family": "LG webOS",
       "preset": "text",
       "match": {
@@ -569,6 +581,7 @@
     {
       "id": "tizen",
       "role": "policy",
+      "class": "tv",
       "family": "Samsung Tizen",
       "preset": "text",
       "match": {
@@ -581,6 +594,7 @@
     {
       "id": "console",
       "role": "policy",
+      "class": "tv",
       "family": "Console",
       "preset": "text",
       "match": {
@@ -593,6 +607,7 @@
     {
       "id": "htpc",
       "role": "policy",
+      "class": "computer",
       "family": "HTPC",
       "preset": "image",
       "dolbyVisionProfiles": [5, 7, 8],
@@ -616,6 +631,7 @@
     {
       "id": "stremio-native-desktop",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "dolbyVision": true,
       "match": {"all": [
@@ -626,6 +642,7 @@
     {
       "id": "stremio-native-android",
       "role": "playback",
+      "class": "mobile",
       "preset": "htpc",
       "audio": ["aac", "ac3", "eac3", "mp3", "flac", "opus", "vorbis", "pcm"],
       "match": {"all": [
@@ -639,6 +656,7 @@
     {
       "id": "nuvio-ios",
       "role": "playback",
+      "class": "mobile",
       "preset": "apple",
       "dolbyVision": false,
       "match": {"all": [
@@ -649,6 +667,7 @@
     {
       "id": "pm4k",
       "role": "playback",
+      "class": "tv",
       "preset": "htpc",
       "dolbyVision": true,
       "match": {"any": [
@@ -683,6 +702,7 @@
     {
       "id": "apple-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "apple",
       "match": {
         "any": [
@@ -698,6 +718,7 @@
     {
       "id": "browser-safari",
       "role": "playback",
+      "class": "computer",
       "preset": "browserSafari",
       "match": {
         "all": [
@@ -709,6 +730,7 @@
     {
       "id": "browser-edge",
       "role": "playback",
+      "class": "computer",
       "preset": "browserEdge",
       "match": {
         "all": [
@@ -720,6 +742,7 @@
     {
       "id": "browser-chrome",
       "role": "playback",
+      "class": "computer",
       "preset": "browserChrome",
       "match": {
         "all": [
@@ -737,6 +760,7 @@
     {
       "id": "browser-firefox",
       "role": "playback",
+      "class": "computer",
       "preset": "browserFirefox",
       "match": {
         "all": [
@@ -748,12 +772,14 @@
     {
       "id": "browser",
       "role": "playback",
+      "class": "computer",
       "preset": "browser",
       "match": {"field": "product", "op": "contains", "value": "plex web"}
     },
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -767,6 +793,7 @@
     {
       "id": "ios",
       "role": "playback",
+      "class": "mobile",
       "preset": "apple",
       "match": {
         "any": [
@@ -781,6 +808,7 @@
     {
       "id": "android-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "androidTV",
       "match": {
         "all": [
@@ -808,6 +836,7 @@
     {
       "id": "android",
       "role": "playback",
+      "class": "mobile",
       "preset": "android",
       "match": {
         "any": [
@@ -819,6 +848,7 @@
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -830,6 +860,7 @@
     {
       "id": "roku",
       "role": "playback",
+      "class": "tv",
       "preset": "roku",
       "match": {
         "any": [
@@ -841,6 +872,7 @@
     {
       "id": "htpc",
       "role": "playback",
+      "class": "computer",
       "preset": "htpc",
       "match": {
         "any": [
@@ -860,6 +892,7 @@
     {
       "id": "smart-tv",
       "role": "playback",
+      "class": "tv",
       "preset": "smartTV",
       "match": {
         "any": [
@@ -877,24 +910,28 @@
     {
       "id": "browser-safari",
       "role": "playback",
+      "class": "computer",
       "preset": "browserSafari",
       "match": {"field": "platform", "op": "contains", "value": "safari"}
     },
     {
       "id": "browser-edge",
       "role": "playback",
+      "class": "computer",
       "preset": "browserEdge",
       "match": {"field": "platform", "op": "contains", "value": "edge"}
     },
     {
       "id": "browser-chrome",
       "role": "playback",
+      "class": "computer",
       "preset": "browserChrome",
       "match": {"field": "platform", "op": "contains", "value": "chrome"}
     },
     {
       "id": "browser-firefox",
       "role": "playback",
+      "class": "computer",
       "preset": "browserFirefox",
       "match": {"field": "platform", "op": "contains", "value": "firefox"}
     },

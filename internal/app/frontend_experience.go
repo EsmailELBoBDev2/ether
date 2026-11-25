@@ -455,7 +455,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
-				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title)
+				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title, a.membershipFor(ctx, title))
 			}
 			resumedInfo, resumedRel, resumedSelector, hasResumed = a.playback.ResumedVersion(ctx, u, title.Key, caps)
 			info := resumedInfo
@@ -489,7 +489,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				caps = playbackFloor(caps, overrides)
 			}
 			if a.cfg != nil {
-				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title)
+				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title, a.membershipFor(ctx, title))
 			}
 			versions, err := scorecardVariants(ctx, a, u, title, caps)
 			if err != nil {

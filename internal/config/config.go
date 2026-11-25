@@ -566,18 +566,30 @@ type Resolver struct {
 }
 
 type Quality struct {
-	// Profiles by name. Rules pick a profile per client.
+	// Profiles say how to rank releases. A profile does nothing until a
+	// rule or a default uses it.
 	Profiles []core.QualityProfile `json:"profiles"`
-	Rules    []QualityRule         `json:"rules"`
-	// Default and Remote are the media-neutral fallbacks. A media-specific
-	// value, when set, wins for that media; legacy configs keep working.
-	Default      string      `json:"default"`
-	Remote       string      `json:"remote"` // profile for remote clients, "" = same as default
-	DefaultMovie string      `json:"defaultMovie,omitempty"`
-	DefaultTV    string      `json:"defaultTv,omitempty"`
-	RemoteMovie  string      `json:"remoteMovie,omitempty"`
-	RemoteTV     string      `json:"remoteTv,omitempty"`
-	Sync         QualitySync `json:"sync,omitempty"`
+	// Rules is the one ordered list that decides who gets which profile:
+	// the first matching rule that names a profile picks it, and every
+	// matching rule's limits apply (the strictest wins).
+	Rules []QualityRule `json:"rules"`
+	// Default is the profile when no rule names one; DefaultAway is the
+	// one for viewers away from home, "" = same as Default.
+	Default     string `json:"default"`
+	DefaultAway string `json:"defaultAway,omitempty"`
+	// Databases are the owner's custom Profilarr-format databases.
+	Databases []ProfileDatabase `json:"databases,omitempty"`
+	Sync      QualitySync       `json:"sync,omitempty"`
+	// MigratedRules marks the one-time move of the v0.3.20 mapping
+	// (per-media defaults, library profiles, remote and viewer caps) into
+	// rules as done, so cluster peers do not repeat it.
+	MigratedRules int `json:"migratedRules,omitempty"`
+	// RulesMigration is the v0.3.20 mapping config load could not finish
+	// alone (it needs the libraries and viewers); the app applies it once
+	// at startup and clears it. Delete with the migration.
+	RulesMigration *RulesMigration `json:"rulesMigration,omitempty"`
+	// RulesMigrationNote is shown once on the Rules page after the move.
+	RulesMigrationNote bool `json:"rulesMigrationNote,omitempty"`
 }
 
 // QualitySync keeps imported profiles and their format definitions aligned
@@ -589,17 +601,76 @@ type QualitySync struct {
 	LastError string    `json:"lastError,omitempty"`
 }
 
-// QualityRule selects a profile when all non-empty matchers match.
+// Rule conditions.
+const (
+	WhereHome = "home"
+	WhereAway = "away"
+
+	KindMovie   = "movie"
+	KindEpisode = "episode"
+)
+
+// QualityRule is one row of the ordered rule list. Every condition is
+// optional: an empty list means any, and Except inverts its list.
 type QualityRule struct {
-	Protocol core.Protocol `json:"protocol,omitempty"`
-	Product  string        `json:"product,omitempty"`  // substring of X-Plex-Product
-	Platform string        `json:"platform,omitempty"` // substring of X-Plex-Platform
-	UserID   int64         `json:"userId,omitempty"`
-	// MediaType scopes the rule to movies or shows; empty matches both.
-	MediaType            string `json:"mediaType,omitempty"`
-	Profile              string `json:"profile"`
-	MaxHeight            int    `json:"maxHeight,omitempty"`            // optional max-height override (2160, 1080, 720, 480; 0 = profile ceiling)
-	ConvertSurroundAudio bool   `json:"convertSurroundAudio,omitempty"` // convert Dolby/DTS/TrueHD audio to AAC for players that do not decode surround formats
+	ID   string `json:"id"`             // stable; assigned by the server
+	Name string `json:"name,omitempty"` // optional; otherwise the console shows a summary
+
+	Libraries       []int64       `json:"libraries,omitempty"`
+	ExceptLibraries bool          `json:"exceptLibraries,omitempty"`
+	Viewers         []int64       `json:"viewers,omitempty"`
+	ExceptViewers   bool          `json:"exceptViewers,omitempty"`
+	Devices         []DeviceMatch `json:"devices,omitempty"`
+	ExceptDevices   bool          `json:"exceptDevices,omitempty"`
+	Where           string        `json:"where,omitempty"` // "" | "home" | "away"
+	Kind            string        `json:"kind,omitempty"`  // "" | "movie" | "episode"
+
+	Profile        string `json:"profile,omitempty"`        // "" = no change (limits only)
+	MaxHeight      int    `json:"maxHeight,omitempty"`      // lowers only
+	MaxBitrateKbps int    `json:"maxBitrateKbps,omitempty"` // lowers only
+	StereoAudio    bool   `json:"stereoAudio,omitempty"`
+}
+
+// HasLimits reports whether the rule sets any limit.
+func (r QualityRule) HasLimits() bool {
+	return r.MaxHeight > 0 || r.MaxBitrateKbps > 0 || r.StereoAudio
+}
+
+// DeviceMatch is one device condition; exactly one of Group, Type, App,
+// Client and Contains is set. The values are the opaque ids GET
+// /api/quality/devices returns.
+type DeviceMatch struct {
+	Group    string `json:"group,omitempty"`    // "tv" | "mobile" | "computer"
+	Type     string `json:"type,omitempty"`     // registry device name: "Apple TV"
+	App      string `json:"app,omitempty"`      // "<protocol>:<registry app name>"
+	Client   string `json:"client,omitempty"`   // one exact device's client identifier
+	Contains string `json:"contains,omitempty"` // product or platform contains (migration, power users)
+	Label    string `json:"label,omitempty"`    // name shown to the owner, captured when picked
+}
+
+// Field returns the one set field and its value.
+func (d DeviceMatch) Field() (string, string) {
+	switch {
+	case d.Group != "":
+		return "group", d.Group
+	case d.Type != "":
+		return "type", d.Type
+	case d.App != "":
+		return "app", d.App
+	case d.Client != "":
+		return "client", d.Client
+	case d.Contains != "":
+		return "contains", d.Contains
+	}
+	return "", ""
+}
+
+// ProfileDatabase is a custom Profilarr-format Git database.
+type ProfileDatabase struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Repo   string `json:"repo"`             // https://github.com/<owner>/<repo>
+	Branch string `json:"branch,omitempty"` // default "v2"
 }
 
 // ClientCompatibility stores owner edits of the capability registry.
@@ -1033,7 +1104,7 @@ func Open(dataDir string) (*Store, error) {
 		if s.cfg, dropped, err = decodeStartupConfig(s.cfg, plain); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", s.path, err)
 		}
-		upgraded := upgradeShippedQuality(&s.cfg)
+		upgraded := false
 		if notes := normalizeQuality(&s.cfg.Quality); len(notes) > 0 {
 			upgraded = true
 			slog.Info("config: settled quality profiles", "changes", notes)
@@ -1050,7 +1121,6 @@ func Open(dataDir string) (*Store, error) {
 			}
 		}
 	case os.IsNotExist(err):
-		freshInstallQuality(&s.cfg.Quality)
 		if err := s.save(); err != nil {
 			return nil, err
 		}
@@ -1191,6 +1261,10 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 	}
 	if resetPreStandardQuality(file) {
 		dropped = true
+	}
+	if notes := normalizeSharedDocument(file); len(notes) > 0 {
+		dropped = true
+		slog.Info("config: settled quality profiles", "changes", notes)
 	}
 	if upgradeClientIdentity(file) {
 		dropped = true

@@ -78,6 +78,7 @@ func (s *Service) ConsoleHandler(deps ConsoleDeps) http.Handler {
 	h := &consoleAPI{s: s, deps: deps}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /profiles", h.profiles)
+	mux.HandleFunc("GET /presets", h.presets)
 	mux.HandleFunc("POST /rules/preview", h.previewRules)
 	mux.HandleFunc("GET /search", h.search)
 	mux.HandleFunc("GET /season", h.season)
@@ -95,6 +96,7 @@ func (s *Service) ConsoleHandler(deps ConsoleDeps) http.Handler {
 	mux.HandleFunc("GET /history/{id}", h.historyEntry)
 	mux.HandleFunc("GET /trash/{app}/profiles", h.trashProfiles)
 	mux.HandleFunc("GET /dictionarry/{app}/profiles", h.dictionarryProfiles)
+	mux.HandleFunc("POST /quality-databases/check", h.checkQualityDatabase)
 	mux.HandleFunc("POST /quality-import/preview", h.previewImport)
 	mux.HandleFunc("POST /quality-import", h.applyImport)
 	mux.HandleFunc("POST /quality/sync", h.syncQuality)
@@ -202,7 +204,7 @@ func pageParams(r *http.Request) (limit, offset int) {
 }
 
 func (h *consoleAPI) profiles(w http.ResponseWriter, r *http.Request) {
-	def, names := h.s.ConsoleProfilesFor(r.URL.Query().Get("media"))
+	def, names := h.s.ConsoleProfiles()
 	if names == nil {
 		names = []string{}
 	}

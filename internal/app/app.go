@@ -210,7 +210,8 @@ type App struct {
 	draining atomic.Bool
 
 	tmdb      *tmdb.Client
-	libraries *libraries.Service
+	libraries   *libraries.Service
+	libProfiles *libraryProfiles
 	catalog   *catalog.Catalog
 	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
 	titleRefresh     *titleRefresher

@@ -602,12 +602,8 @@ func (c *librariesConsole) handler() http.Handler {
 		}
 		if body.QualityProfile != nil {
 			name := strings.TrimSpace(*body.QualityProfile)
-			media := core.MediaMovie
-			if lib.MediaType == core.TypeShow {
-				media = core.MediaTV
-			}
 			if name != "" {
-				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name, media)
+				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name)
 				if lib.Source == core.LibraryPlugin || !valid {
 					libError(w, http.StatusBadRequest, "Could not update the quality profile")
 					return

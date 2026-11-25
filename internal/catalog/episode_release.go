@@ -116,66 +116,10 @@ func applyEpisodeRelease(ctx context.Context, tx *sql.Tx, key core.RatingKey) er
 	return err
 }
 
-// ResolveEpisode finds the stable identity at a coordinate in the effective
-// order. An explicit request may populate just that season's metadata.
-func (c *Catalog) ResolveEpisode(ctx context.Context, showKey core.RatingKey, season, episode int) (core.RatingKey, error) {
-	if showKey.Kind() != core.KindShow || season < 0 || episode < 0 {
-		return 0, core.ErrNotFound
-	}
-	show, err := c.StoredTitle(ctx, showKey)
-	if err != nil {
-		return 0, err
-	}
-	if show.Type != core.TypeShow {
-		return 0, core.ErrNotFound
-	}
-	showKey = show.Key
-	selected, err := c.effectiveEpisodeOrder(ctx, show)
-	if err != nil {
-		return 0, err
-	}
-	order := selected.Order
-	if !providerLayout(show, order) {
-		if !episodeKeyFits(season, episode) || show.IDs.TMDB <= 0 || show.IDs.TMDB >= 100_000_000 {
-			return 0, core.ErrNotFound
-		}
-		key := core.EpisodeKey(show.IDs.TMDB, season, episode)
-		if _, err := c.Get(ctx, key); err != nil {
-			return 0, err
-		}
-		return key, nil
-	}
-	seasons, err := c.ensureOrderManifest(ctx, show, order)
-	if err != nil {
-		return 0, err
-	}
-	for _, row := range seasons {
-		if row.Season == season {
-			if err := c.ensureOrderSeason(ctx, show, order, row); err != nil {
-				return 0, err
-			}
-			break
-		}
-	}
-	var key core.RatingKey
-	err = c.db.QueryRowContext(ctx, `SELECT episode_key FROM catalog_order_episodes
-		WHERE show_key=? AND provider=? AND order_kind=? AND season=? AND episode=?`, showKey, order.Source, order.Kind, season, episode).Scan(&key)
-	if err == nil {
-		return key, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	if season == 0 && order.Source != core.MetadataTMDB && show.IDs.TMDB > 0 {
-		layout, _, err := c.readEpisodeLayout(ctx, show, order)
-		if err != nil {
-			return 0, err
-		}
-		if coord, ok := layout.EpisodeAt(season, episode); ok {
-			return coord.Key, nil
-		}
-	}
-	return 0, core.ErrNotFound
+// ResolveEpisode resolves a frontend coordinate to its stable episode key.
+func (c *Catalog) ResolveEpisode(ctx context.Context, show core.RatingKey, season, episode int) (core.RatingKey, error) {
+	coordinate, err := c.ResolveEpisodeAt(ctx, show, season, episode)
+	return coordinate.Key, err
 }
 
 func (c *Catalog) releaseEpisodeRows(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {

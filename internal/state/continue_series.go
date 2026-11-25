@@ -125,11 +125,27 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 		}
 		return out[i].ID > out[j].ID
 	})
+	var allocatedKeys []core.RatingKey
+	for _, entry := range out {
+		if entry.Key.Allocated() {
+			allocatedKeys = append(allocatedKeys, entry.Key)
+		}
+	}
+	var parents map[core.RatingKey]Ancestry
+	if len(allocatedKeys) > 0 {
+		parents, err = s.resolveAncestry(ctx, allocatedKeys)
+		if err != nil {
+			return nil, err
+		}
+	}
 	seen := make(map[core.RatingKey]bool, len(out))
 	distinct := out[:0]
 	for _, entry := range out {
-		show := entry.Key.Parent().Parent()
-		if entry.Snapshot != nil && entry.Snapshot.ShowKey != 0 {
+		show := parents[entry.Key].ShowKey
+		if show == 0 {
+			show = entry.Key.Parent().Parent()
+		}
+		if show == 0 && entry.Snapshot != nil {
 			show = entry.Snapshot.ShowKey
 		}
 		if show == 0 {

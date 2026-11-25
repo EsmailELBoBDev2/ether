@@ -1581,9 +1581,7 @@ function ServiceOverview({
               )}
               status={
                 <>
-                  <Badge variant="secondary">
-                    {isStremio ? t("Stremio add-on") : t("Plugin")}
-                  </Badge>
+                  <Badge variant="secondary">{isStremio ? t("Stremio add-on") : t("Plugin")}</Badge>
                   <Badge variant="success">{t("On")}</Badge>
                 </>
               }

@@ -76,6 +76,7 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		keepExtrasMigrated := c.Extras.DefaultOnMigrated
 		keepMigratedRules := c.Quality.MigratedRules
 		keepPosterGen := c.Posters.Generation
+		preserveQualityMigration(&next.Quality, c.Quality)
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
@@ -101,6 +102,30 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 	}
 	h.log.Info("admin: config updated")
 	return nil, nil
+}
+
+// Provenance and the notice timestamp belong to the migration. Only the
+// dismissal can be changed by a config write.
+func preserveQualityMigration(next *config.Quality, current config.Quality) {
+	origins := make(map[string]*config.QualityRuleOrigin)
+	for _, rule := range current.Rules {
+		if rule.From != nil {
+			origins[rule.ID] = rule.From
+		}
+	}
+	for i := range next.Rules {
+		next.Rules[i].From = origins[next.Rules[i].ID]
+	}
+	requested := next.MigrationNote
+	next.MigrationNote = nil
+	if current.MigrationNote != nil {
+		note := *current.MigrationNote
+		if requested != nil && requested.At.Equal(note.At) && requested.Dismissed {
+			note.Dismissed = true
+		}
+		next.MigrationNote = &note
+		next.RulesMigrationNote = !note.Dismissed
+	}
 }
 
 func postersEqual(a, b config.Posters) bool {

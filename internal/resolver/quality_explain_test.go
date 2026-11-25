@@ -96,7 +96,7 @@ func TestExplainQualityAtHomeUsesDefaultProfile(t *testing.T) {
 	if a.Profile != "At home" || a.ProfileSource != ProfileFromDefault || a.MaxHeight != 2160 || !a.HDR || !a.DolbyVision || a.BitrateKbps != 0 || a.Blocked {
 		t.Fatalf("%+v", a)
 	}
-	if p := layer(t, a, LayerProfile); p.Source != ProfileFromDefault || p.Reason != "No rule matches, so the At home profile applies." {
+	if p := layer(t, a, LayerProfile); p.Source != ProfileFromDefault || p.Reason != "No rule picks a profile, so the At home profile applies." {
 		t.Fatalf("%+v", p)
 	}
 	if !sameKinds(decisive(a), LayerProfile) {

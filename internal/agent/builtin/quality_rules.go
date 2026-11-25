@@ -20,13 +20,15 @@ const qualityRulesUnavailable = "Quality rules are not available on this server.
 // QualityRulesSnapshot is the current quality mapping configuration plus the
 // referenced profiles, libraries and viewers needed to understand and edit rules.
 type QualityRulesSnapshot struct {
-	Default     string
-	DefaultAway string
-	Profiles    []string
-	Rules       []config.QualityRule
-	Libraries   []QualityLibraryRef
-	Viewers     []QualityViewerRef
-	Devices     *QualityDevicesRef
+	Default           string
+	DefaultAway       string
+	DefaultLimits     config.QualityLimits
+	DefaultAwayLimits config.QualityLimits
+	Profiles          []string
+	Rules             []config.QualityRule
+	Libraries         []QualityLibraryRef
+	Viewers           []QualityViewerRef
+	Devices           *QualityDevicesRef
 }
 
 // QualityLibraryRef is one library that a quality rule or explain call can target.
@@ -150,12 +152,14 @@ func qualityRulesListTool(d Deps) tools.Tool {
 				viewers = []QualityViewerRef{}
 			}
 			data := map[string]any{
-				"rules":       rules,
-				"default":     snap.Default,
-				"defaultAway": snap.DefaultAway,
-				"profiles":    profiles,
-				"libraries":   libraries,
-				"viewers":     viewers,
+				"rules":             rules,
+				"default":           snap.Default,
+				"defaultAway":       snap.DefaultAway,
+				"defaultLimits":     snap.DefaultLimits,
+				"defaultAwayLimits": snap.DefaultAwayLimits,
+				"profiles":          profiles,
+				"libraries":         libraries,
+				"viewers":           viewers,
 			}
 			if includeDevices && snap.Devices != nil {
 				data["devices"] = snap.Devices
@@ -630,137 +634,194 @@ func qualityRuleMoveTool(d Deps) tools.Tool {
 
 func qualityDefaultsSetTool(d Deps) tools.Tool {
 	return tool(tools.Tool{
-		Name: "quality_defaults_set", Title: "Change default quality profiles",
-		Description: "Propose changing the fallback quality profiles used when no rule picks a profile: default (at home and everything else) and/or defaultAway (away from home; pass \"\" to use the same profile as at home). Read quality_rules_list or quality_profiles first. Changes require owner approval.",
+		Name: "quality_defaults_set", Title: "Change default quality profiles and limits",
+		Description: "Propose changing the fallback profiles and limits used when no rule picks a profile. Pass an empty defaultAway to inherit both the home profile and home limits. Read quality_rules_list first. Changes require owner approval.",
 		InputSchema: schema(map[string]any{
-			"default":     pString("Default profile name for plays when no rule picks a profile", 80),
-			"defaultAway": pString("Away default profile name; pass \"\" to use the same profile as at home", 80),
+			"default":           pString("Home fallback profile name", 80),
+			"defaultAway":       pString("Away fallback profile name, or empty to inherit the home row", 80),
+			"defaultLimits":     qualityLimitsSchema("Home fallback limits"),
+			"defaultAwayLimits": qualityLimitsSchema("Away fallback limits"),
 		}),
 		Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
 			if d.QualityRules == nil {
 				return tools.Result{}, tools.Userf(qualityRulesUnavailable)
 			}
-			defVal, hasDef, err := str(in, "default")
-			if err != nil {
-				return tools.Result{}, err
-			}
-			if hasDef && len(defVal) > 80 {
-				return tools.Result{}, tools.Userf("default is too long (at most 80 characters)")
-			}
-			awayVal, hasAway, err := str(in, "defaultAway")
-			if err != nil {
-				return tools.Result{}, err
-			}
-			if hasAway && len(awayVal) > 80 {
-				return tools.Result{}, tools.Userf("defaultAway is too long (at most 80 characters)")
-			}
-			if !hasDef && !hasAway {
-				return tools.Result{}, tools.Userf("provide default, defaultAway, or both")
-			}
 			snap, err := d.QualityRules.QualityRules(ctx, false)
 			if err != nil {
 				return tools.Result{}, err
 			}
-			nextDef := snap.Default
-			if hasDef {
-				if defVal != "" {
-					defVal = canonicalProfileName(snap.Profiles, defVal)
-				}
-				nextDef = defVal
+			type fallbackEdit struct {
+				profile *string
+				limits  *config.QualityLimits
 			}
-			nextAway := snap.DefaultAway
-			if hasAway {
-				if awayVal != "" {
-					awayVal = canonicalProfileName(snap.Profiles, awayVal)
+			stored := map[string]any{}
+			var details []tools.ProposalDetail
+			route := "/releases/rules?default=home"
+			parse := func(key, label, inherit, current string, currentLimits config.QualityLimits) (fallbackEdit, error) {
+				var edit fallbackEdit
+				profile, provided, err := str(in, key)
+				if err != nil {
+					return edit, err
 				}
-				nextAway = awayVal
+				if provided {
+					if len(profile) > 80 {
+						return edit, tools.Userf("%s is too long (at most 80 characters)", key)
+					}
+					profile = canonicalProfileName(snap.Profiles, profile)
+					edit.profile = &profile
+					stored[key] = profile
+					if profile != current {
+						details = append(details, tools.ProposalDetail{
+							Label: label,
+							Value: fmt.Sprintf("%s → %s", displayDefault(current, inherit), displayDefault(profile, inherit)),
+						})
+					}
+				}
+				limitKey := key + "Limits"
+				if raw, provided := in[limitKey]; provided {
+					limits, err := qualityLimitsArg(limitKey, raw)
+					if err != nil {
+						return edit, err
+					}
+					edit.limits = &limits
+					stored[limitKey] = limits
+					if limits != currentLimits {
+						details = append(details, tools.ProposalDetail{
+							Label: label + " limits",
+							Value: fmt.Sprintf("%s → %s", describeQualityLimits(currentLimits), describeQualityLimits(limits)),
+						})
+					}
+				}
+				return edit, nil
+			}
+			home, err := parse("default", "Default (at home)", "None", snap.Default, snap.DefaultLimits)
+			if err != nil {
+				return tools.Result{}, err
+			}
+			homeChanged := len(details) > 0
+			away, err := parse("defaultAway", "Default away", "Same as at home", snap.DefaultAway, snap.DefaultAwayLimits)
+			if err != nil {
+				return tools.Result{}, err
+			}
+			if len(stored) == 0 {
+				return tools.Result{}, tools.Userf("provide default, defaultAway, defaultLimits or defaultAwayLimits")
 			}
 			setDefaults := func(q *config.Quality) error {
-				if hasDef {
-					if defVal != "" {
-						q.Default = canonicalProfileNameFromProfiles(q.Profiles, defVal)
-					} else {
-						q.Default = ""
-					}
+				if home.profile != nil {
+					q.Default = canonicalProfileNameFromProfiles(q.Profiles, *home.profile)
 				}
-				if hasAway {
-					if awayVal != "" {
-						q.DefaultAway = canonicalProfileNameFromProfiles(q.Profiles, awayVal)
-					} else {
-						q.DefaultAway = ""
-					}
+				if away.profile != nil {
+					q.DefaultAway = canonicalProfileNameFromProfiles(q.Profiles, *away.profile)
+				}
+				if home.limits != nil {
+					q.DefaultLimits = *home.limits
+				}
+				if away.limits != nil {
+					q.DefaultAwayLimits = *away.limits
 				}
 				return nil
 			}
 			if _, err := d.QualityRules.ValidateQuality(ctx, setDefaults); err != nil {
 				return tools.Result{}, err
 			}
-			if nextDef == snap.Default && nextAway == snap.DefaultAway {
+			result := func(q config.Quality, changed bool) tools.Result {
+				data := map[string]any{
+					"default":           q.Default,
+					"defaultAway":       q.DefaultAway,
+					"defaultLimits":     q.DefaultLimits,
+					"defaultAwayLimits": q.DefaultAwayLimits,
+				}
+				if changed {
+					data["updated"] = true
+				} else {
+					data["changed"] = false
+				}
 				return tools.Result{
-					Data: map[string]any{
-						"changed":     false,
-						"default":     snap.Default,
-						"defaultAway": snap.DefaultAway,
-					},
-					Links: []tools.Link{{Label: "Open quality rules", Route: "/releases/rules?default=home"}},
-				}, nil
-			}
-			storedInput := map[string]any{}
-			var details []tools.ProposalDetail
-			if hasDef {
-				storedInput["default"] = nextDef
-				if nextDef != snap.Default {
-					details = append(details, tools.ProposalDetail{
-						Label: "Default (at home)",
-						Value: fmt.Sprintf("%s → %s", displayDefault(snap.Default, "None"), displayDefault(nextDef, "None")),
-					})
+					Data:  data,
+					Links: []tools.Link{{Label: "Open quality rules", Route: route}},
 				}
 			}
-			if hasAway {
-				storedInput["defaultAway"] = nextAway
-				if nextAway != snap.DefaultAway {
-					details = append(details, tools.ProposalDetail{
-						Label: "Default away",
-						Value: fmt.Sprintf("%s → %s", displayDefault(snap.DefaultAway, "Same as at home"), displayDefault(nextAway, "Same as at home")),
-					})
-				}
+			if len(details) == 0 {
+				return result(config.Quality{
+					Default: snap.Default, DefaultAway: snap.DefaultAway,
+					DefaultLimits: snap.DefaultLimits, DefaultAwayLimits: snap.DefaultAwayLimits,
+				}, false), nil
 			}
-			route := "/releases/rules?default=home"
-			if !hasDef || nextDef == snap.Default {
+			if !homeChanged {
 				route = "/releases/rules?default=away"
 			}
-			desc := "Change default quality profiles."
-			if hasDef && nextDef != snap.Default && (!hasAway || nextAway == snap.DefaultAway) {
-				desc = fmt.Sprintf("Set the default quality profile to %s.", nextDef)
-			} else if hasAway && nextAway != snap.DefaultAway && (!hasDef || nextDef == snap.Default) {
-				if nextAway == "" {
-					desc = "Set the away default quality profile to match at home."
-				} else {
-					desc = fmt.Sprintf("Set the away default quality profile to %s.", nextAway)
-				}
-			}
 			return propose(
-				"Change default quality profiles",
-				desc,
+				"Change default quality profiles and limits",
+				"Change fallback playback settings used when no rule picks a profile.",
 				details,
-				storedInput,
+				stored,
 				func(applyCtx context.Context) (tools.Result, error) {
 					saved, err := d.QualityRules.UpdateQuality(applyCtx, setDefaults)
 					if err != nil {
 						return tools.Result{}, err
 					}
-					return tools.Result{
-						Data: map[string]any{
-							"updated":     true,
-							"default":     saved.Default,
-							"defaultAway": saved.DefaultAway,
-						},
-						Links: []tools.Link{{Label: "Open quality rules", Route: route}},
-					}, nil
+					return result(saved, true), nil
 				},
 			), nil
 		},
 	})
+}
+
+func qualityLimitsSchema(label string) map[string]any {
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"description": label + ". Replaces the row's limits. Pass {} to clear them.",
+		"properties": map[string]any{
+			"maxHeight":      map[string]any{"type": "integer", "enum": []int{0, 480, 720, 1080, 2160}},
+			"maxBitrateKbps": pInt("Maximum bitrate in kbps (0 leaves bitrate unchanged)", 0, 1000000),
+			"stereoAudio":    pBool("Convert surround audio to stereo"),
+		},
+	}
+}
+
+func qualityLimitsArg(key string, raw any) (config.QualityLimits, error) {
+	var limits config.QualityLimits
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return limits, tools.Userf("%s must be an object", key)
+	}
+	for field := range fields {
+		switch field {
+		case "maxHeight", "maxBitrateKbps", "stereoAudio":
+		default:
+			return limits, tools.Userf("%s.%s is not an allowed field", key, field)
+		}
+	}
+	height, err := intArg(fields, "maxHeight", 0, 0, 2160)
+	if err != nil {
+		return limits, tools.Userf("%s: %v", key, err)
+	}
+	bitrate, err := intArg(fields, "maxBitrateKbps", 0, 0, 1000000)
+	if err != nil {
+		return limits, tools.Userf("%s: %v", key, err)
+	}
+	stereo, err := boolArg(fields, "stereoAudio", false)
+	if err != nil {
+		return limits, tools.Userf("%s: %v", key, err)
+	}
+	return config.QualityLimits{MaxHeight: height, MaxBitrateKbps: bitrate, StereoAudio: stereo}, nil
+}
+
+func describeQualityLimits(limits config.QualityLimits) string {
+	var parts []string
+	if limits.MaxHeight > 0 {
+		parts = append(parts, fmt.Sprintf("up to %dp", limits.MaxHeight))
+	}
+	if limits.MaxBitrateKbps > 0 {
+		parts = append(parts, fmt.Sprintf("up to %d kbps", limits.MaxBitrateKbps))
+	}
+	if limits.StereoAudio {
+		parts = append(parts, "stereo audio")
+	}
+	if len(parts) == 0 {
+		return "No limits"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // --- schema and parsing helpers for quality rules ---

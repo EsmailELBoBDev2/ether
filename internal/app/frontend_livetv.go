@@ -854,3 +854,11 @@ func (s surfaceLiveTV) FindCatchUp(ctx context.Context, v *frontend.Viewer, req 
 	}
 	return h.FindCatchUp(s.withApp(ctx), viewer, req, liveTVClientCaps(caps), clientSession)
 }
+
+func (s surfaceLiveTV) LibraryCatchUpSession(access frontend.SessionAccess, id string) (frontend.CatchUpInfo, bool) {
+	h, ok := s.host().(frontend.CatchUpSessionReader)
+	if !ok {
+		return frontend.CatchUpInfo{}, false
+	}
+	return h.LibraryCatchUpSession(access, id)
+}

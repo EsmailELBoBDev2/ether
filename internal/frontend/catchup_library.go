@@ -73,3 +73,9 @@ type CatchUpArtworkReader interface {
 type CatchUpSessionFinder interface {
 	FindCatchUp(context.Context, *Viewer, CatchUpRequest, ClientCaps, string) (CatchUpInfo, bool)
 }
+
+// CatchUpSessionReader checks whether a session belongs to this protocol and
+// viewer. A nonempty device ID also requires the opening device to match.
+type CatchUpSessionReader interface {
+	LibraryCatchUpSession(SessionAccess, string) (CatchUpInfo, bool)
+}

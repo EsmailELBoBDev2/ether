@@ -266,6 +266,10 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
+	if frontend.IsCatchUpGUID(wireID) {
+		i.catchUpPlaybackInfo(w, r, v, credential, wireID, body, capability.Client)
+		return
+	}
 	scope := frontend.VersionScope{Viewer: v, Device: dev, Protocol: i.protocol, Caps: capability.Client}
 	versionFromItem := ""
 	if itemIDError != nil {
@@ -1220,6 +1224,9 @@ func (i *instance) playbackRoutes() error {
 				return err
 			}
 		}
+		if err := i.router.Handle(method, "/Videos/{id}/CatchUp/{session}/{file}", http.HandlerFunc(i.catchUpStream)); err != nil {
+			return err
+		}
 		if err := i.router.Handle(method, "/Videos/{id}/{name}", http.HandlerFunc(i.streamAlias)); err != nil {
 			return err
 		}
@@ -1330,6 +1337,9 @@ func (i *instance) timeline(w http.ResponseWriter, r *http.Request, stopped, sta
 	}
 	if body.PlaySessionId == "" && body.LiveStreamId != "" {
 		body.PlaySessionId = body.LiveStreamId
+	}
+	if i.catchUpTimeline(w, r, v, body, stopped) {
+		return
 	}
 	ticks, err := timelineTicks(body.PositionTicks)
 	if err != nil {

@@ -62,6 +62,20 @@ func catchUpLibraryItem(p Programme, kind frontend.MediaType) frontend.CatchUpIt
 
 func (h liveTVHost) CatchUpItem(ctx context.Context, u *frontend.Viewer, id string) (frontend.CatchUpItem, error) {
 	s := h.s
+	if key, start, ok := frontend.CatchUpGUIDAiring(id); ok {
+		_, snapshot, err := s.channelSnapshot(ctx)
+		if err != nil {
+			return frontend.CatchUpItem{}, err
+		}
+		snapshot.mu.Lock()
+		channel := snapshot.archiveIDs[key]
+		snapshot.mu.Unlock()
+		if channel == "" {
+			return frontend.CatchUpItem{}, core.ErrNotFound
+		}
+		id = frontend.CatchUpEpisodeID(fmt.Sprintf("%s-%d", channel, start.UnixMilli()))
+	}
+	_, groupKind := frontend.CatchUpGUIDGroup(id)
 	if req, ok := frontend.CatchUpEpisodeRequest(id); ok {
 		ctx, _, err := s.withPolicy(ctx, u)
 		if err != nil {
@@ -87,7 +101,7 @@ func (h liveTVHost) CatchUpItem(ctx context.Context, u *frontend.Viewer, id stri
 		}
 		return catchUpLibraryItem(p, frontend.TypeEpisode), nil
 	}
-	if !strings.HasPrefix(id, "catchup-show-") && !strings.HasPrefix(id, "catchup-season-") {
+	if groupKind == "" && !strings.HasPrefix(id, "catchup-show-") && !strings.HasPrefix(id, "catchup-season-") {
 		return frontend.CatchUpItem{}, core.ErrNotFound
 	}
 	page, err := h.catchUpItems(ctx, u, frontend.CatchUpQuery{Limit: 1}, id)
@@ -110,8 +124,10 @@ func (h liveTVHost) catchUpItems(ctx context.Context, u *core.User, q frontend.C
 	if err != nil || len(channels) == 0 {
 		return out, err
 	}
-	show := strings.HasPrefix(q.Parent, "catchup-show-")
-	season := strings.HasPrefix(q.Parent, "catchup-season-")
+	parent, parentKind := frontend.CatchUpGUIDGroup(q.Parent)
+	exactGUID, exactKind := frontend.CatchUpGUIDGroup(exact)
+	show := parentKind == frontend.TypeShow || strings.HasPrefix(q.Parent, "catchup-show-")
+	season := parentKind == frontend.TypeSeason || strings.HasPrefix(q.Parent, "catchup-season-")
 	if q.Parent != "" && q.Parent != frontend.CatchUpLibraryID && !show && !season {
 		return out, nil
 	}
@@ -119,7 +135,7 @@ func (h liveTVHost) catchUpItems(ctx context.Context, u *core.User, q frontend.C
 	switch {
 	case q.Recursive || season:
 		kind = frontend.TypeEpisode
-	case show || strings.HasPrefix(exact, "catchup-season-"):
+	case show || exactKind == frontend.TypeSeason || strings.HasPrefix(exact, "catchup-season-"):
 		kind = frontend.TypeSeason
 	}
 	limit := q.Limit
@@ -139,9 +155,9 @@ func (h liveTVHost) catchUpItems(ctx context.Context, u *core.User, q frontend.C
 		}
 		for _, p := range rows {
 			item := catchUpLibraryItem(p, kind)
-			if exact != "" && item.ID != exact ||
-				show && item.ShowID != q.Parent ||
-				season && item.SeasonID != q.Parent {
+			if exact != "" && item.ID != exact && (exactGUID == "" || frontend.CatchUpGroupGUID(item.ID) != exactGUID) ||
+				show && item.ShowID != q.Parent && (parent == "" || frontend.CatchUpGroupGUID(item.ShowID) != parent) ||
+				season && item.SeasonID != q.Parent && (parent == "" || frontend.CatchUpGroupGUID(item.SeasonID) != parent) {
 				continue
 			}
 			if kind != frontend.TypeEpisode {
@@ -263,4 +279,23 @@ func (h liveTVHost) FindCatchUp(ctx context.Context, viewer *frontend.Viewer, re
 	}
 	_, err := h.s.getSession(ctx, candidate.ID, viewer)
 	return candidate, err == nil
+}
+
+func (h liveTVHost) LibraryCatchUpSession(access frontend.SessionAccess, id string) (CatchUpInfo, bool) {
+	if access.Viewer == nil {
+		return CatchUpInfo{}, false
+	}
+	h.s.mu.Lock()
+	ss := h.s.sessions[id]
+	h.s.mu.Unlock()
+	if ss == nil {
+		return CatchUpInfo{}, false
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.closed || ss.catchUp == nil || ss.info.UserID != access.Viewer.ID || ss.caps.Protocol != access.Protocol ||
+		(access.Device.ID != "" && ss.caps.ClientID != access.Device.ID) {
+		return CatchUpInfo{}, false
+	}
+	return ss.catchUp.info, true
 }

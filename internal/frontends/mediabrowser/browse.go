@@ -303,6 +303,14 @@ func (i *instance) writeCollectionFolder(w http.ResponseWriter, r *http.Request,
 		i.writeUserRoot(w, r, v)
 		return
 	}
+	if viewNum == catchUpViewNumber {
+		if item, ok := i.catchUpView(r, v); ok {
+			jsonReply(w, item)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	if viewNum == collectionsViewNumber {
 		if folder, ok := i.collectionsFolder(r, v); ok {
 			i.replyItems(w, r, folder)
@@ -380,6 +388,9 @@ func (i *instance) browseRoutes() error {
 			if item, ok := i.collectionFolder(r, v, frontend.View{ID: ids.Decimal(liveTVViewNumber), Name: "Live TV", Type: "livetv"}); ok {
 				items = append(items, item)
 			}
+		}
+		if item, ok := i.catchUpView(r, v); ok {
+			items = append(items, item)
 		}
 		if folder, ok := i.collectionsFolder(r, v); ok {
 			items = append(items, folder)
@@ -571,6 +582,9 @@ func (i *instance) browseRoutes() error {
 			return
 		}
 		wireID := r.PathValue("id")
+		if i.catchUpDetail(w, r, v, token, wireID) {
+			return
+		}
 		if viewNum, e := ids.ParseGUID(ids.View, wireID); e == nil {
 			i.writeCollectionFolder(w, r, v, viewNum)
 			return
@@ -1145,9 +1159,12 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	i.replyItems(w, r, result)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.PathValue("id"), false) {
 		return
 	}
 	if i.host.Experience == nil {
@@ -1318,9 +1335,23 @@ hintsBuilt:
 }
 
 func (i *instance) items(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.URL.Query().Get("ParentId"), isCatchUpRecursive(r)) {
+		return
+	}
+	if itemIDs := route.Query(r.URL.Query(), "Ids"); len(itemIDs) == 1 && frontend.IsCatchUpGUID(itemIDs[0]) {
+		lib, ok := i.host.LiveTV.(frontend.CatchUpLibrary)
+		items := []any{}
+		if ok {
+			if item, err := lib.CatchUpItem(r.Context(), v, itemIDs[0]); err == nil {
+				items = append(items, i.catchUpDTO(r, item, token))
+			}
+		}
+		i.replyItems(w, r, i.queryResult(items, len(items), 0))
 		return
 	}
 	q := itemQuery(r)
@@ -1740,9 +1771,12 @@ func (i *instance) pluginSeason(r *http.Request, v *frontend.Viewer, show fronte
 }
 
 func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
-	v, _, err := i.viewer(r)
+	v, token, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.catchUpBrowse(w, r, v, token, r.PathValue("id"), true) {
 		return
 	}
 	if i.host.Experience == nil {

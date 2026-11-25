@@ -717,6 +717,13 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				appendRow(mh, view, true)
 			}
 		}
+		if sec.ID == firstSec {
+			if source, ok := s.recommender().(collectionCardHubSource); ok {
+				for _, h := range source.CollectionCardHubs(ctx, pr.User, pc, count) {
+					appendRow(s.renderCollectionCardHub(ctx, pr, h), h, false)
+				}
+			}
+		}
 		secRows = s.arrangeHomeRows(ctx, pr, pc, "home", secRows, layoutHubs, layoutNeutral)
 		out := make([]model.Hub, 0, len(secRows))
 		for _, mh := range secRows {
@@ -724,7 +731,9 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 				continue
 			}
 			oldID := mh.HubIdentifier
-			mh.HubIdentifier = libraryHubID(oldID, sec)
+			if mh.Type != "collection" {
+				mh.HubIdentifier = libraryHubID(oldID, sec)
+			}
 			if mh.HubIdentifier != "home.continue" && strings.EqualFold(mh.Style, "hero") {
 				mh.Style = "shelf"
 			}

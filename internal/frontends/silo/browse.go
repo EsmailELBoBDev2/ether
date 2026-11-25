@@ -415,6 +415,15 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		if row.Layout.Present.Surface != nil {
 			continue
 		}
+		if len(row.Entries) > 0 && row.Entries[0].Kind == frontend.RowEntryCollection {
+			views, err := i.host.Experience.Views(r.Context(), v)
+			if err != nil {
+				partial = true
+			} else if section := i.collectionSection(r, v, credential, row, views); section != nil {
+				sections = append(sections, section)
+			}
+			continue
+		}
 		var items []any
 		var e error
 		if row.Purpose == frontend.RowLive {
@@ -1264,13 +1273,13 @@ func (i *instance) homeCapabilities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
-	reply(w, 200, map[string]any{"state": "available", "allowed": true, "section_item_limit_max": 100})
+	reply(w, 200, map[string]any{"state": "available", "allowed": true, "section_item_limit_max": 100, "collection_rows": true})
 }
 func (i *instance) browseRoutes() error {
 	for _, entry := range []struct {
 		path string
 		h    http.HandlerFunc
-	}{{"/api/v2/home/capabilities", i.homeCapabilities}, {"/api/v2/user/libraries", i.views}, {"/api/v2/home/sections", i.sections}, {"/api/v2/library/{library}/sections", i.sections}, {"/api/v2/recommendations/discover", i.discover}, {"/api/v2/recommendations/similar/{id}", i.similar}, {"/api/v2/watch/{id}", i.detail}, {"/api/v2/catalog/items/{id}/versions", i.detail}, {"/api/v2/catalog/items/{id}", i.detail}} {
+	}{{"/api/v2/home/capabilities", i.homeCapabilities}, {"/api/v2/user/libraries", i.views}, {"/api/v2/home/sections", i.sections}, {"/api/v2/home/sections/{id}/items", i.homeSectionItems}, {"/api/v2/library/{library}/sections", i.sections}, {"/api/v2/recommendations/discover", i.discover}, {"/api/v2/recommendations/similar/{id}", i.similar}, {"/api/v2/watch/{id}", i.detail}, {"/api/v2/catalog/items/{id}/versions", i.detail}, {"/api/v2/catalog/items/{id}", i.detail}} {
 		if err := i.router.Handle("GET", entry.path, entry.h); err != nil {
 			return err
 		}

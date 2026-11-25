@@ -563,3 +563,26 @@ func (s *Service) tmdbCollectionPoster(ctx context.Context, sp core.CollectionSp
 	}
 	return ""
 }
+
+// FindCollectionCardKeys matches the start of a collection name using the
+// collection-card index. Stored IDs and match results use the same rating keys.
+func (s *Service) FindCollectionCardKeys(ctx context.Context, prefix string, limit int) ([]core.RatingKey, error) {
+	pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(prefix) + "%"
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM collections_specs
+		WHERE enabled=1 AND owner_user_id=0 AND json_extract(spec_json, '$.name') LIKE ? ESCAPE '\'
+		ORDER BY json_extract(spec_json, '$.name') COLLATE NOCASE, id LIMIT ?`, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []core.RatingKey
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		keys = append(keys, core.SmartKey(id))
+	}
+	return keys, rows.Err()
+}

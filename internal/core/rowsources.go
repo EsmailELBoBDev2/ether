@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // RowSourceInfo describes one row source the Recommendations designer
@@ -41,12 +42,16 @@ type RowSourceInfo struct {
 	Library LibraryID `json:"library,omitempty"`
 }
 
+const MaxCollectionCards = 50
+
 // Row parameter types.
 const (
-	ParamChoice     = "choice"     // one of Choices
-	ParamCount      = "count"      // an integer Min..Max
-	ParamFacetValue = "facetValue" // a value of the row library's Facet ("" = Ether picks)
-	ParamRef        = "ref"        // an id the console picks from a list (a collection, a shelf)
+	ParamChoice         = "choice"     // one of Choices
+	ParamCount          = "count"      // an integer Min..Max
+	ParamFacetValue     = "facetValue" // a value of the row library's Facet ("" = Ether picks)
+	ParamCollectionList = "collectionList"
+	ParamText           = "text"
+	ParamRef            = "ref" // an id the console picks from a list (a collection, a shelf)
 )
 
 // RowParam is one option of a source, drawn as a plain control.
@@ -96,6 +101,21 @@ func (s RowSourceInfo) ValidateParams(params map[string]string) error {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < p.Min || p.Max > 0 && n > p.Max {
 				return fmt.Errorf("%s: %s must be %d to %d", s.Title, p.Label, p.Min, p.Max)
+			}
+		case ParamCollectionList:
+			ids := strings.Split(v, ",")
+			if len(ids) > p.Max {
+				return fmt.Errorf("%s accepts up to %d collections", s.Title, p.Max)
+			}
+			for _, id := range ids {
+				key, err := ParseRatingKey(id)
+				if err != nil || key.Kind() != KindSmart || key.IsEphemeral() {
+					return fmt.Errorf("%s has an invalid collection", s.Title)
+				}
+			}
+		case ParamText:
+			if utf8.RuneCountInString(v) > p.Max || strings.ContainsAny(v, "\n\r") {
+				return fmt.Errorf("%s is not valid", p.Label)
 			}
 		case ParamFacetValue, ParamRef:
 			if len(v) > 200 || strings.ContainsAny(v, "\n\r") {

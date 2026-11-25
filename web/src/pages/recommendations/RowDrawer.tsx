@@ -4,6 +4,8 @@
 // draft, so the page behind it previews it as you go.
 import { Badge, Button, Input, Spinner, Switch, cn } from "@braedonsaunders/appkit-ui";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -32,6 +34,7 @@ import {
   daypartLabel,
   deviceLabel,
   fillLibrary,
+  hasCollectionCardSelection,
   hideWatchedLabel,
   holidayGroupLabel,
   holidays,
@@ -493,6 +496,87 @@ function FacetPicker({
   );
 }
 
+function CollectionOrder({
+  value,
+  source,
+  max,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  source: PageSource;
+  max: number;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const ids = value.split(",").filter(Boolean);
+  const refs = source.refs ?? [];
+  const names = new Map(refs.map((ref) => [ref.value, ref.label]));
+  const selected = new Set(ids);
+  const choices = refs.filter((ref) => !selected.has(ref.value));
+  const move = (index: number, direction: number) => {
+    const order = [...ids];
+    [order[index], order[index + direction]] = [order[index + direction]!, order[index]!];
+    onChange(order.join(","));
+  };
+  return (
+    <div className="space-y-2">
+      <ol className="space-y-1">
+        {ids.map((id, index) => {
+          const name = names.get(id) || t("Unavailable collection");
+          return (
+            <li
+              key={id}
+              className="flex items-center gap-1 rounded-lg border border-border px-2 py-1"
+            >
+              <span className="min-w-0 flex-1 truncate">{name}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={t("Move {name} up", { name })}
+                disabled={disabled || index === 0}
+                onClick={() => move(index, -1)}
+              >
+                <ArrowUp size={14} />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={t("Move {name} down", { name })}
+                disabled={disabled || index === ids.length - 1}
+                onClick={() => move(index, 1)}
+              >
+                <ArrowDown size={14} />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={t("Remove {name}", { name })}
+                disabled={disabled}
+                onClick={() => onChange(ids.filter((other) => other !== id).join(","))}
+              >
+                <X size={14} />
+              </Button>
+            </li>
+          );
+        })}
+      </ol>
+      {!disabled && choices.length > 0 && ids.length < max ? (
+        <ToolbarPicker
+          ariaLabel={t("Add a collection")}
+          value=""
+          onChange={(id) => id && onChange([...ids, id].join(","))}
+          searchable
+          options={[{ value: "", label: t("Add a collection") }, ...choices]}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function ParamControl({
   param,
   source,
@@ -508,6 +592,30 @@ function ParamControl({
   onChange: (v: string) => void;
   disabled?: boolean;
 }) {
+  if (param.type === "collectionList") {
+    return (
+      <CollectionOrder
+        value={value}
+        source={source}
+        max={param.max ?? 50}
+        onChange={onChange}
+        disabled={!!disabled}
+      />
+    );
+  }
+  if (param.type === "text") {
+    return (
+      <Line label={t("Collection name starts with")}>
+        <Input
+          aria-label={t("Collection name starts with")}
+          value={value}
+          maxLength={param.max}
+          disabled={disabled}
+          onChange={(e) => onChange(e.currentTarget.value)}
+        />
+      </Line>
+    );
+  }
   if (param.type === "facetValue") {
     return (
       <FacetPicker
@@ -927,7 +1035,10 @@ function LookSection({
   const usual = lookOf(source.look.style ?? "", source.look.card ?? "", listen);
   const current =
     look.style || look.card ? lookOf(look.style ?? "", look.card ?? "", listen) : usual;
-  const choices = [...(listen ? LISTEN_LOOKS : WATCH_LOOKS)];
+  const collectionCards = source.kind === "collection-cards";
+  const choices: LookKind[] = collectionCards
+    ? ["posters", "landscape"]
+    : [...(listen ? LISTEN_LOOKS : WATCH_LOOKS)];
   if (!choices.includes(current)) choices.push(current);
   const patch = (p: Partial<RowLook>) => {
     const next: RowLook = { ...look, ...p };
@@ -945,7 +1056,11 @@ function LookSection({
           aria-label={t("Look")}
           className={cn(
             "grid gap-2",
-            choices.length > 3 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3",
+            collectionCards
+              ? "grid-cols-2"
+              : choices.length > 3
+                ? "grid-cols-2 sm:grid-cols-4"
+                : "grid-cols-3",
           )}
         >
           {choices.map((k) => {
@@ -978,70 +1093,81 @@ function LookSection({
             );
           })}
         </div>
-        <p className="text-xs text-fg-muted">
-          {listen
-            ? t(
-                "Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own. Tiles and Track list are Vela's listening layouts.",
-              )
-            : t("Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own.")}
-        </p>
+        {!collectionCards ? (
+          <p className="text-xs text-fg-muted">
+            {listen
+              ? t(
+                  "Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own. Tiles and Track list are Vela's listening layouts.",
+                )
+              : t("Plex, Vela and Silo show these looks; Jellyfin and Emby keep their own.")}
+          </p>
+        ) : null}
       </div>
-      <Line
-        label={hideWatchedLabel(experience)}
-        hint={t("Leave out titles the viewer has finished. Every app honours it.")}
-      >
-        <Switch
-          aria-label={hideWatchedLabel(experience)}
-          checked={Boolean(look.hideWatched)}
-          onChange={(e) => patch({ hideWatched: e.currentTarget.checked })}
-        />
-      </Line>
-      <Line
-        label={t("Numbered")}
-        hint={t("Number the first ten, Top 10 style. Plex, Vela, Silo, Jellyfin and Emby show it.")}
-      >
-        <Segmented
-          ariaLabel={t("Numbered")}
-          size="sm"
-          value={triState(look.numbered)}
-          onChange={(v) => patch({ numbered: fromTri(v) })}
-          options={[
-            { value: "source", label: source.look.numbered ? t("Source (on)") : t("Source (off)") },
-            { value: "on", label: t("On") },
-            { value: "off", label: t("Off") },
-          ]}
-        />
-      </Line>
-      {experience === "watch" || experience === "" ? (
-        <Line
-          label={t("Trailer on focus")}
-          hint={t("Plays a trailer when the row is focused, where the app can.")}
-        >
-          <Segmented
-            ariaLabel={t("Trailer on focus")}
-            size="sm"
-            value={triState(look.trailer)}
-            onChange={(v) => patch({ trailer: fromTri(v) })}
-            options={[
-              { value: "source", label: t("Follow the source") },
-              { value: "on", label: t("On") },
-              { value: "off", label: t("Off") },
-            ]}
-          />
-        </Line>
+      {!collectionCards ? (
+        <>
+          <Line
+            label={hideWatchedLabel(experience)}
+            hint={t("Leave out titles the viewer has finished. Every app honours it.")}
+          >
+            <Switch
+              aria-label={hideWatchedLabel(experience)}
+              checked={Boolean(look.hideWatched)}
+              onChange={(e) => patch({ hideWatched: e.currentTarget.checked })}
+            />
+          </Line>
+          <Line
+            label={t("Numbered")}
+            hint={t(
+              "Number the first ten, Top 10 style. Plex, Vela, Silo, Jellyfin and Emby show it.",
+            )}
+          >
+            <Segmented
+              ariaLabel={t("Numbered")}
+              size="sm"
+              value={triState(look.numbered)}
+              onChange={(v) => patch({ numbered: fromTri(v) })}
+              options={[
+                {
+                  value: "source",
+                  label: source.look.numbered ? t("Source (on)") : t("Source (off)"),
+                },
+                { value: "on", label: t("On") },
+                { value: "off", label: t("Off") },
+              ]}
+            />
+          </Line>
+          {experience === "watch" || experience === "" ? (
+            <Line
+              label={t("Trailer on focus")}
+              hint={t("Plays a trailer when the row is focused, where the app can.")}
+            >
+              <Segmented
+                ariaLabel={t("Trailer on focus")}
+                size="sm"
+                value={triState(look.trailer)}
+                onChange={(v) => patch({ trailer: fromTri(v) })}
+                options={[
+                  { value: "source", label: t("Follow the source") },
+                  { value: "on", label: t("On") },
+                  { value: "off", label: t("Off") },
+                ]}
+              />
+            </Line>
+          ) : null}
+          <Line label={t("Titles other rows show")}>
+            <Segmented
+              ariaLabel={t("Titles other rows show")}
+              size="sm"
+              value={look.keepWhole ? "keep" : "skip"}
+              onChange={(v) => patch({ keepWhole: v === "keep" })}
+              options={[
+                { value: "skip", label: t("Skip them") },
+                { value: "keep", label: t("Keep this row whole") },
+              ]}
+            />
+          </Line>
+        </>
       ) : null}
-      <Line label={t("Titles other rows show")}>
-        <Segmented
-          ariaLabel={t("Titles other rows show")}
-          size="sm"
-          value={look.keepWhole ? "keep" : "skip"}
-          onChange={(v) => patch({ keepWhole: v === "keep" })}
-          options={[
-            { value: "skip", label: t("Skip them") },
-            { value: "keep", label: t("Keep this row whole") },
-          ]}
-        />
-      </Line>
     </Section>
   );
 }
@@ -1484,30 +1610,32 @@ function ContentTab({
   return (
     <div className="space-y-5">
       <p className="text-sm text-fg-muted">
-        {result.total === 0
-          ? t("Nothing for this viewer right now.")
-          : fanOut
-            ? capped
-              ? tn(
-                  result.total,
-                  "{count} title across {rows} rows · showing the first {limit} of each",
-                  "{count} titles across {rows} rows · showing the first {limit} of each",
-                  { rows: result.rows.length, limit: CONTENT_LIMIT },
-                )
-              : tn(
-                  result.total,
-                  "{count} title across {rows} rows",
-                  "{count} titles across {rows} rows",
-                  { rows: result.rows.length },
-                )
-            : capped
-              ? tn(
-                  result.total,
-                  "{count} title · showing the first {shown}",
-                  "{count} titles · showing the first {shown}",
-                  { shown },
-                )
-              : tn(result.total, "{count} title", "{count} titles")}
+        {result.total > 0 && source?.kind === "collection-cards"
+          ? tn(result.total, "{count} collection", "{count} collections")
+          : result.total === 0
+            ? t("Nothing for this viewer right now.")
+            : fanOut
+              ? capped
+                ? tn(
+                    result.total,
+                    "{count} title across {rows} rows · showing the first {limit} of each",
+                    "{count} titles across {rows} rows · showing the first {limit} of each",
+                    { rows: result.rows.length, limit: CONTENT_LIMIT },
+                  )
+                : tn(
+                    result.total,
+                    "{count} title across {rows} rows",
+                    "{count} titles across {rows} rows",
+                    { rows: result.rows.length },
+                  )
+              : capped
+                ? tn(
+                    result.total,
+                    "{count} title · showing the first {shown}",
+                    "{count} titles · showing the first {shown}",
+                    { shown },
+                  )
+                : tn(result.total, "{count} title", "{count} titles")}
       </p>
       {result.rows.map((r) => (
         <section key={r.hubId} className="space-y-2.5" aria-label={r.title}>
@@ -1521,7 +1649,7 @@ function ContentTab({
           ) : null}
           <RowGrid
             row={r}
-            showRating
+            showRating={source?.kind !== "collection-cards"}
             style={row.look.style}
             card={row.look.card}
             numbered={row.look.numbered ?? undefined}
@@ -1607,15 +1735,18 @@ export function RowDrawer({
       : sourceTitle;
   /** The add button names its effect. */
   const addLabel = t("Add to page");
-  const addNote = missing.length
-    ? t("Choose {param} first", { param: missing[0]!.label.toLowerCase() })
-    : row?.placement.mode === "pinned"
-      ? undefined
-      : row?.placement.mode === "hide"
-        ? t("Adds it hidden")
-        : row?.placement.mode === "auto"
-          ? t("Adds one row; Ether decides whether and where")
-          : t("Adds one row; Ether places it");
+  const needsCollection = row != null && !hasCollectionCardSelection(row);
+  const addNote = needsCollection
+    ? t("Add a collection")
+    : missing.length
+      ? t("Choose {param} first", { param: missing[0]!.label.toLowerCase() })
+      : row?.placement.mode === "pinned"
+        ? undefined
+        : row?.placement.mode === "hide"
+          ? t("Adds it hidden")
+          : row?.placement.mode === "auto"
+            ? t("Adds one row; Ether decides whether and where")
+            : t("Adds one row; Ether places it");
   const facetLibrary =
     ctx.library?.id ?? row?.scope.libraries?.[0] ?? source?.libraries?.[0] ?? null;
   const tab = (state && !picking ? state.tab : undefined) ?? "settings";
@@ -1685,7 +1816,10 @@ export function RowDrawer({
               <Button variant="ghost" onClick={onClose}>
                 {t("Cancel")}
               </Button>
-              <Button disabled={!row || picking || missing.length > 0} onClick={onAdd}>
+              <Button
+                disabled={!row || picking || needsCollection || missing.length > 0}
+                onClick={onAdd}
+              >
                 {addLabel}
               </Button>
             </div>
@@ -1777,7 +1911,11 @@ export function RowDrawer({
                 </Line>
                 {source
                   ? visibleParams
-                      .filter((p) => !p.more)
+                      .filter(
+                        (p) =>
+                          !p.more &&
+                          (p.type !== "collectionList" || !row.source.params?.match?.trim()),
+                      )
                       .map((p) => (
                         <ParamControl
                           key={p.key}
@@ -1797,6 +1935,11 @@ export function RowDrawer({
                   >
                     <Plus size={12} /> {t("New collection…")}
                   </Link>
+                ) : null}
+                {source?.kind === "collection-cards" && row.source.params?.match?.trim() ? (
+                  <p className="text-xs text-fg-muted">
+                    {t("Collections with matching names appear in alphabetical order.")}
+                  </p>
                 ) : null}
                 {source && visibleParams.some((p) => p.more) ? (
                   <details className="border-t border-border-subtle pt-3">
@@ -1837,7 +1980,7 @@ export function RowDrawer({
                   />
                 </Line>
               </Section>
-              {ctx.library === null && source ? (
+              {ctx.library === null && source && source.kind !== "collection-cards" ? (
                 <LibrariesSection
                   row={row}
                   source={source}

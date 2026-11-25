@@ -211,7 +211,20 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	source := experience.CandidateRowSource{Kind: a.personalize.SemanticRowKind, Load: func(ctx context.Context, req frontend.RowRequest) ([]experience.RankedCandidate, error) {
 		return a.productionExperienceRows(ctx, req, liveLibraries(), rowVis, stepAside)
 	}, Additional: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
-		return a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
+		rows, err := a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
+		if err != nil || req.Placement != frontend.PlacementHome || req.Purpose != "" && req.Purpose != frontend.RowCollection {
+			return rows, err
+		}
+		switch protocol {
+		case "plex", "jellyfin", "emby", "silo", "vela":
+			sit, ok := ctx.Value(experienceSituationKey{}).(core.HomeSituation)
+			if ok {
+				hubs := a.personalize.CollectionCardHubs(ctx, req.Viewer, candidateHubContext(sit), req.Limit)
+				cards, _ := rankedCandidates(hubs, nil)
+				rows = append(rows, experience.CandidateRows(cards)...)
+			}
+		}
+		return rows, nil
 	}}
 	var cols core.Collections
 	if a.collections != nil {

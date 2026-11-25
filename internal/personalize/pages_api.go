@@ -72,7 +72,11 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 		used[r.Source.Kind]++
 	}
 	out := core.PageSources{Sources: []core.PageSource{}, Libraries: libs}
+	var cardRefs []core.ParamOption
 	for _, sp := range e.collectionSpecs(ctx) {
+		if sp.OwnerUserID == 0 && sp.Enabled && sp.RatingKey != "" {
+			cardRefs = append(cardRefs, core.ParamOption{Value: sp.RatingKey, Label: sp.Name})
+		}
 		if sp.OwnerUserID == 0 {
 			out.Collections = append(out.Collections, core.CollectionRef{ID: sp.ID, Name: sp.Name, Count: sp.ItemCount})
 		}
@@ -110,6 +114,9 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 			ps.Unavailable = "No library here has what this row needs"
 		}
 		e.pluginSourceRefs(ctx, &ps, pageLibs)
+		if s.Kind == SourceCollectionCards {
+			ps.Refs = cardRefs
+		}
 		if s.Kind == SourceCollection {
 			// The picker lists each collection by its name.
 			for _, c := range out.Collections {

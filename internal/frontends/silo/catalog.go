@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
@@ -98,7 +99,27 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	var page frontend.Page
 	exact := true
 	more := false
-	if term := q.Get("q"); term != "" {
+	if collectionID := r.PathValue("collection_id"); collectionID != "" {
+		key, keyErr := ids.ParseRatingKeyGUID(collectionID)
+		view, viewErr := i.nativeID(r.Context(), "library", r.PathValue("id"))
+		if keyErr != nil || viewErr != nil || key.Kind() != core.KindSmart {
+			notFound(w)
+			return
+		}
+		detail, detailErr := i.host.Experience.Item(frontend.WithNoContainerExpand(r.Context()), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+		views, err := i.host.Experience.Views(r.Context(), v)
+		if detailErr != nil || err != nil || detail.Collection == nil || detail.Collection.OwnerUserID != 0 ||
+			collectionViewFor(detail.Collection.Type, views) != view {
+			notFound(w)
+			return
+		}
+		page, err = i.host.Experience.Children(r.Context(), v, device(r), key, query)
+		if err != nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
+		more = offset+len(page.Items) < page.Total
+	} else if term := q.Get("q"); term != "" {
 		scopedView := ""
 		if rawLib := q.Get("library_id"); rawLib != "" && rawLib != nowAvailableLibraryID {
 			view, e := i.nativeID(r.Context(), "library", rawLib)
@@ -398,7 +419,7 @@ func (i *instance) catalogRoutes() error {
 	for _, e := range []struct {
 		path string
 		h    http.HandlerFunc
-	}{{"/api/v2/catalog", i.catalog}, {"/api/v2/catalog/series/{id}/seasons", i.childItems}, {"/api/v2/catalog/series/{id}/seasons/{season}/episodes", i.childItems}} {
+	}{{"/api/v2/catalog", i.catalog}, {"/api/v2/library/{id}/collections/{collection_id}/items", i.catalog}, {"/api/v2/catalog/series/{id}/seasons", i.childItems}, {"/api/v2/catalog/series/{id}/seasons/{season}/episodes", i.childItems}} {
 		if err := i.router.Handle("GET", e.path, e.h); err != nil {
 			return err
 		}

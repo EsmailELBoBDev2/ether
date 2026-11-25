@@ -708,7 +708,18 @@ export const api = {
     }),
   resetPage: (key: PageKey) => apiFetch<PageDoc>(`${pagePath(key)}`, { method: "DELETE" }),
   pageSources: (key: PageKey, signal?: AbortSignal) =>
-    apiFetch<SourcesDoc>(`${pagePath(key)}/sources`, { signal }),
+    apiFetch<SourcesDoc>(`${pagePath(key)}/sources`, { signal }).then((doc) => ({
+      ...doc,
+      sources: doc.sources.map((source) =>
+        source.kind === "collection-cards"
+          ? {
+              ...source,
+              title: t("Collections"),
+              description: t("Show collections as clickable cards."),
+            }
+          : source,
+      ),
+    })),
   previewPage: (key: PageKey, body: PreviewRequest, signal?: AbortSignal) =>
     post<PagePreview>(`${pagePath(key)}/preview`, body, signal),
   previewPageRow: (

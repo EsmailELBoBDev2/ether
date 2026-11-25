@@ -70,6 +70,8 @@ CREATE TABLE collections_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');
 	store.Register("collections", 4, `UPDATE collections_specs SET build_hash='';`)
 	store.Register("collections", 6, `CREATE TABLE collections_air_dates (show_key INTEGER PRIMARY KEY, episode_ts INTEGER NOT NULL, premiere_ts INTEGER NOT NULL, fetched_at INTEGER NOT NULL, attempted_at INTEGER NOT NULL, failed INTEGER NOT NULL);`)
 	store.Register("collections", 7, repairNanoStampsSQL)
+	store.Register("collections", 10, `CREATE INDEX collections_card_name ON collections_specs
+		(json_extract(spec_json, '$.name') COLLATE NOCASE, id) WHERE enabled=1 AND owner_user_id=0;`)
 }
 
 // repairNanoStampsSQL converts stamps written in nanoseconds back to

@@ -1800,7 +1800,7 @@ func HomePurpose(h core.Hub) core.RowPurpose {
 		return "nextUp"
 	case strings.Contains(id, "watchlist"):
 		return "watchlist"
-	case h.Key != 0 || strings.Contains(id, "collection"):
+	case h.Type == "collection" || h.Key != 0 || strings.Contains(id, "collection"):
 		return "collection"
 	case strings.Contains(id, "recentlyreleased") || strings.Contains(id, "recently.released"):
 		return "recentlyReleased"

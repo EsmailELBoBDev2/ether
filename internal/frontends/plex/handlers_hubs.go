@@ -129,8 +129,11 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 }
 
 func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hubSpec, hc hubCtx, vis frontend.Visibility) model.Hub {
-	s.rememberHub(ctx, pr, hs, hc)
 	h := hs.Hub
+	if len(h.Collections) > 0 {
+		return s.renderCollectionCardHub(ctx, pr, h)
+	}
+	s.rememberHub(ctx, pr, hs, hc)
 	renderSec := hc.renderSec
 	if h.ID == "home.continue" || h.ID == "home.ondeck" || h.ID == "continueWatching" {
 		renderSec = nil
@@ -588,6 +591,9 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 		}
 	}
 	provisional := s.recommender() != nil && !hasRecommendedRows(hubs)
+	if source, ok := s.recommender().(collectionCardHubSource); ok {
+		hubs = append(hubs, source.CollectionCardHubs(ctx, pr.User, hc, count)...)
+	}
 	includeContinue := !metadataOptionOn(q.Get("excludeContinueWatching"))
 	hubs, ondeckHub, cwHomeSpec, cwHomeRendered := s.prepareHomeContinueAndOnDeck(ctx, pr, hc, hubs, selected, includeContinue, count)
 	assembly := frontend.HomeAssembly[model.Hub]{
@@ -965,6 +971,9 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 		count = 200
 	}
 	mc := hubContainer()
+	if s.writeCollectionCardPage(w, r, pr, id) {
+		return
+	}
 	rawDir := strings.TrimSpace(q.Get("contentDirectoryID"))
 	sections := parseSectionList(rawDir)
 	if rawDir != "" {

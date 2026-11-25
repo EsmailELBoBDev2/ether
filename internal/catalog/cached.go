@@ -567,7 +567,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		}
 	}
 	localShow := func(key core.RatingKey, st *storedTitle) bool {
-		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || c.tmdb() == nil || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
+		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || !c.TMDBConfigured() || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
 	}
 	missing := make([]core.RatingKey, 0, len(keys))
 	seen := make(map[core.RatingKey]bool, len(keys))
@@ -578,7 +578,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		seen[key] = true
 		if st, ok := c.cachedStoredEntry(key, gen, minute); ok && st.metaKnown {
 			if localShow(key, &st) {
-				if !c.fresh(&st) && c.tmdb() != nil {
+				if !c.fresh(&st) && c.TMDBConfigured() {
 					c.loadSeasonsLater(ctx, key.TMDB(), nil)
 					c.reportDetailPending(ctx, key)
 				}
@@ -628,7 +628,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		for _, key := range part {
 			st := stored[key]
 			if localShow(key, st) {
-				if !c.fresh(st) && c.tmdb() != nil {
+				if !c.fresh(st) && c.TMDBConfigured() {
 					c.loadSeasonsLater(ctx, key.TMDB(), nil)
 					c.reportDetailPending(ctx, key)
 				}

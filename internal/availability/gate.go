@@ -1089,7 +1089,7 @@ func (s *Service) seedDueChecks(ctx context.Context, cfg config.Availability) er
 	for _, t := range candidates {
 		if t.Type == core.TypeEpisode && t.Season > 0 && t.Episode > 0 && t.Released.After(now) && (watch[t.Key] || watch[t.ShowKey]) {
 			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
-			if s.isSeasonInProgress(ctx, sk, now, candidates, inProgressMemo) {
+			if !t.Key.Allocated() && s.isSeasonInProgress(ctx, sk, now, candidates, inProgressMemo) {
 				// Replace per-episode 72h-early probes inside an in-progress season
 				// with one season-level reveal check; keep 72h early for premieres.
 				revealSeasons[sk] = true

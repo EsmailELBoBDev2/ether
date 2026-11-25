@@ -681,8 +681,14 @@ func (c *Catalog) SetTMDB(client TMDB) {
 	}
 }
 
-// TMDBConfigured reports whether a remote TMDB client is attached.
-func (c *Catalog) TMDBConfigured() bool { return c.tmdb() != nil }
+// TMDBConfigured reports whether the registered source can make live requests.
+func (c *Catalog) TMDBConfigured() bool {
+	if c == nil || c.metadataSources == nil {
+		return false
+	}
+	source := c.metadataSources.Get(core.MetadataTMDB)
+	return source != nil && source.Configured()
+}
 
 func (c *Catalog) tmdb() TMDB {
 	if c == nil {

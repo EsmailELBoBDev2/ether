@@ -71,7 +71,7 @@ func (c *Catalog) CrowdRecommendations(ctx context.Context, key core.RatingKey, 
 		out, err := c.titlesByKeys(ctx, keys)
 		return out, false, err
 	}
-	if !fetch || c.tmdb() == nil {
+	if !fetch || !c.TMDBConfigured() {
 		if keys == nil {
 			return nil, false, nil
 		}

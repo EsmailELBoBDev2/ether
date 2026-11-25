@@ -403,7 +403,7 @@ func (c *Catalog) IncludeTitle(ctx context.Context, key core.RatingKey) (Browsab
 	}
 
 	needDetail := errors.Is(err, core.ErrNotFound) || !st.detail
-	if needDetail && c.tmdb() != nil {
+	if needDetail && c.TMDBConfigured() {
 		client := c.tmdb()
 		switch key.Kind() {
 		case core.KindMovie:
@@ -573,7 +573,7 @@ func (c *Catalog) RemoveInclude(ctx context.Context, key core.RatingKey) (Browsa
 	iv.Notify(strconv.FormatInt(int64(key), 10))
 
 	if st == nil {
-		if _, ok := c.summaryTitle(key); !ok && c.tmdb() == nil {
+		if _, ok := c.summaryTitle(key); !ok && !c.TMDBConfigured() {
 			return BrowsabilityStatus{}, core.ErrNotFound
 		}
 	}

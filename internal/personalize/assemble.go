@@ -33,6 +33,8 @@ type assembly struct {
 	day      int
 	intent   *intentSnapshot // live session intent (#32); nil = none
 
+	metadataRows func(string) bool
+
 	// Surfaces, dials and cross-surface dedupe (surfaces.go, tuning.go,
 	// homelead.go).
 	tune *tuning // the page's resolved dials; nil = defaults
@@ -588,6 +590,9 @@ func (a *assembly) typeOK(t *core.Title) bool {
 // them for the context and orders them (MMR-diversified unless the row's
 // order is meaningful).
 func (a *assembly) contextItems(c *candRow) []candItem {
+	if a.metadataRows != nil && !a.metadataRows(c.kind) {
+		return nil
+	}
 	if c.relaxed != nil && a.ownerAlways(c, a.hubID(c)) {
 		// The owner placed this row: the language gate re-ranks it, never
 		// empties it.

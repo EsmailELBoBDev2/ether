@@ -258,7 +258,7 @@ func (c *Catalog) getMovie(ctx context.Context, id int64) (*core.Title, error) {
 		st = &storedTitle{t: summary}
 		err = nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if err != nil {
 			return nil, err
 		}
@@ -414,7 +414,7 @@ func (c *Catalog) getShow(ctx context.Context, id int64) (*core.Title, error) {
 		st = &storedTitle{t: summary}
 		err = nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if err != nil {
 			return nil, err
 		}
@@ -517,7 +517,7 @@ func (c *Catalog) fetchSeasonOpts(ctx context.Context, showID int64, season int,
 	if !force && lerr == nil && mirrored && c.seasonFresh(stored, show) {
 		return &stored.t, nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if lerr != nil {
 			return nil, lerr
 		}
@@ -649,7 +649,7 @@ func (c *Catalog) getEpisode(ctx context.Context, key core.RatingKey) (*core.Tit
 	// A season refresh that just failed will fail these too; do not fan that
 	// wait out across every episode in a list.
 	refreshKey := "episode-ids:" + strconv.FormatUint(uint64(key), 10)
-	if c.tmdb() != nil && st.t.IDs.IMDB == "" && !c.refreshMissed(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshing(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshMissed(refreshKey) {
+	if c.TMDBConfigured() && st.t.IDs.IMDB == "" && !c.refreshMissed(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshing(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshMissed(refreshKey) {
 		stored := st.t
 		fetch := func(ctx context.Context) error {
 			ext, err := c.tmdb().EpisodeExternalIDs(ctx, key.TMDB(), key.Season(), key.Episode())
@@ -946,7 +946,7 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		return nil, err
 	}
 	if len(seasons) == 0 {
-		if c.tmdb() == nil {
+		if !c.TMDBConfigured() {
 			var seasonRows int
 			if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key=?`, int64(key)).Scan(&seasonRows); err == nil && seasonRows == 0 {
 				out, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? ORDER BY season ASC, episode ASC`, int64(key))
@@ -1471,8 +1471,8 @@ func (c *Catalog) refreshTitle(ctx context.Context, key core.RatingKey, persist,
 	}
 
 	client := c.tmdb()
-	if client == nil || !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
-		return nil, fmt.Errorf("catalog: TMDB unavailable")
+	if client == nil || !c.TMDBConfigured() {
+		return nil, core.ErrUnsupported
 	}
 	var t core.Title
 	switch key.Kind() {

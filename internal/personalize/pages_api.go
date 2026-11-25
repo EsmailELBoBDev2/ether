@@ -113,6 +113,19 @@ func (e *Engine) PageSources(ctx context.Context, key core.PageKey) (core.PageSo
 		if !ps.Available {
 			ps.Unavailable = "No library here has what this row needs"
 		}
+		if ps.Available && metadataRowList(s.Kind) != "" {
+			eligible := ps.Libraries[:0]
+			for _, lib := range pageLibs {
+				if slices.Contains(ps.Libraries, lib.ID) && e.metadataRowAvailable(s.Kind, lib.MediaType) {
+					eligible = append(eligible, lib.ID)
+				}
+			}
+			ps.Libraries = eligible
+			if len(eligible) == 0 {
+				ps.Available = false
+				ps.Unavailable = "metadata_source_unavailable"
+			}
+		}
 		e.pluginSourceRefs(ctx, &ps, pageLibs)
 		if s.Kind == SourceCollectionCards {
 			ps.Refs = cardRefs

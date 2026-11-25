@@ -58,6 +58,12 @@ func (c *Catalog) RunTail(ctx context.Context) {
 	}
 	c.loadNewestTail()
 	for ctx.Err() == nil {
+		if !c.TMDBConfigured() {
+			if !schedule.Wait(ctx, c.now, time.Minute) {
+				return
+			}
+			continue
+		}
 		if err := c.refreshTail(ctx); err != nil && ctx.Err() == nil {
 			c.log.Warn("catalog: long-tail index", "err", err)
 		}
@@ -71,12 +77,7 @@ func (c *Catalog) RunTail(ctx context.Context) {
 // Public exports need no API key. Only optional name/date/poster enrichment
 // uses the authenticated client; cached names remain usable without it.
 func (c *Catalog) canEnrichTail() bool {
-	client := c.tmdb()
-	if client == nil {
-		return false
-	}
-	k, ok := client.(interface{ HasKey() bool })
-	return !ok || k.HasKey()
+	return c.TMDBConfigured()
 }
 
 func (c *Catalog) setTailError(err error) {

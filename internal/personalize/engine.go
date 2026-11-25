@@ -893,13 +893,19 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 		key.limits += fmt.Sprint(keys)
 	}
 
+	metadataRows := func(kind string) bool { return e.metadataRowAvailable(kind, section) }
+	for _, kind := range []string{KindTrending, KindPopular, KindAiringToday, KindUpcoming} {
+		if !metadataRows(kind) {
+			key.limits += "|" + kind
+		}
+	}
 	if ent, ok := e.memoGet(key); ok && !draft {
 		e.touchPresentation(key, m.generic)
 		p.Rows, p.HomeDeduped = ent.rows, ent.deduped
 		return p
 	}
 	a := &assembly{
-		minRow: max(e.opts.MinRowItems, 0),
+		minRow: max(e.opts.MinRowItems, 0), metadataRows: metadataRows,
 		hidden: hidden, excluded: excluded,
 		plan:  pl,
 		model: m, user: u, hc: hc, section: section, limit: limit, owner: owner,

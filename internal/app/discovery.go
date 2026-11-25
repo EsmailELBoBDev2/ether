@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -14,6 +15,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -121,7 +123,7 @@ func (a *App) buildDiscovery() {
 		}
 		return tags
 	}})
-	a.discoveryFeatures = &discovery.Features{Watchlist: a.watchlist, Ratings: a.ratings, Overlays: a.overlays, Personal: a.discoveryPersonal, LLM: a.llm, Localize: a.tmdb.Localized}
+	a.discoveryFeatures = &discovery.Features{Watchlist: a.watchlist, Ratings: a.ratings, Overlays: a.overlays, Personal: a.discoveryPersonal, LLM: a.llm, Localize: a.localizedMetadata}
 	a.lang = langfeat.New(langfeat.Options{
 		Dir:        filepath.Join(a.opts.DataDir, "cache", "langfeat"),
 		Gates:      a.languageGates,
@@ -367,10 +369,54 @@ func discoveryViewerToken(ctx context.Context, u *core.User, home bool, ownerTok
 	return "", core.ErrUnauthorized
 }
 
+func (a *App) localizedMetadata(ctx context.Context, t *core.Title, lang string) (*core.Title, error) {
+	if !a.catalog.TMDBConfigured() || !hasTMDBArtwork(t) {
+		return t, nil
+	}
+	return a.tmdb.Localized(ctx, t, lang)
+}
+
+func hasTMDBArtwork(t *core.Title) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Type {
+	case core.TypeMovie, core.TypeShow:
+		return t.IDs.TMDB > 0
+	case core.TypeSeason, core.TypeEpisode:
+		if t.EpisodeOrder.Source != "" && (t.EpisodeOrder.Source != core.MetadataTMDB || t.EpisodeOrder.Kind != core.OrderAired) {
+			return false
+		}
+		return !t.Key.Allocated() && t.ShowIDs.TMDB > 0 && t.Season == t.Key.Season() && t.Episode == t.Key.Episode()
+	}
+	return false
+}
+
 func (a *App) artworkVariants(ctx context.Context, t *core.Title, lang string) (overlays.Artwork, error) {
-	images, err := a.tmdb.ArtworkVariants(ctx, t, lang)
-	if err != nil {
-		return overlays.Artwork{}, err
+	var images *core.Artwork
+	switch {
+	case a.catalog.TMDBConfigured() && hasTMDBArtwork(t):
+		var err error
+		images, err = a.tmdb.ArtworkVariants(ctx, t, lang)
+		if err != nil {
+			return overlays.Artwork{}, err
+		}
+	case t != nil && t.IDs.TVDB > 0:
+		source := a.catalog.MetadataSources().Get(core.MetadataTVDB)
+		if source == nil || !source.Configured() || !source.Capabilities().Images {
+			return overlays.Artwork{}, nil
+		}
+		var err error
+		got, err := source.Images(ctx, core.ProviderRef{Source: source.ID(), ID: strconv.FormatInt(t.IDs.TVDB, 10), Type: t.Type})
+		if errors.Is(err, core.ErrUnsupported) || errors.Is(err, core.ErrNotFound) {
+			return overlays.Artwork{}, nil
+		}
+		if err != nil {
+			return overlays.Artwork{}, err
+		}
+		images = &got
+	default:
+		return overlays.Artwork{}, nil
 	}
 	out := overlays.Artwork{}
 	for _, img := range images.Posters {

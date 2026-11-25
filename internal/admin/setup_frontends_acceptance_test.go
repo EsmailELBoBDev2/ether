@@ -109,13 +109,13 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 	}
 	assertSelectedFrontends(t, cfg.Get())
 
+	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbDisabled":true}`, "", http.StatusOK)
 	if err := cfg.Update(func(c *config.Config) error {
 		c.Cache.Dir = ""
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbDisabled":true}`, "", http.StatusOK)
 	gated := mustStatus(t, h, "")
 	for _, id := range []string{"plex", "sources", "indexers", "cache", "catalog"} {
 		if step(t, gated, id).Complete {

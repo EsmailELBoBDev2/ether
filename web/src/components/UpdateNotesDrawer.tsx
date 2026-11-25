@@ -97,7 +97,7 @@ export function UpdateNotesDrawer({
       ) : notes.loading ? (
         <LoadingInline label={t("Loading release notes…")} />
       ) : notes.data?.markdown ? (
-        <article className="space-y-4 text-sm leading-relaxed break-words [&_a]:underline [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:border-t [&_h2]:border-border [&_h2]:pt-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-semibold [&_li+li]:mt-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5 [&_li>ul]:mt-2">
+        <article className="space-y-4 text-sm leading-relaxed break-words [&_a]:underline [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:border-t [&_h2]:border-border [&_h2]:pt-4 [&>h2:first-child]:border-t-0 [&>h2:first-child]:pt-0 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:text-base [&_h3]:font-semibold [&_li+li]:mt-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5 [&_li>ul]:mt-2">
           <ReactMarkdown skipHtml disallowedElements={["img"]}>
             {notes.data.markdown}
           </ReactMarkdown>

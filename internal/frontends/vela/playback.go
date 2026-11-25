@@ -52,6 +52,7 @@ type audioOutput struct {
 	Lossless      bool     `json:"lossless"`
 }
 type playSession struct {
+	archive          *catchUpPlayback
 	id               string
 	item             frontend.RatingKey
 	titleID          string
@@ -131,15 +132,17 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	var b struct {
 		TitleID, ChannelID, ExtraID string
-		VersionID                   string
-		IdempotencyKey              string
-		LiveMode                    string
-		Client                      client
-		PositionSeconds             *float64
-		AllowTranscode              *bool
-		AudioTrackID                string
-		SubtitleTrackID             json.RawMessage
-		Multiview                   *multiviewPlaybackRequest `json:"multiview,omitempty"`
+		catchUpTarget
+		Kind            string
+		VersionID       string
+		IdempotencyKey  string
+		LiveMode        string
+		Client          client
+		PositionSeconds *float64
+		AllowTranscode  *bool
+		AudioTrackID    string
+		SubtitleTrackID json.RawMessage
+		Multiview       *multiviewPlaybackRequest `json:"multiview,omitempty"`
 		// Context: what this play started from (features.playContexts).
 		Context *playContextRequest `json:"context,omitempty"`
 		// Queued: the next item of the device's play queue, opened ahead of
@@ -159,7 +162,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			targets++
 		}
 	}
-	if targets != 1 {
+	if targets != 1 || b.catchUpTarget.specified() && (b.ChannelID == "" || b.Kind != "" && b.Kind != "channel" || b.Multiview != nil) {
 		problem(w, 400, "request", "invalid_target")
 		return
 	}
@@ -250,6 +253,18 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	declared, e := i.clientCapabilities(r, v, b.Client)
 	if e != nil {
 		fail(w, e, r)
+		return
+	}
+	if b.catchUpTarget.specified() {
+		req, ok := b.catchUpTarget.selection(b.ChannelID)
+		if !ok {
+			problem(w, 400, "request", "invalid_target")
+			return
+		}
+		if b.AllowTranscode != nil && !*b.AllowTranscode {
+			declared.Client.NoVideoTranscode = true
+		}
+		i.startCatchUp(w, r, v, token, req, b.Client, declared.Client)
 		return
 	}
 	var item frontend.RatingKey
@@ -493,6 +508,12 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, planActiveVersion(plan), p)
 	}
 	i.refreshInitialTrickplay(r.Context(), i.access(r, v), s.ID, ps)
+	i.registerPlaySession(ps)
+	send(w, 200, p)
+	i.watchSession(v, dev, s.ID, scope, ps)
+}
+
+func (i *instance) registerPlaySession(ps *playSession) {
 	i.mu.Lock()
 	for id, old := range i.sessions {
 		old.mu.Lock()
@@ -505,11 +526,13 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			delete(i.sessions, id)
 		}
 	}
-	i.sessions[s.ID] = ps
+	if i.sessions == nil {
+		i.sessions = make(map[string]*playSession)
+	}
+	i.sessions[ps.id] = ps
 	i.mu.Unlock()
-	send(w, 200, p)
-	i.watchSession(v, dev, s.ID, scope, ps)
 }
+
 func (i *instance) session(w http.ResponseWriter, r *http.Request) (*frontend.Viewer, *playSession) {
 	v, token, e := i.viewer(r)
 	if e != nil {
@@ -566,6 +589,7 @@ func (s *playSession) publish(kind string) {
 	s.plan["sourceGeneration"] = s.source
 	s.plan["seekGeneration"] = s.seek
 	s.plan["positionSeconds"] = s.position.Seconds()
+	s.updateBehindLive()
 	if kind == "plan" && s.trickplayCurrent != s.trickplayPublished {
 		s.trickplayPublished = s.trickplayCurrent
 		s.trickplayLastPublish = time.Now()
@@ -672,6 +696,25 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.plan["purpose"] == "preview" && b.Kind != "stop" {
 		problem(w, 400, "request", "preview_command_unsupported")
+		return
+	}
+	position := b.PositionSeconds
+	if b.AtSeconds != nil {
+		position = b.AtSeconds
+	}
+	if _, live := s.plan["live"]; live && (s.archive == nil || s.archive.info.ChannelID == "") {
+		switch b.Kind {
+		case "pause", "resume", "seek", "goLive":
+			i.commandLive(w, r, v, s, b.Kind, position)
+			return
+		}
+	}
+	if s.archive != nil {
+		i.catchUpCommand(w, r, v, s, b.Kind, position)
+		return
+	}
+	if b.Kind == "goLive" {
+		problem(w, 400, "request", "invalid_command")
 		return
 	}
 	id := r.PathValue("id")
@@ -1294,9 +1337,13 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 		}
 		subtitleIndex = &n
 	}
+	archive := s.archive != nil
 	s.mu.Unlock()
 	err := func() error {
 		defer s.mu.Lock()
+		if archive {
+			return i.playbackKeepAlive(r.Context(), i.access(r, v), r.PathValue("id"), s)
+		}
 		return i.host.Sessions.Report(r.Context(), i.access(r, v), r.PathValue("id"), frontend.Timeline{Sequence: b.Sequence, Position: pos, State: b.State, AudioStreamIndex: audioIndex, SubtitleStreamIndex: subtitleIndex})
 	}()
 	if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
@@ -1357,7 +1404,7 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 		s.stopping = true
 		defer func() { s.stopping = false }()
 		var stopErr error
-		if !s.stopPort(w, func() { stopErr = i.host.Sessions.Stop(r.Context(), i.access(r, v), r.PathValue("id")) }) {
+		if !s.stopPort(w, func() { stopErr = i.stopPlayback(r.Context(), i.access(r, v), r.PathValue("id"), s) }) {
 			return
 		}
 		if e := stopErr; e != nil {
@@ -1456,14 +1503,14 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
-		ended := !s.ended.IsZero()
+		ended, source := !s.ended.IsZero(), s.source
 		s.mu.Unlock()
 		if keepAlive && !ended {
 			// Backends without activity-only renewal retain their existing SSE behavior.
-			if err := i.host.Sessions.KeepAlive(ctx, i.access(r, viewer), id); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
+			if err := i.playbackKeepAlive(ctx, i.access(r, viewer), id, s); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
 				if errors.Is(err, frontend.ErrNotFound) {
 					s.mu.Lock()
-					if s.ended.IsZero() {
+					if s.ended.IsZero() && !s.commandActive && s.source == source {
 						s.ended = time.Now()
 						s.clearDisconnectTimerLocked()
 						if s.plan != nil {

@@ -407,6 +407,8 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	s.seekRampSeg = -1
 	rampClock := len(s.rungs) <= 1 && s.plan != nil && s.plan.rampSegs > 0
 	spec := runSpec{
+		ArchiveInput:         s.archiveInput,
+		ArchiveTrim:          s.archiveTrim,
 		SoftwareDecode:       s.softwareDecode,
 		HealTimestamps:       s.healTimestamps,
 		CopyOrigin:           s.copyOrigin,

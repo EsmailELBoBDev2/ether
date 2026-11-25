@@ -23,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 func init() {
@@ -144,6 +145,8 @@ type Service struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	dvrOnce          sync.Once
+	dvr              *transcode.LiveDVRCache
 	direct           ownedServiceState // Direct-path owned timelines and slates (owned_*.go)
 }
 
@@ -1419,11 +1422,18 @@ func (s *Service) allowedWithLookupOpts(ctx context.Context, u *core.User, c Cha
 	if !u.IsOwner && !pol.Permits(c.ID, c.Private) {
 		return false
 	}
+	var rating string
+	if u.MaxContentRating != "" || pol.MaxRating != "" {
+		rating = s.channelContentRating(ctx, c, p)
+	}
+	return s.allowedProgrammeContent(ctx, u, c, p, pol, rating, lookup, strict)
+}
+
+func (s *Service) allowedProgrammeContent(ctx context.Context, u *core.User, c Channel, p *Programme, pol Policy, rating string, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
 	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && contentrating.EnforceLevelOf(p.Item.Rating) == contentrating.Unrated && (u.MaxContentRating != "" || pol.MaxRating != "") {
 		return false
 	}
 	if u.MaxContentRating != "" || pol.MaxRating != "" {
-		rating := s.channelContentRating(ctx, c, p)
 		if p != nil && p.Item.EnforcementRating != "" && (p.Item.EnforcementRating == contentrating.UncertifiedAdult || contentrating.EnforceLevelOf(p.Item.EnforcementRating) > contentrating.EnforceLevelOf(rating)) {
 			rating = p.Item.EnforcementRating
 		}
@@ -1582,6 +1592,7 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 		}
 		if s.allowedProgramme(ctx, u, c, current) {
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			out = append(out, s.personalChannel(ctx, c, u))
 		}
@@ -1645,6 +1656,7 @@ func (s *Service) allowedChannelRecord(ctx context.Context, u *core.User, c Chan
 		return Channel{}, core.ErrNotFound
 	}
 	c.StreamURL = ""
+	c.redactArchiveSource()
 	c.StreamSources = nil
 	return c, nil
 }
@@ -2200,6 +2212,7 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 				continue
 			}
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			channels = append(channels, s.personalChannel(ctx, c, u))
 			programmes = append(programmes, ps...)
@@ -2492,7 +2505,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	src.PlaylistGuide = false
 	// Account and groups are what this fetch reports; a source body from the
 	// owner API carries stale read-only copies.
-	src.Account, src.Groups = nil, nil
+	src.Account, src.Groups, src.ArchiveTimezone = nil, nil, ""
 	fetched, err := kind.Fetch(ctx, s, &src)
 	if err != nil {
 		return src, err
@@ -2583,6 +2596,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		for _, c := range cs {
 			if !fetched.cachedLineup {
 				c.ProviderGuideID = c.GuideID
+				if err := s.sealArchive(&c, oldByID[c.ID]); err != nil {
+					return src, err
+				}
 			}
 			if previous, ok := oldByID[c.ID]; ok {
 				if _, keep := keepNumber[c.ID]; keep {

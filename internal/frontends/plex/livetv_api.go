@@ -138,7 +138,8 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	guard := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(r.Context(), FromContext(r.Context()).User) {
+			pr := FromContext(r.Context())
+			if !(s.liveTVEnabled() || s.isCatchUpMediaRequest(r, pr)) || !s.svc().liveTV.VisibleTo(r.Context(), pr.User) {
 				writeHTTPError(w, 404)
 				return
 			}
@@ -146,7 +147,6 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 				writeHTTPError(w, 404)
 				return
 			}
-			pr := FromContext(r.Context())
 			if p, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !p.CanPlay(pr.User, pr.Remote, s.now()) {
 				writeHTTPError(w, 403)
 				return
@@ -197,6 +197,7 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	get(liveProviderPath+"/watchnow/tonight", s.handleLiveGuide)
 	get(liveProviderPath+"/watchnow/categories/{category}", s.handleLiveGuide)
 	get(liveProviderPath+"/sections/{section}/all", s.handleLiveGuide)
+	r.Get("/library/catchup/art/{key}/{kind}", s.catchUpArt)
 	get("/livetv/guide.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.svc().liveTV.ServeXMLTV(w, r, FromContext(r.Context()).User)
 	})
@@ -969,6 +970,9 @@ func (s *Server) handleLiveSession(w http.ResponseWriter, r *http.Request) {
 // handleLiveTVPlayback hooks the universal decision/start endpoints before the
 // catalogue parser. Plex passes the tune response's /livetv/sessions key here.
 func (s *Server) handleLiveTVPlayback(w http.ResponseWriter, r *http.Request) bool {
+	if s.handleCatchUpPlayback(w, r) {
+		return true
+	}
 	if s.refuseCapability(w, r) {
 		return true
 	}

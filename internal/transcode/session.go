@@ -26,6 +26,8 @@ import (
 // track per representation (video, audio); ffmpeg's dash muxer writes short
 // chunks that the session regroups into numbered segments by timestamp.
 type Session struct {
+	archiveInput bool
+	archiveTrim  time.Duration
 	// Explicit quality sessions retire the old run before starting a rung.
 	serialRungs             bool
 	copyOrigin              bool // continuous copy uses a measured presentation origin

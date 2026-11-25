@@ -137,6 +137,10 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpDetail(w, r, id)
+		return
+	}
 	// Serve stored catalogue details while bounded enrichment fills the mirror.
 	reqCtx := r.Context()
 	ctx := s.exp().NoProviderWait(reqCtx)
@@ -869,6 +873,10 @@ func (s *Server) seasonNextEpisode(ctx context.Context, pr *Request, eps []front
 }
 
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpBrowse(w, r, id, false)
+		return
+	}
 	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
@@ -1087,6 +1095,10 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
+	if id := chi.URLParam(r, "key"); frontend.IsCatchUpID(id) {
+		s.catchUpBrowse(w, r, id, true)
+		return
+	}
 	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)

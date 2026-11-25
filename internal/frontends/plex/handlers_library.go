@@ -178,6 +178,13 @@ func (s *Server) sectionParam(w http.ResponseWriter, r *http.Request) (Section, 
 		writeHTTPError(w, http.StatusNotFound)
 		return Section{}, false
 	}
+	if id == catchUpSectionID {
+		if sec, ok := s.catchUpSection(r); ok {
+			return sec, true
+		}
+		writeHTTPError(w, 404)
+		return Section{}, false
+	}
 	sec, ok := s.sectionByID(id)
 	if !ok || !s.canSeeSection(FromContext(r.Context()).User, id) {
 		writeHTTPError(w, http.StatusNotFound)
@@ -199,7 +206,7 @@ func (s *Server) handleSections(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	mc := &model.MediaContainer{AllowSync: model.Ptr(s.downloadsAllowed(u)), Title1: "Plex Library"}
 	now := s.now().Unix()
-	for _, sec := range s.userSections(u) {
+	for _, sec := range s.viewerSections(r) {
 		agent, scanner := agentFor(sec.Type)
 		mc.Directory = append(mc.Directory, model.Directory{
 			AllowSync:        model.Ptr(s.downloadsAllowed(u) || u != nil && u.IsOwner && (s.cfg().Plex.Claimed || s.cfg().Plex.Token != "")),
@@ -1221,6 +1228,15 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := chi.URLParam(r, "sub")
+	if sec.ID == catchUpSectionID {
+		switch sub {
+		case "all", "allLeaves", "newest", "recentlyAdded":
+			s.catchUpBrowse(w, r, frontend.CatchUpLibraryID, sub == "allLeaves" || sub == "recentlyAdded" || r.URL.Query().Get("type") == "4")
+		default:
+			s.write(w, r, s.sectionContainer(sec))
+		}
+		return
+	}
 	if (sub == "unwatched" || sub == "onDeck") && r.URL.Query().Has("type") {
 		if _, err := strconv.ParseInt(r.URL.Query().Get("type"), 10, 64); err != nil {
 			writeHTTPError(w, http.StatusInternalServerError)

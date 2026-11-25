@@ -61,11 +61,12 @@ func (o *localRelayOrigin) get(ctx context.Context, uri string, _, _ int64) ([]b
 }
 
 type relayProducer struct {
-	s    *Service
-	tl   *ownedTimeline
-	log  *slog.Logger
-	sess atomic.Pointer[session]
-	caps core.ClientCaps // the relay's output capabilities
+	shared bool
+	s      *Service
+	tl     *ownedTimeline
+	log    *slog.Logger
+	sess   atomic.Pointer[session]
+	caps   core.ClientCaps // the relay's output capabilities
 
 	mu        sync.Mutex
 	hls       core.HLSSession
@@ -139,6 +140,9 @@ func relayTargetFloor(cut time.Duration) time.Duration {
 
 // startOwnedRelay starts the first relay producer and its timeline.
 func (s *Service) startOwnedRelay(ctx context.Context, ss *session, info core.MediaInfo, caps core.ClientCaps, dec core.Decision, cut time.Duration) (*ownedLease, error) {
+	if !ss.ephemeral && ss.info.Channel.Kind == "iptv" {
+		return s.acquireOwnedRelay(ctx, ss, info, caps, dec, cut)
+	}
 	p := s.newRelayProducer(ss, info, caps, dec, cut)
 	if err := p.start(ctx, info, dec, cut, false); err != nil {
 		return nil, err
@@ -205,6 +209,7 @@ func (s *Service) runRelay(ss *session, p *relayProducer) *ownedLease {
 		base = s.serviceContext()
 	}
 	runCtx, stop := context.WithCancel(base)
+	s.enableOwnedTimeshift(p.tl, ss.info.Channel)
 	go p.tl.run(runCtx)
 	go p.run(runCtx)
 	return &ownedLease{tl: p.tl, relay: p, release: func() {

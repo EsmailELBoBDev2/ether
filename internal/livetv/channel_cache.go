@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -53,6 +54,8 @@ type channelSnapshot struct {
 	mu         sync.Mutex
 	generation int64
 	list       []Channel // sorted by number; never mutated once published
+	archived   []Channel
+	archiveIDs map[uint64]string
 	bySource   map[string][]int
 	byID       map[string]int
 }
@@ -95,7 +98,18 @@ func (s *Service) channelSnapshot(ctx context.Context) ([]Channel, *channelSnaps
 		c.generation, c.list = gen, loaded
 		c.byID = make(map[string]int, len(loaded))
 		c.bySource = map[string][]int{}
+		c.archived = nil
+		c.archiveIDs = make(map[uint64]string)
 		for i, ch := range loaded {
+			if ch.ArchiveDays() > 0 && ch.Kind == "iptv" {
+				c.archived = append(c.archived, ch)
+				key := frontend.CatchUpChannelKey(ch.ID)
+				if _, collision := c.archiveIDs[key]; collision {
+					c.archiveIDs[key] = ""
+				} else {
+					c.archiveIDs[key] = ch.ID
+				}
+			}
 			c.byID[ch.ID] = i
 			c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
 		}

@@ -748,6 +748,7 @@ func (s *Service) saveChannelWithMerges(ctx context.Context, c *Channel) ([]stri
 	if err != nil {
 		return nil, err
 	}
+	c.Archive = nil
 	replaced := false
 	needReconcile := hasInputMergeRules(*c) || c.MergedInto != "" || hasMergedStreamSources(*c)
 	prevStreamURL := make(map[string]string, len(all)+1)
@@ -756,6 +757,9 @@ func (s *Service) saveChannelWithMerges(ctx context.Context, c *Channel) ([]stri
 		if all[i].ID == c.ID {
 			if hasInputMergeRules(all[i]) || all[i].MergedInto != "" || hasMergedStreamSources(all[i]) {
 				needReconcile = true
+			}
+			if c.Kind == "iptv" && c.SourceID == all[i].SourceID {
+				c.Archive = all[i].Archive
 			}
 			all[i] = *c
 			replaced = true

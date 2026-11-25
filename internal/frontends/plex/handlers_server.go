@@ -203,7 +203,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	now := s.now().Unix()
 	includePrefs := r.URL.Query().Get("includePreferences") == "1"
-	userSecs := s.userSections(u)
+	userSecs := s.viewerSections(r)
 	dirs := []model.ProviderDirectory{{HubKey: "/hubs", Title: "Home"}} // discovery only: no browse key
 	for _, sec := range userSecs {
 		agent, scanner := agentFor(sec.Type)

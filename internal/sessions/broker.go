@@ -1535,6 +1535,16 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		}
 	}
 	if s.live {
+		if s.public.Protocol == "vela" && (t.State == "playing" || t.State == "paused" || t.State == "buffering") {
+			if live, ok := b.deps.Live.(interface {
+				TouchLiveSession(context.Context, *core.Viewer, string) error
+			}); ok {
+				if err := live.TouchLiveSession(core.WithLiveApp(ctx, string(s.public.Protocol)), v, s.playID); err != nil {
+					rollbackSequence()
+					return err
+				}
+			}
+		}
 		b.publish(ctx, sessionEvent("SessionUpdated", s.public, &t))
 		if t.State == "stopped" {
 			return b.stopLocked(ctx, s)

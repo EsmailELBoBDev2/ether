@@ -133,6 +133,12 @@ type AppConnectionAdmission interface {
 	PrepareAppConnection(*http.Request, string, PlanRequest) error
 }
 
+// AppConnectionRenewal maintains an admitted slot during playback served
+// outside the lazy stream transport.
+type AppConnectionRenewal interface {
+	RenewAppConnection(*http.Request, string, PlanRequest) (context.Context, func(), error)
+}
+
 // AppConnectionLimits returns zero for unlimited, else the effective viewer/device cap.
 type AppConnectionLimits interface {
 	AppConnectionLimit(context.Context, string) (int, error)

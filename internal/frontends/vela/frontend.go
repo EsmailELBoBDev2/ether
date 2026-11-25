@@ -1151,6 +1151,7 @@ func (i *instance) requestCapabilities(r *http.Request) object {
 // open, and a request without a viewer never learns plugin library names.
 func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) object {
 	c := i.capabilities()
+	c["features"].(object)["liveCatchUp"] = i.catchUpFeature(r, v)
 	if v != nil {
 		c["searchKinds"], _ = i.searchKinds(r, v)
 		if features, ok := c["features"].(object); ok {
@@ -1188,8 +1189,13 @@ func (i *instance) serveMedia(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := scopes.GrantScopeCurrent(r.Context(), scope, frontend.Device{ID: deviceID}); err != nil {
+	viewer, err := scopes.GrantScopeCurrent(r.Context(), scope, frontend.Device{ID: deviceID})
+	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	if _, tail, _ := strings.Cut(rest, "/"); strings.HasPrefix(tail, "archive/") {
+		i.serveCatchUpMedia(w, r, viewer, s, strings.TrimPrefix(tail, "archive/"))
 		return
 	}
 	i.serveObservedMedia(w, r)

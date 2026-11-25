@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Add a daypart or programme block to shape the day.",
   "m_03a83b35a93323": "Intro and credit times from IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Live TV settings",
   "m_03ab9b48aadc12": "Import catalogues…",
   "m_03abba36eab8f5": "Seen devices",
   "m_03abee25fafc93": "Present a show in DVD, absolute or story order. Playback keeps the original episode numbers.",
@@ -3854,6 +3855,7 @@
   "m_0b6d39c093a15c": "The server refused its token. Edit the server and paste a new token.",
   "m_0b6e0cfd55b64c": "Replace video",
   "m_0b6e7f08fa07b8": "Add, replace, or remove headers on top of the selected identity. Sensitive header values are sealed at rest and masked in previews.",
+  "m_0b6eda483b2023": "Your changes to the rewind limit haven't been saved.",
   "m_0b7040c707f838": "Popular Science Fiction",
   "m_0b7138711862cd": "Average bitrate",
   "m_0b725108f96a25": "Installed",
@@ -6304,6 +6306,10 @@
   "m_128f6f3393a985": "Keeping custom name “{name}”",
   "m_128fa41a415266": "Reconnect required",
   "m_129060a2bccbd9": "Ether tries again by itself in {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} day",
+    "other": "Catch-up: {count} days"
+  },
   "m_129228a903b15e": "The latest walk did not return {missing} of {total} existing items. This can happen when a plugin pulls from a search or rotating API, or hits a temporary error. Ether kept your existing items by default.",
   "m_1293156b01c1d8": "All regions",
   "m_1293ff9d406225": "Add from link",
@@ -8915,6 +8921,10 @@
   "m_1a38e94dd3c401": "Hidden from apps",
   "m_1a398cdd93409b": "Channel numbers",
   "m_1a3a3f14648f50": "Endpoint URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Rewind live TV up to {count} minute",
+    "other": "Rewind live TV up to {count} minutes"
+  },
   "m_1a3c710193f62d": "{name} (copy)",
   "m_1a3c8e2a4a33fe": "Movies and series left out",
   "m_1a3d943e9f94d1": "Allowed",
@@ -9871,6 +9881,7 @@
     "other": "Minutes"
   },
   "m_1d2244e7ae66fa": "Couldn't update the channels",
+  "m_1d23714a591982": "Uses about 3 GB of disk space per viewer-hour at 6–8 Mbps. Set to 0 for live playback only.",
   "m_1d240c1034bd02": "Next steps",
   "m_1d2516f81747b0": "Stream torrents Offcloud already has.",
   "m_1d259ef5a21bf3": "No matching live streams",

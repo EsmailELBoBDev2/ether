@@ -546,6 +546,7 @@ export interface EtherConfig {
     sourceOrder?: string[];
   };
   liveTV?: {
+    timeshiftMinutes?: number;
     latencyProfile?: "auto" | "low" | "stable";
     logoIndexUrl?: string;
     healthSweepMinutes?: number;

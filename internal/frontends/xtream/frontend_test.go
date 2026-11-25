@@ -498,3 +498,55 @@ func TestXtreamYouTubeTrailer(t *testing.T) {
 		t.Fatalf("got %q, want empty", empty)
 	}
 }
+
+func TestArchiveReExport(t *testing.T) {
+	host, _ := testHost(t)
+	now := time.Date(2026, 11, 23, 14, 0, 0, 0, time.UTC)
+	host.Now = func() time.Time { return now }
+	host.LiveTV = frontendtest.LiveTV{
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{{ID: "archived", Name: "Archive", Kind: "iptv", ArchiveDays: 2}}, nil
+		},
+		GuideFunc: func(_ context.Context, _ *frontend.Viewer, q frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error) {
+			if len(q.Channels) != 1 || q.Channels[0] != "archived" || !q.From.Equal(now.Add(-48*time.Hour)) {
+				t.Fatal("unexpected archive guide query")
+			}
+			return []frontend.LiveProgramme{
+				{ID: "expired", ChannelID: "archived", Start: now.Add(-49 * time.Hour), End: now.Add(-47 * time.Hour)},
+				{ID: "past", ChannelID: "archived", Start: now.Add(-48 * time.Hour), End: now.Add(-47 * time.Hour)},
+				{ID: "airing", ChannelID: "archived", Start: now.Add(-time.Hour), End: now.Add(time.Hour)},
+			}, nil
+		},
+	}
+	h := mount(t, host)
+	w := request(h, "/player_api.php?"+authQuery()+"&action=get_live_streams")
+	var streams []struct {
+		ID      int    `json:"stream_id"`
+		Archive int    `json:"tv_archive"`
+		Days    int    `json:"tv_archive_duration"`
+		Source  string `json:"direct_source"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &streams) != nil || len(streams) != 1 ||
+		streams[0].Archive != 1 || streams[0].Days != 2 || streams[0].Source != "" {
+		t.Fatal("unexpected live stream archive metadata")
+	}
+	w = request(h, "/player_api.php?"+authQuery()+"&action=get_simple_data_table&stream_id="+fmt.Sprint(streams[0].ID))
+	var response struct {
+		Listings []struct {
+			ID         string `json:"id"`
+			HasArchive int    `json:"has_archive"`
+		} `json:"epg_listings"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &response) != nil || len(response.Listings) != 3 {
+		t.Fatal("expected three guide rows")
+	}
+	for _, row := range response.Listings {
+		want := 0
+		if row.ID == "past" {
+			want = 1
+		}
+		if row.HasArchive != want {
+			t.Fatalf("incorrect archive flag for %s", row.ID)
+		}
+	}
+}

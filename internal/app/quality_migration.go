@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -213,42 +214,44 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 			awayTV = v
 		}
 	}
+	// One away profile for both kinds is the away default ("Everyone else,
+	// away"). 0.3.20 ranked it above library profiles, so the library rules
+	// below say At home instead of an Away rule outranking them: editing the
+	// fallback then changes every away play, as it reads.
 	defaultAway := ""
-	if len(profiledLibs) == 0 && awayMovie == awayTV {
+	if awayMovie != "" && awayMovie == awayTV {
 		defaultAway = awayMovie
-		if defaultAway != "" {
-			notes = append(notes, fmt.Sprintf("migrated away default to Default away (%q)", defaultAway))
-		}
+		notes = append(notes, fmt.Sprintf("migrated away default to Default away (%q)", defaultAway))
 	} else {
-		// 0.3.20 evaluated Away above library profiles; emit Away rules here
-		// before library profile rules.
-		if awayMovie != "" && awayMovie == awayTV {
+		// The kinds went different ways away from home, which the single
+		// fallback cannot say: keep Where: Away (+ What) rules here, above
+		// the library rules, as 0.3.20 ranked them.
+		if awayMovie != "" {
 			rules = append(rules, config.QualityRule{
-				From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
+				From:    &config.QualityRuleOrigin{Kind: "awayProfile", Reason: config.OriginAwayByKind},
 				Where:   config.WhereAway,
+				Kind:    config.KindMovie,
 				Profile: awayMovie,
 			})
-			notes = append(notes, fmt.Sprintf("migrated away default (%q) to rule %d (above library rules)", awayMovie, len(rules)))
-		} else {
-			if awayMovie != "" {
-				rules = append(rules, config.QualityRule{
-					From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
-					Where:   config.WhereAway,
-					Kind:    config.KindMovie,
-					Profile: awayMovie,
-				})
-				notes = append(notes, fmt.Sprintf("migrated movie away default (%q) to rule %d", awayMovie, len(rules)))
-			}
-			if awayTV != "" {
-				rules = append(rules, config.QualityRule{
-					From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
-					Where:   config.WhereAway,
-					Kind:    config.KindEpisode,
-					Profile: awayTV,
-				})
-				notes = append(notes, fmt.Sprintf("migrated TV away default (%q) to rule %d", awayTV, len(rules)))
-			}
+			notes = append(notes, fmt.Sprintf("migrated movie away default (%q) to rule %d", awayMovie, len(rules)))
 		}
+		if awayTV != "" {
+			rules = append(rules, config.QualityRule{
+				From:    &config.QualityRuleOrigin{Kind: "awayProfile", Reason: config.OriginAwayByKind},
+				Where:   config.WhereAway,
+				Kind:    config.KindEpisode,
+				Profile: awayTV,
+			})
+			notes = append(notes, fmt.Sprintf("migrated TV away default (%q) to rule %d", awayTV, len(rules)))
+		}
+	}
+	libraryRule := func(lib core.Library, kind, profile string) config.QualityRule {
+		r := config.QualityRule{From: &config.QualityRuleOrigin{Kind: "library", Name: lib.Name}, Libraries: []int64{int64(lib.ID)}, Kind: kind, Profile: profile}
+		if defaultAway != "" {
+			r.Where = config.WhereHome
+			r.From.Reason = config.OriginAwayDefaultWins
+		}
+		return r
 	}
 
 	// Step 5 preview: resolve home defaults now so Step 4's built-in hide-rule
@@ -293,17 +296,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 	slices.SortFunc(builtinLibs, sortByID)
 
 	for _, lib := range customLibs {
-		origin := &config.QualityRuleOrigin{Kind: "library", Name: lib.Name}
 		raw := strings.TrimSpace(lib.QualityProfile)
 		switch lib.MediaType {
 		case core.TypeMovie:
 			if p := renameFor(core.MediaMovie, raw); validProfile(p) {
-				rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
+				rules = append(rules, libraryRule(lib, "", p))
 				notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 			}
 		case core.TypeShow:
 			if p := renameFor(core.MediaTV, raw); validProfile(p) {
-				rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
+				rules = append(rules, libraryRule(lib, "", p))
 				notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 			}
 		default:
@@ -311,16 +313,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 			pt := renameFor(core.MediaTV, raw)
 			if pm == pt {
 				if validProfile(pm) {
-					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: pm})
+					rules = append(rules, libraryRule(lib, "", pm))
 					notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, pm, len(rules)))
 				}
 			} else {
 				if validProfile(pm) {
-					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Kind: config.KindMovie, Profile: pm})
+					rules = append(rules, libraryRule(lib, config.KindMovie, pm))
 					notes = append(notes, fmt.Sprintf("migrated library %s movie profile (%q) to rule %d", lib.Name, pm, len(rules)))
 				}
 				if validProfile(pt) {
-					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Kind: config.KindEpisode, Profile: pt})
+					rules = append(rules, libraryRule(lib, config.KindEpisode, pt))
 					notes = append(notes, fmt.Sprintf("migrated library %s TV profile (%q) to rule %d", lib.Name, pt, len(rules)))
 				}
 			}
@@ -329,7 +331,6 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 
 	var hiddenBuiltinFallbacks []config.QualityRule
 	for _, lib := range builtinLibs {
-		origin := &config.QualityRuleOrigin{Kind: "library", Name: lib.Name}
 		raw := strings.TrimSpace(lib.QualityProfile)
 		media := core.MediaMovie
 		kind := config.KindMovie
@@ -343,18 +344,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		if !validProfile(p) {
 			continue
 		}
-		rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
+		rules = append(rules, libraryRule(lib, "", p))
 		notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 		// §5 edge case: in 0.3.20 a built-in library's profile also covered
 		// titles hidden from that built-in library by an "only this library"
 		// rule and in no other profiled library. Preserve the exact result
 		// with an extra Kind rule when that can occur.
 		if len(core.BuiltinLibraryExtraRules(lib.Rules)) > 0 && p != homeDef {
-			hiddenBuiltinFallbacks = append(hiddenBuiltinFallbacks, config.QualityRule{
-				From:    origin,
-				Kind:    kind,
-				Profile: p,
-			})
+			fallback := libraryRule(lib, kind, p)
+			fallback.Libraries = nil
+			hiddenBuiltinFallbacks = append(hiddenBuiltinFallbacks, fallback)
 		}
 	}
 	for _, r := range hiddenBuiltinFallbacks {
@@ -373,6 +372,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		// Default away the TV default must not outrank it away from home.
 		if defaultAway != "" {
 			rule.Where = config.WhereHome
+			rule.From.Reason = config.OriginAwayDefaultWins
 		}
 		rules = append(rules, rule)
 		notes = append(notes, fmt.Sprintf("migrated TV default (%q) to final rule %d", homeTV, len(rules)))
@@ -572,12 +572,50 @@ func excludeEarlierLegacyMatches(legacy []config.QualityRule, notes *[]string) [
 				break
 			}
 		}
+		parts = mergeKindHalves(parts)
 		if narrowed && notes != nil {
 			*notes = append(*notes, fmt.Sprintf("narrowed legacy rule %d to preserve first-match limits", j+1))
 		}
 		out = append(out, parts...)
 	}
+	// Two neighbouring rules that differ only in Movies vs Episodes (an
+	// owner's pair of 0.3.20 rules whose profiles merged into one) are one
+	// rule for both kinds: no play matches both, and nothing sits between.
+	for k := 0; k+1 < len(out); k++ {
+		if out[k].Kind != "" && out[k+1].Kind == oppositeRuleKind(out[k].Kind) && sameRuleButKind(out[k], out[k+1]) {
+			out[k].Kind = ""
+			out = slices.Delete(out, k+1, k+2)
+		}
+	}
 	return out
+}
+
+// mergeKindHalves joins a Movies part and an Episodes part of one legacy
+// rule that are otherwise identical: together they are the rule for both
+// kinds. The parts of one rule never overlap, so their order does not
+// matter and the join is exact. Without it an owner edits two rules to
+// change one (“Plex Web · Movies” and “Plex Web · Episodes”).
+func mergeKindHalves(parts []config.QualityRule) []config.QualityRule {
+	for i := 0; i < len(parts); i++ {
+		if parts[i].Kind == "" {
+			continue
+		}
+		for j := i + 1; j < len(parts); j++ {
+			if parts[j].Kind != oppositeRuleKind(parts[i].Kind) || !sameRuleButKind(parts[i], parts[j]) {
+				continue
+			}
+			parts[i].Kind = ""
+			parts = slices.Delete(parts, j, j+1)
+			break
+		}
+	}
+	return parts
+}
+
+func sameRuleButKind(a, b config.QualityRule) bool {
+	a, b = cloneQualityRule(a), cloneQualityRule(b)
+	a.Kind, b.Kind = "", ""
+	return reflect.DeepEqual(a, b)
 }
 
 func cloneQualityRule(r config.QualityRule) config.QualityRule {

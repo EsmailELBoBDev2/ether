@@ -616,7 +616,22 @@ type QualityMigrationNote struct {
 type QualityRuleOrigin struct {
 	Kind string `json:"kind"`
 	Name string `json:"name,omitempty"`
+	// Reason says why the upgrade had to shape the rule this way, when it
+	// is not plain from Kind: OriginAwayByKind, OriginAwayDefaultWins.
+	Reason string `json:"reason,omitempty"`
 }
+
+// Reasons an upgraded rule carries in QualityRuleOrigin.Reason.
+const (
+	// OriginAwayByKind: movies and TV shows had different away profiles in
+	// 0.3.20, which the one "Everyone else, away" fallback cannot say, so
+	// the away profile stays a Where: Away rule per kind.
+	OriginAwayByKind = "awayByKind"
+	// OriginAwayDefaultWins: 0.3.20 ranked the away profile above library
+	// profiles, so the library rule applies at home and away plays take
+	// "Everyone else, away".
+	OriginAwayDefaultWins = "awayDefaultWins"
+)
 
 // QualitySync keeps imported profiles and their format definitions aligned
 // with their source guide on a cadence.

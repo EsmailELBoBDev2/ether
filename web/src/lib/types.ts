@@ -748,6 +748,12 @@ export interface QualityRuleOrigin {
   kind: "awayLimit" | "viewerLimit" | "rule" | "awayProfile" | "library" | "tvDefault";
   /** The library's, viewer's or old rule's name, when there is one. */
   name?: string;
+  /**
+   * Why the upgrade shaped the rule this way: "awayByKind" (movies and TV had
+   * different away profiles, so it stays an Away rule) or "awayDefaultWins"
+   * (the away profile outranked library profiles, so this rule is At home).
+   */
+  reason?: "awayByKind" | "awayDefaultWins";
 }
 
 export interface QualityRule {

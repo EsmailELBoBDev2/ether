@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,6 +53,13 @@ func TestRX2MigrationMatrix(t *testing.T) {
 			if len(want) != len(got) {
 				t.Fatalf("legacy/current matrix size: %d/%d", len(want), len(got))
 			}
+			var legacy struct {
+				Transcode struct {
+					RemoteMaxBitrateKbps int `json:"remoteMaxBitrateKbps"`
+				} `json:"transcode"`
+			}
+			_ = json.Unmarshal(fixture.Config, &legacy)
+			awayCap := legacy.Transcode.RemoteMaxBitrateKbps
 			differences := map[string]int{}
 			mismatched := map[string]bool{}
 			examples := map[string]string{}
@@ -89,8 +97,8 @@ func TestRX2MigrationMatrix(t *testing.T) {
 				// now also steers source selection for 4K plays instead of
 				// picking a 4K release only to transcode it down at delivery.
 				wantBitrate := old.Bitrate
-				if fixture.Name == "away-cap-4k" && strings.HasSuffix(key, "/away=true") && old.Bitrate == 0 {
-					wantBitrate = 8000
+				if awayCap > 0 && strings.HasSuffix(key, "/away=true") && old.Bitrate == 0 && rx2FourK(old.Profile) {
+					wantBitrate = awayCap
 				}
 				for _, limit := range []struct {
 					label     string
@@ -117,6 +125,13 @@ func TestRX2MigrationMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rx2FourK reports whether a released profile allowed 4K, the plays whose
+// away cap 0.3.20 dropped at delivery.
+func rx2FourK(profile map[string]any) bool {
+	h, _ := profile["maxHeight"].(float64)
+	return h == 0 || h >= 2160
 }
 
 func rx2Resolve(t *testing.T, a *App, v rx2Viewer, device rx2Device, title *core.Title, remote bool) rx2Choice {

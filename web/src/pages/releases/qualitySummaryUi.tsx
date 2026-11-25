@@ -110,6 +110,33 @@ export function ruleHref(ruleId: string): string {
   return `/releases/rules?rule=${encodeURIComponent(ruleId)}`;
 }
 
+function RuleTrigger({
+  ruleId,
+  label,
+  onSelectRule,
+}: {
+  ruleId: string;
+  label: string;
+  onSelectRule?: (ruleId: string) => void;
+}) {
+  if (onSelectRule) {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelectRule(ruleId)}
+        className="text-primary hover:underline"
+      >
+        {label}
+      </button>
+    );
+  }
+  return (
+    <Link to={ruleHref(ruleId)} className="text-primary hover:underline">
+      {label}
+    </Link>
+  );
+}
+
 export function LimitBadges({
   maxHeight,
   maxBitrateKbps,
@@ -154,9 +181,11 @@ export function ExceptionPill({
 function LimitRuleLinks({
   ruleIds,
   resolveRule,
+  onSelectRule,
 }: {
   ruleIds: string[];
   resolveRule: RuleResolver;
+  onSelectRule?: (ruleId: string) => void;
 }) {
   if (ruleIds.length === 0) return null;
   return (
@@ -165,9 +194,11 @@ function LimitRuleLinks({
       {ruleIds.map((rid, idx) => (
         <Fragment key={rid}>
           {idx > 0 ? <span>,</span> : null}
-          <Link to={ruleHref(rid)} className="text-primary hover:underline">
-            {ruleBadgeLabel(resolveRule(rid))}
-          </Link>
+          <RuleTrigger
+            ruleId={rid}
+            label={ruleBadgeLabel(resolveRule(rid))}
+            onSelectRule={onSelectRule}
+          />
         </Fragment>
       ))}
     </span>
@@ -178,10 +209,12 @@ export function SummaryCellView({
   cell,
   chosenByPlugin,
   resolveRule,
+  onSelectRule,
 }: {
   cell: QualitySummaryCell;
   chosenByPlugin: boolean;
   resolveRule: RuleResolver;
+  onSelectRule?: (ruleId: string) => void;
 }) {
   const hasLimits = Boolean(cell.maxHeight || cell.maxBitrateKbps || cell.stereo);
 
@@ -200,7 +233,11 @@ export function SummaryCellView({
         </div>
         {cell.limitRuleIds.length > 0 ? (
           <div className="text-xs">
-            <LimitRuleLinks ruleIds={cell.limitRuleIds} resolveRule={resolveRule} />
+            <LimitRuleLinks
+              ruleIds={cell.limitRuleIds}
+              resolveRule={resolveRule}
+              onSelectRule={onSelectRule}
+            />
           </div>
         ) : null}
       </div>
@@ -221,9 +258,11 @@ export function SummaryCellView({
       </div>
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
         {cell.source === "rule" && cell.profileRuleId ? (
-          <Link to={ruleHref(cell.profileRuleId)} className="text-primary hover:underline">
-            {ruleBadgeLabel(resolveRule(cell.profileRuleId))}
-          </Link>
+          <RuleTrigger
+            ruleId={cell.profileRuleId}
+            label={ruleBadgeLabel(resolveRule(cell.profileRuleId))}
+            onSelectRule={onSelectRule}
+          />
         ) : cell.source === "defaultAway" ? (
           <Link
             to="/releases/rules?default=away"
@@ -242,7 +281,11 @@ export function SummaryCellView({
         {extraLimitIds.length > 0 ? (
           <>
             <span className="text-fg-muted">·</span>
-            <LimitRuleLinks ruleIds={extraLimitIds} resolveRule={resolveRule} />
+            <LimitRuleLinks
+              ruleIds={extraLimitIds}
+              resolveRule={resolveRule}
+              onSelectRule={onSelectRule}
+            />
           </>
         ) : null}
       </div>
@@ -252,9 +295,11 @@ export function SummaryCellView({
           {cell.partialRuleIds.map((rid, idx) => (
             <Fragment key={rid}>
               {idx > 0 ? <span>,</span> : null}
-              <Link to={ruleHref(rid)} className="text-primary hover:underline">
-                {ruleBadgeLabel(resolveRule(rid))}
-              </Link>
+              <RuleTrigger
+                ruleId={rid}
+                label={ruleBadgeLabel(resolveRule(rid))}
+                onSelectRule={onSelectRule}
+              />
             </Fragment>
           ))}
         </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,7 +55,16 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	if declared.SubtitleCodecs == nil {
 		declared.SubtitleCodecs = append([]string(nil), policy.SubtitleCodecs...)
 	}
-	if len(declared.DVProfiles) == 0 {
+	if s.surface == "vela" {
+		// Preserve an empty policy and a DV-off rule before Vela fills missing
+		// profiles from the client declaration.
+		declared.DVProfiles = slices.Clone(policy.DolbyVisionProfiles)
+		declared.DVProfilesExplicit = declared.DVProfiles != nil && len(declared.DVProfiles) == 0
+		if transcode.PlaybackDefaultsFor(declared.Product, declared.Platform, declared.Device, declared.DeviceName, "", declared.Version, overrides).DolbyVisionOff {
+			declared.DolbyVision = false
+			declared.DolbyVisionBaseOnly = true
+		}
+	} else if len(declared.DVProfiles) == 0 {
 		declared.DVProfiles = append([]int(nil), policy.DolbyVisionProfiles...)
 	}
 	if policy.AlwaysEncodeVideo {

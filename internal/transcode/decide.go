@@ -115,7 +115,8 @@ func rangeOK(v *core.StreamInfo, caps core.ClientCaps) string {
 			return ""
 		}
 		base, ok := dvBaseLayer(v)
-		if androidClient(caps) && !hasHDR10Base(v, caps) {
+		velaRequiresBase := caps.Protocol == "vela" && (caps.DolbyVisionBaseOnly || caps.DVProfilesExplicit || len(caps.DVProfileVariants) > 0)
+		if (androidClient(caps) || velaRequiresBase) && !hasHDR10Base(v, caps) {
 			return fmt.Sprintf("client lacks compatible Dolby Vision variant (profile %d): video conversion required", v.DolbyVisionProfile)
 		}
 		if !ok {
@@ -1143,10 +1144,9 @@ func hdr10BaseReason(v *core.StreamInfo, caps core.ClientCaps, opts core.DecideO
 	}
 	id := clientreg.Identity{Product: caps.Product, Platform: caps.Platform, Device: caps.Device, Version: caps.Version}
 	switch {
-	case !supportsDVStream(caps, v) && androidClient(caps):
-		// Android players can pick a Dolby Vision decoder for a file whose
-		// profile the device lacks (#328); desktop players show the HDR10
-		// base of the same file directly, so only Android loses direct play.
+	case !supportsDVStream(caps, v) && (androidClient(caps) || len(caps.DVProfileVariants) > 0):
+		// Android may select an unsupported decoder (#328). A Vela
+		// declaration also limits which exact variants we can send intact.
 		return fmt.Sprintf("client lacks Dolby Vision profile %d: delivering its HDR10 base layer", v.DolbyVisionProfile)
 	case clientreg.HasQuirk(id, "plex-appletv-hdr10-base"):
 		return fmt.Sprintf("native Plex Apple TV compatibility: Dolby Vision profile %d uses its HDR10 base layer", v.DolbyVisionProfile)
@@ -1236,6 +1236,20 @@ func androidClient(caps core.ClientCaps) bool {
 func supportsDVStream(caps core.ClientCaps, v *core.StreamInfo) bool {
 	if !SupportsDVProfile(caps, v.DolbyVisionProfile) {
 		return false
+	}
+	if len(caps.DVProfileVariants) > 0 {
+		var variant string
+		switch v.DolbyVisionProfile {
+		case 5:
+			variant = "5"
+		case 7:
+			variant = "7"
+		case 8:
+			variant = fmt.Sprintf("8.%d", v.DolbyVisionCompatibilityID)
+		}
+		if !slices.Contains(caps.DVProfileVariants, variant) {
+			return false
+		}
 	}
 	if !androidClient(caps) {
 		return true

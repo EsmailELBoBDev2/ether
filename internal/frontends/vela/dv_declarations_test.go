@@ -313,7 +313,7 @@ func TestVelaDeclaredDVProfilesOnAndroid(t *testing.T) {
 	if with, without := h.playCaps(t, velaClientOn("android", "Pixel", []string{"hdr10"}, listed)), h.playCaps(t, velaClientOn("android", "Pixel", []string{"hdr10"}, hls)); !reflect.DeepEqual(with, without) {
 		t.Errorf("a list without dv changed the capabilities: %v, want %v", with.DVProfiles, without.DVProfiles)
 	}
-	for _, none := range []map[string]any{empty, hlgOnly} {
+	for _, none := range []map[string]any{empty, {"dolbyVisionProfiles": []string{"unknown"}}} {
 		if with, without := h.playCaps(t, velaClientOn("android", "Pixel", dv, none)), h.playCaps(t, velaClientOn("android", "Pixel", dv, hls)); with.DVProfilesExplicit == without.DVProfilesExplicit || len(with.DVProfiles) != 0 {
 			t.Errorf("list %v is not kept as declaring no profiles: %v %v", none["dolbyVisionProfiles"], with.DVProfiles, with.DVProfilesExplicit)
 		}
@@ -347,16 +347,18 @@ func TestVelaDeclaredDVProfilesKeepRegistry(t *testing.T) {
 	}
 }
 
-// Off Android the declared list is not read: a synthetic macOS client, whose
-// registry entry lists no Dolby Vision profiles, gets the same capabilities
-// with and without one.
-func TestVelaDeclaredDVProfilesIgnoredOffAndroid(t *testing.T) {
+// A client with no registry profiles can declare an exact Profile 8 variant.
+func TestVelaDeclaredDVProfilesOffAndroid(t *testing.T) {
 	hdr := []string{"hdr10", "hlg", "dv"}
-	mac := func(extra map[string]any) object { return velaClientOn("macos", "Mac", hdr, extra) }
-	h := newDVHarness()
-	for _, list := range [][]string{{"5", "8.1"}, {}} {
-		if with, without := h.playCaps(t, mac(map[string]any{"dolbyVisionProfiles": list})), h.playCaps(t, mac(nil)); !reflect.DeepEqual(with, without) {
-			t.Errorf("macos list %v changed the capabilities: %v %v, want %v %v", list, with.DVProfiles, with.DVProfilesExplicit, without.DVProfiles, without.DVProfilesExplicit)
-		}
+	mac := velaClientOn("macos", "Mac", hdr, map[string]any{"dolbyVisionProfiles": []string{"5", "8.1"}})
+	if _, signalled, d := newDVHarness().dvPlan(t, mac, "8.1"); !signalled {
+		t.Errorf("macOS declared 8.1 lost Dolby Vision: %s", d.Reason)
+	}
+	if _, signalled, d := newDVHarness().dvPlan(t, mac, "8.4"); signalled {
+		t.Errorf("macOS received undeclared 8.4: %s", d.Reason)
+	}
+	apple := velaClientOn("tvos", "Den", hdr, map[string]any{"dolbyVisionProfiles": []string{}})
+	if _, signalled, d := newDVHarness().dvPlan(t, apple, "5"); signalled || d.VideoCopy {
+		t.Errorf("an empty Apple list admitted Profile 5: %s", d.Reason)
 	}
 }

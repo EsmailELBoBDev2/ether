@@ -31,7 +31,11 @@ func (s *Service) ServeDASH(w http.ResponseWriter, r *http.Request, id string, u
 	shared := ss.broadcast != nil
 	owned := ss.owned
 	hasDash := ss.dash != nil
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		return s.serveCatchUpDASH(w, r, ss, archive)
+	}
 	if shared {
 		return s.serveBroadcastDASH(w, r, ss)
 	}
@@ -304,7 +308,27 @@ func (s *Service) ServeDASHPart(w http.ResponseWriter, r *http.Request, id strin
 	shared := ss.broadcast != nil
 	ds := ss.dash
 	owned := ss.owned
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		generation := r.URL.Query().Get("archive")
+		dash, ok := archive.hls.(core.DASHSession)
+		if !ok || !archive.info.DASH || generation != archive.info.MediaGeneration {
+			writeStreamError(w, core.ErrNotFound)
+			return
+		}
+		if init {
+			dash.ServeInit(w, r, rep)
+		} else {
+			if r.Method != http.MethodHead {
+				s.touchMedia(ss)
+			}
+			observed := s.observeMedia(w, ss)
+			defer observed.done()
+			dash.ServeMedia(observed, r, rep, n)
+		}
+		return
+	}
 	if shared {
 		s.serveBroadcastDASHPart(w, r, ss, rep, int64(n), init)
 		return
@@ -327,4 +351,34 @@ func (s *Service) ServeDASHPart(w http.ResponseWriter, r *http.Request, id strin
 		defer observed.done()
 		ds.ServeMedia(observed, r, rep, n)
 	}
+}
+
+func (s *Service) serveCatchUpDASH(w http.ResponseWriter, r *http.Request, ss *session, archive *catchUpSession) error {
+	dash, ok := archive.hls.(core.DASHSession)
+	if !ok || !archive.info.DASH {
+		return core.ErrNotAvailable
+	}
+	rec := httptest.NewRecorder()
+	dash.ServeManifest(rec, r)
+	if rec.Code != http.StatusOK {
+		http.Error(w, "Catch-up stream unavailable", rec.Code)
+		return nil
+	}
+	prefix := "session/" + archive.hls.ID() + "/"
+	route := "/livetv/sessions/" + ss.info.ID + "/0/dash/"
+	body := dashURL.ReplaceAllStringFunc(rec.Body.String(), func(attr string) string {
+		parts := dashURL.FindStringSubmatch(attr)
+		child, ok := strings.CutPrefix(parts[2], prefix)
+		if !ok {
+			return attr
+		}
+		target := route + child + "?archive=" + url.QueryEscape(archive.info.MediaGeneration)
+		return parts[1] + `="` + html.EscapeString(withAuth(target, ss.streamGrant)) + `"`
+	})
+	w.Header().Set("Content-Type", "application/dash+xml")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(body))
+	}
+	return nil
 }

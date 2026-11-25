@@ -33,7 +33,10 @@ type catchUpSession struct {
 }
 
 func (s *Service) catchUpSelection(ctx context.Context, u *core.User, c Channel, req CatchUpRequest, now time.Time) (CatchUpInfo, error) {
-	info := CatchUpInfo{ChannelID: c.ID, Title: c.Name, Start: req.Start, StartOver: req.StartOver}
+	info := CatchUpInfo{ChannelID: c.ID, Title: c.Name, Start: req.Start, StartOver: req.StartOver, DASH: req.DASH}
+	if req.DASH && req.StartOver {
+		return info, ErrInvalidCatchUpRange
+	}
 	if !s.allowedProgramme(ctx, u, c, nil) {
 		return info, core.ErrUnauthorized
 	}
@@ -96,6 +99,10 @@ func (s *Service) catchUpSelection(ctx context.Context, u *core.User, c Channel,
 	if !info.End.After(info.Start) {
 		return info, archiveUnavailable()
 	}
+	if req.InitialOffset < 0 || req.InitialOffset >= info.End.Sub(info.Start) || req.StartOver && req.InitialOffset > 0 {
+		return info, ErrInvalidCatchUpRange
+	}
+	info.Origin = req.InitialOffset
 	return info, nil
 }
 
@@ -321,9 +328,15 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 	info.MediaGeneration = randomID()
 	info.Decision = dec
 	opened.info = info
+	protocol := core.ProtocolHLS
+	if info.DASH {
+		protocol = core.ProtocolDASH
+		dec.Container = transcode.ContainerFMP4
+		opened.info.Decision = dec
+	}
 	opened.hls, err = tc.StartHLS(ss.ctx, core.HLSRequest{
 		SessionID: info.ID + "-" + info.MediaGeneration, MediaGeneration: info.MediaGeneration, InputURL: input,
-		Info: *probe, Decision: dec, SegmentDuration: cut, ArchiveInput: true, ArchiveTrim: trim, NoVideoTranscode: ss.caps.NoVideoTranscode,
+		Info: *probe, Decision: dec, SegmentDuration: cut, Protocol: protocol, ArchiveInput: true, ArchiveTrim: trim, NoVideoTranscode: ss.caps.NoVideoTranscode,
 	})
 	if err != nil {
 		if errors.Is(err, frontend.ErrTooManyTranscodes) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrVideoTranscodingDisabled) {

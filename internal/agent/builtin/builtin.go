@@ -24,24 +24,25 @@ import (
 // services to these interfaces; tests use fakes. Plugins and Approvals may
 // be nil until WS7 and WS4 land.
 type Deps struct {
-	OnAir       OnAirService
-	Status      StatusService
-	Playback    PlaybackService
-	Resolver    ResolverService
-	Logs        LogService
-	Catalog     CatalogService
-	Collections CollectionService
-	LiveTV      LiveTVService
-	Sources     SourceService
-	Plugins     PluginService // optional (WS7)
-	Approvals   ApprovalReader
-	Profiles    ProfileService
-	Frontends   FrontendService
-	Server      ServerService
-	Flows       FlowsService // optional
-	OwnerUser   func(ctx context.Context) (*core.User, error)
-	Routes      func() []RouteInfo
-	Now         func() time.Time
+	OnAir        OnAirService
+	Status       StatusService
+	Playback     PlaybackService
+	Resolver     ResolverService
+	Logs         LogService
+	Catalog      CatalogService
+	Collections  CollectionService
+	LiveTV       LiveTVService
+	Sources      SourceService
+	Plugins      PluginService // optional (WS7)
+	Approvals    ApprovalReader
+	Profiles     ProfileService
+	QualityRules QualityRulesService // optional
+	Frontends    FrontendService
+	Server       ServerService
+	Flows        FlowsService // optional
+	OwnerUser    func(ctx context.Context) (*core.User, error)
+	Routes       func() []RouteInfo
+	Now          func() time.Time
 }
 
 func (d Deps) now() time.Time {
@@ -257,6 +258,7 @@ func All(d Deps) []tools.Tool {
 	out := []tools.Tool{}
 	out = append(out, readTools(d)...)
 	out = append(out, qualityProfilesTool(d), qualityOrderTool(d))
+	out = append(out, qualityRulesTools(d)...)
 	out = append(out, writeTools(d)...)
 	out = append(out, webTools()...)
 	out = append(out, onairTools(d)...)

@@ -317,7 +317,6 @@ group is:
 ```json
 {
   "profile": "4K",
-  "media": "tv",
   "qualityOrder": [
     {"name": "HD and UHD WEB", "qualities": ["webdl-2160", "webrip-2160", "webdl-1080", "webrip-1080"]}
   ]
@@ -331,3 +330,38 @@ within that group, not only language. Existing Proper/Repack revision
 preferences still apply before scores (S2 above). A profile's language rules, allowed
 qualities, size and resolution limits, and the device and availability
 checks still apply. A language score alone cannot outrank a higher group.
+
+## Managing quality rules through MCP
+
+One ordered list of quality rules decides which profile and playback limits
+apply to a play. Rules run from top to bottom: the first matching rule with a
+profile picks it, while every matching rule's limits (`maxHeight`,
+`maxBitrateKbps`, `stereoAudio`) accumulate (strictest wins). When no rule
+picks a profile, `defaultAway` applies away from home (when set) and
+`default` applies otherwise.
+
+Read tools:
+
+- `quality_rules_list` returns the ordered rules (with 1-based `position` and
+  stable `id`), `default`, `defaultAway`, available profile names, libraries
+  and viewers. Pass `{"includeDevices": true}` to include valid device
+  `groups`, `types`, `apps` and seen `clients`.
+- `quality_explain` runs the same decision engine as playback and the
+  console's Check quality view for a given `viewerId`, `clientId` (or custom
+  `client`), `remote`, and optional `titleKey`, `libraryId` or `kind`.
+
+Write tools (all propose changes for owner approval in the console and
+validate through the canonical config validator before proposing):
+
+- `quality_rule_add` proposes inserting a rule (at optional 1-based
+  `position`, or appended at the end). The server assigns a stable `r_...` id
+  on approval.
+- `quality_rule_edit` proposes patching an existing rule by its stable
+  `ruleId`. Omitted fields stay unchanged; pass `""` to clear `profile`,
+  `where`, `kind` or `name`, `0` to clear `maxHeight` or `maxBitrateKbps`,
+  `false` to clear `stereoAudio`, or `[]` to clear `libraries`, `viewers` or
+  `devices`.
+- `quality_rule_move` proposes moving an existing rule by `ruleId` to a new
+  1-based `position`.
+- `quality_defaults_set` proposes changing `default` and/or `defaultAway`
+  (pass `""` for `defaultAway` to use the same profile as at home).

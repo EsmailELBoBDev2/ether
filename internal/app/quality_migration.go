@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/clientreg"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -110,9 +111,8 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		name := fmt.Sprintf("Viewer %d", uid)
 		// This startup migration runs before the auth service is built.
 		if a.db != nil {
-			var title, username string
-			if err := a.db.QueryRowContext(ctx, "SELECT title, username FROM auth_users WHERE id = ?", uid).Scan(&title, &username); err == nil {
-				name = firstNonEmptyStr(title, username, name)
+			if viewer, err := auth.StoredIdentity(ctx, a.db, uid); err == nil {
+				name = firstNonEmptyStr(viewer.Title, viewer.Username, name)
 			}
 		}
 		rules = append(rules, config.QualityRule{

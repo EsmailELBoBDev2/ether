@@ -1234,12 +1234,12 @@ func (i *instance) playbackRoutes() error {
 			return err
 		}
 		if err := i.router.Handle(method, "/Items/{id}/Download", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			i.serveBookFile(w, r, true)
+			i.serveItemFile(w, r, true)
 		})); err != nil {
 			return err
 		}
 		if err := i.router.Handle(method, "/Items/{id}/File", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			i.serveBookFile(w, r, false)
+			i.serveItemFile(w, r, false)
 		})); err != nil {
 			return err
 		}

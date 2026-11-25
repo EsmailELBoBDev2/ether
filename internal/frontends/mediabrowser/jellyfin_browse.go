@@ -307,6 +307,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 	if i == nil || item == nil {
 		return
 	}
+	i.setVideoCanDownload(viewer, item, title)
 	i.attachTitleLibrary(r, viewer, item, title)
 	if i.protocol != "jellyfin" {
 		return

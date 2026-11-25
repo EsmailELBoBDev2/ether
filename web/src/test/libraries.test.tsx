@@ -366,10 +366,10 @@ describe("Libraries workspace", () => {
     });
   });
 
-  it("sets the quality profile on a library from its settings", async () => {
+  it("sets the release profile on a library from its settings", async () => {
     const { fake } = renderApp("/libraries/1/settings");
-    await screen.findByText("Quality profile", {}, { timeout: 15000 });
-    fireEvent.click(screen.getByRole("button", { name: "Quality profile" }));
+    await screen.findByText("Release profile", {}, { timeout: 15000 });
+    fireEvent.click(screen.getByRole("button", { name: "Release profile" }));
     fireEvent.click(await screen.findByRole("option", { name: "4K" }, { timeout: 15000 }));
     expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));

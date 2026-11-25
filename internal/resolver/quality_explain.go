@@ -25,6 +25,8 @@ type QualityQuestion struct {
 	// MediaType is the media scope when no title is supplied: "movie" or
 	// "tv". Empty means unknown.
 	MediaType string
+	// Library is the profile choice of the title's library, if known.
+	Library core.LibraryQuality
 	// RemoteMaxBitrateKbps is transcode.remoteMaxBitrateKbps; 0 = no cap.
 	RemoteMaxBitrateKbps int
 	// ViewerMaxBitrateKbps is the viewer's safety-policy cap; 0 = no cap.
@@ -90,7 +92,7 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 	if media == core.MediaAny {
 		media = normalizeMedia(in.MediaType)
 	}
-	d := decideProfile(in.Quality, declared, in.User, media, "")
+	d := decideProfile(in.Quality, declared, in.User, media, in.Library)
 	choice, eff := d.effect.choice, d.effect
 	out := QualityAnswer{Profile: d.profile.Name, MediaType: media, MaxHeight: d.profile.MaxHeight, HDR: d.profile.AllowHDR, DolbyVision: d.profile.AllowDolbyVision}
 
@@ -101,7 +103,10 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 	profile := QualityLayer{Kind: LayerProfile, Profile: choice.profile.Name, Source: choice.source, MaxHeight: configured, HDR: boolp(choice.profile.AllowHDR), DolbyVision: boolp(choice.profile.AllowDolbyVision)}
 	if choice.source == ProfileFromRule {
 		rule := in.Quality.Rules[choice.rule]
-		remote := remoteProfileName(in.Quality, media)
+		remote := in.Library.Away
+		if remote == "" {
+			remote = in.Quality.Remote
+		}
 		profile.Rule = choice.rule + 1
 		profile.RuleUserID = rule.UserID
 		profile.BeatsRemote = declared.Remote && remote != "" && remote != choice.profile.Name

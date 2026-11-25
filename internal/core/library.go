@@ -483,15 +483,29 @@ type Library struct {
 	// Nil fields follow the manifest or inferred default; non-nil choices
 	// survive plugin updates and restarts.
 	PresentOverrides PresentationOverrides `json:"presentOverrides,omitempty"`
-	// QualityProfile is the owner-set quality profile name titles in this
-	// library rank with. Empty means "Default": today's Movies/Shows
-	// home/away defaults apply. Set on any library, including catalogue
-	// libraries (an "Anime" library can rank with an anime profile).
-	QualityProfile string    `json:"qualityProfile,omitempty"`
-	Sort           int       `json:"sort"`   // owner order in every client
-	Hidden         bool      `json:"hidden"` // owner hid it from all clients (still in console)
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	// QualityProfile and AwayQualityProfile are the release profiles titles
+	// in this library rank with for viewers at home and away. Empty means
+	// the server's Default (or Default away) profile. Only libraries
+	// Ether's resolver plays from have them (UsesReleaseProfiles); a plugin
+	// library's plugin chooses its own releases.
+	QualityProfile     string    `json:"qualityProfile,omitempty"`
+	AwayQualityProfile string    `json:"awayQualityProfile,omitempty"`
+	Sort               int       `json:"sort"`   // owner order in every client
+	Hidden             bool      `json:"hidden"` // owner hid it from all clients (still in console)
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+// UsesReleaseProfiles reports whether Ether's resolver picks releases for
+// the library's titles, so the library chooses a release profile: the
+// built-in, catalogue and collection libraries. Plugin libraries play what
+// their plugin serves and choose releases themselves.
+func (l Library) UsesReleaseProfiles() bool {
+	switch l.Source {
+	case LibraryBuiltin, LibraryCatalog, LibraryCollection:
+		return true
+	}
+	return false
 }
 
 // Library experiences name how an app presents a library: watch (films and

@@ -361,20 +361,20 @@ func TestMCPBuiltinToolsAndEndToEndWorkflow(t *testing.T) {
 	}
 	var target int = -1
 	for i, p := range beforeQuality.Profiles {
-		if p.Name == "4K" && p.MediaType == "tv" {
+		if p.Name == "4K" {
 			target = i
 			break
 		}
 	}
 	if target < 0 {
-		t.Fatal("missing default TV profile")
+		t.Fatal("missing default 4K profile")
 	}
 	row := profileRows[target].(map[string]any)
-	if row["name"] != "4K" || row["media"] != "tv" || len(row["qualityOrder"].([]any)) == 0 {
+	if row["name"] != "4K" || len(row["qualityOrder"].([]any)) == 0 {
 		t.Fatalf("profile read: %v", row)
 	}
 	grouped := []core.QualityItem{{Name: "HD and UHD", Qualities: []string{"webdl-2160", "webdl-1080"}}}
-	qualityProposal := mcpCall("quality_order_set", map[string]any{"profile": "4K", "media": "tv", "qualityOrder": grouped})
+	qualityProposal := mcpCall("quality_order_set", map[string]any{"profile": "4K", "qualityOrder": grouped})
 	if qualityProposal["status"] != "pending_approval" || !reflect.DeepEqual(a.cfg.Get().Quality, beforeQuality) {
 		t.Fatal("quality changed before approval")
 	}

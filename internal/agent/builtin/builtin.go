@@ -173,11 +173,9 @@ type PluginService interface {
 }
 
 // ProfileInfo is one quality profile with its quality order, format scores,
-// language settings, limits and rules. A profile serves one media; a movie and a TV profile may share a
-// name.
+// language settings, limits and rules. Names are unique.
 type ProfileInfo struct {
 	Name               string
-	Media              string         // core.MediaMovie or core.MediaTV
 	Scores             map[string]int // custom format id → score
 	Rules              []core.ReleaseRule
 	QualityOrder       []core.QualityItem
@@ -193,10 +191,10 @@ type ProfileService interface {
 	Profiles(ctx context.Context) ([]ProfileInfo, error)
 	// SetFormatScores sets the given custom format scores on a profile; a
 	// score of 0 removes the format from the profile.
-	SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error
+	SetFormatScores(ctx context.Context, profile string, scores map[string]int) error
 	// SetQualityOrder replaces only the quality groups, preserving other settings.
-	SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error
-	AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error
+	SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error
+	AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error
 }
 
 // FrontendInfo is one client protocol frontend.

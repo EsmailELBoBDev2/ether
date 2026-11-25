@@ -484,13 +484,10 @@ export interface EtherConfig {
   quality: {
     profiles: QualityProfile[] | null;
     rules: QualityRule[] | null;
+    /** The profile of every library that has not chosen one. */
     default: string;
+    /** The profile away from home; "" = each library's At home profile. */
     remote: string;
-    /** Media-specific defaults; absent falls back to default/remote. */
-    defaultMovie?: string;
-    defaultTv?: string;
-    remoteMovie?: string;
-    remoteTv?: string;
     sync?: QualitySync;
   };
   transcode: {
@@ -644,8 +641,6 @@ export interface QualitySync {
 }
 
 export interface QualityProfile {
-  /** "", "movie" or "tv"; absent/"" applies to both. */
-  mediaType?: string;
   /** Set on imported profiles that automatic sync updates in place. */
   import?: ProfileImport;
   releaseRules?: ReleaseRule[] | null;

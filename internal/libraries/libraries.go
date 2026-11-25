@@ -23,6 +23,9 @@ func init() {
 ALTER TABLE libraries ADD COLUMN present_overrides TEXT NOT NULL DEFAULT '{}';
 UPDATE libraries SET present_overrides = '{"adapterOnly":true}' WHERE source = 'plugin' AND present LIKE '%"adapterOnly":true%';
 `
+	// Each library chooses its release profile for viewers away from home.
+	store.Register("libraries", 16, `ALTER TABLE libraries ADD COLUMN away_quality_profile TEXT NOT NULL DEFAULT '';`)
+	store.RegisterDialect("libraries", 16, store.Postgres, `ALTER TABLE libraries ADD COLUMN away_quality_profile TEXT NOT NULL DEFAULT '';`)
 	store.Register("libraries", 13, mig13)
 	store.RegisterDialect("libraries", 13, store.Postgres, mig13)
 	store.Register("libraries", 12, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)

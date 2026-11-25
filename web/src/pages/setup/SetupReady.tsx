@@ -633,17 +633,10 @@ function SetupReadyInner({ initialConfig = null, tmdbAvailable }: SetupReadyProp
     pills.push({ label: t("Connect a device"), to: connectDevicePath(cfg?.frontends) });
   }
   pills.push({ label: t("Add viewers"), to: "/viewers" });
-  const neutral = cfg?.quality?.default?.trim() || "1080p";
-  const movieProfile = cfg?.quality?.defaultMovie?.trim() || neutral;
-  const showProfile = cfg?.quality?.defaultTv?.trim() || neutral;
   pills.push({
-    label:
-      movieProfile === showProfile
-        ? t("Playback quality: {profile} at home · change", { profile: movieProfile })
-        : t("Playback quality: {movies} for movies, {shows} for shows at home · change", {
-            movies: movieProfile,
-            shows: showProfile,
-          }),
+    label: t("Playback quality: {profile} at home · change", {
+      profile: cfg?.quality?.default?.trim() || "1080p",
+    }),
     to: "/releases/profiles",
   });
 

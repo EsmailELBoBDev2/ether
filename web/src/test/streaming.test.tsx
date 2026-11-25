@@ -450,7 +450,7 @@ describe("Releases", () => {
     ).toBeChecked();
   });
 
-  it("organizes the profile drawer into sub-tabs, deduplicates copy, and hides TV size overrides on movies", async () => {
+  it("organizes the profile drawer into sub-tabs, deduplicates copy, and labels episode size limits", async () => {
     renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" });
@@ -466,8 +466,9 @@ describe("Releases", () => {
         "Maximum limits and blocked releases always apply. Minimum resolution is a preference.",
       ),
     ).toHaveLength(1);
-    expect(within(drawer).getByRole("group", { name: "Movies" })).toBeInTheDocument();
-    expect(within(drawer).queryByRole("group", { name: "TV episodes" })).not.toBeInTheDocument();
+    expect(within(drawer).getByRole("group", { name: "Size" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("group", { name: "Episodes" })).toBeInTheDocument();
+    expect(within(drawer).getByLabelText("Episode maximum MB per minute")).toHaveValue(0);
     expect(within(drawer).getByLabelText("Maximum MB per minute")).toHaveValue(1000);
 
     fireEvent.click(within(drawer).getByRole("tab", { name: "Scoring" }));
@@ -478,14 +479,6 @@ describe("Releases", () => {
     ).toBeInTheDocument();
     fireEvent.click(within(drawer).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "4K" })).toBeNull());
-
-    // Shows profiles still offer the TV episodes size override.
-    fireEvent.click(screen.getByRole("radio", { name: "Shows" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, WAIT));
-    const showDrawer = await screen.findByRole("dialog", { name: "1080p" });
-    fireEvent.click(within(showDrawer).getByRole("tab", { name: "Limits" }));
-    expect(within(showDrawer).getByRole("group", { name: "TV episodes" })).toBeInTheDocument();
-    expect(within(showDrawer).getByLabelText("Episode maximum MB per minute")).toHaveValue(0);
   });
 
   it("reorders the quality order and changes a format score", async () => {
@@ -551,9 +544,9 @@ describe("Releases", () => {
     ).toBeNull();
   });
 
-  it("shows Default at home and Default away badges and updates them from the profile drawer", async () => {
+  it("shows Default and Default away badges and updates them from the profile drawer", async () => {
     const { fake } = renderApp("/releases/profiles");
-    expect(await screen.findByText("Default at home", {}, WAIT)).toBeInTheDocument();
+    expect(await screen.findByText("Default away profile", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText("Default away")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit 4K" }));
     const drawer = await screen.findByRole("dialog", { name: "4K" });
@@ -561,10 +554,7 @@ describe("Releases", () => {
     fireEvent.click(within(defaultsGroup).getByRole("button", { name: "At home" }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
-    expect(calls(fake, "PUT", "/config/quality")[0]!.body).toMatchObject({
-      defaultMovie: "4K",
-      default: "1080p",
-    });
+    expect(calls(fake, "PUT", "/config/quality")[0]!.body).toMatchObject({ default: "4K" });
   });
 
   it("renames a profile in its drawer and keeps rules pointing at it", async () => {
@@ -588,10 +578,7 @@ describe("Releases", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
     const body = calls(fake, "PUT", "/config/quality")[0]!.body as EtherConfig["quality"];
-    expect(body.profiles?.map((p) => `${p.mediaType}:${p.name}`)).toEqual([
-      "movie:1080p",
-      "tv:1080p",
-    ]);
+    expect(body.profiles?.map((p) => p.name)).toEqual(["1080p", "Episodes 1080p"]);
     expect(body.rules).toEqual([]);
     expect(body).toMatchObject({ default: "1080p", remote: "1080p" });
   });

@@ -51,57 +51,6 @@ it("orders profile sections before away, source order, and versions", async () =
   ).not.toBeInTheDocument();
 });
 
-it("switches profiles between movies and shows and badges each card", async () => {
-  renderApp("/releases/profiles", {}, (fake) => {
-    const profiles = fake.state.config.quality.profiles!;
-    profiles.push({ ...structuredClone(profiles[2]!), name: "Sitcoms" });
-  });
-  const movies = await screen.findByRole("radio", { name: "Movies" }, { timeout: 10000 });
-  const shows = screen.getByRole("radio", { name: "Shows" });
-  expect(movies).toHaveAttribute("aria-checked", "true");
-  const row = (name: string) => screen.getByRole("button", { name: `Edit ${name}` }).closest("li")!;
-  await screen.findByRole("button", { name: "Edit 4K" }, { timeout: 10000 });
-  expect(within(row("4K")).getByText("Movies")).toBeInTheDocument();
-  expect(within(row("1080p")).getByText("Movies")).toBeInTheDocument();
-  // Every profile is for one media: there is no "Movies & shows" profile.
-  expect(screen.queryByText("Movies & shows")).not.toBeInTheDocument();
-
-  fireEvent.click(shows);
-  expect(
-    await screen.findByRole("button", { name: "Edit Sitcoms" }, { timeout: 10000 }),
-  ).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Edit 4K" })).not.toBeInTheDocument();
-  // The show profile named 1080p is its own profile.
-  expect(within(row("1080p")).getByText("Shows")).toBeInTheDocument();
-});
-
-it("offers only Movies and Shows, and a moved profile takes its rules along", async () => {
-  const { fake } = renderApp("/releases/profiles", {}, (f) => {
-    f.state.config.quality.profiles!.push({
-      ...structuredClone(f.state.config.quality.profiles![0]!),
-      name: "Kids",
-    });
-    f.state.config.quality.rules!.push({ userId: 7, mediaType: "movie", profile: "Kids" });
-  });
-  fireEvent.click(await screen.findByRole("button", { name: "Edit Kids" }, { timeout: 10000 }));
-  const drawer = await screen.findByRole("dialog", { name: "Kids" });
-  const applies = within(drawer).getByRole("radiogroup", { name: "Applies to" });
-  expect(
-    within(applies)
-      .getAllByRole("radio")
-      .map((r) => r.textContent),
-  ).toEqual(["Movies", "Shows"]);
-  fireEvent.click(within(applies).getByRole("radio", { name: "Shows" }));
-  fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
-  await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
-  const body = calls(fake, "PUT", "/config/quality")[0]!.body as {
-    profiles: { name: string; mediaType?: string }[];
-    rules: { userId?: number; mediaType?: string; profile: string }[];
-  };
-  expect(body.profiles.find((p) => p.name === "Kids")?.mediaType).toBe("tv");
-  expect(body.rules.at(-1)).toEqual({ userId: 7, mediaType: "tv", profile: "Kids" });
-});
-
 it("collapses guide sync to one line until a profile is imported", async () => {
   renderApp("/releases/profiles");
   expect(
@@ -176,55 +125,6 @@ it("shows a sync failure without a settings save bar and clears it on retry", as
   expect(screen.queryByText("Sync failed")).not.toBeInTheDocument();
 });
 
-it("keeps an empty media tab selected so its first profile can be added", async () => {
-  renderApp("/releases/profiles", {}, (fake) => {
-    fake.state.config.quality.profiles = fake.state.config.quality.profiles!.map((p) => ({
-      ...p,
-      mediaType: "movie",
-    }));
-  });
-  await screen.findByRole("button", { name: "Add profile" });
-  fireEvent.click(screen.getByRole("radio", { name: "Shows" }));
-  await waitFor(() =>
-    expect(screen.getByRole("radio", { name: "Shows" })).toHaveAttribute("aria-checked", "true"),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Add profile" }));
-  const drawer = await screen.findByRole("dialog");
-  expect(within(drawer).getByText("Shows")).toBeInTheDocument();
-  expect(within(drawer).queryByRole("radio", { name: "Movies" })).not.toBeInTheDocument();
-  expect(within(drawer).queryByRole("radio", { name: "Both" })).not.toBeInTheDocument();
-});
-
-it("sets a shared profile as the away default only for the selected media", async () => {
-  const { fake } = renderApp("/releases/profiles", {}, (server) => {
-    server.state.config.quality.remote = "";
-    server.state.config.quality.remoteMovie = "";
-    server.state.config.quality.remoteTv = "";
-  });
-  fireEvent.click(await screen.findByRole("radio", { name: "Shows" }, { timeout: 10000 }));
-  fireEvent.click(screen.getByRole("button", { name: "Edit 1080p" }));
-  const drawer = await screen.findByRole("dialog", { name: "1080p" });
-  fireEvent.click(within(drawer).getByRole("button", { name: "Away" }));
-  fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
-  await waitFor(() => expect(fake.state.config.quality.remoteTv).toBe("1080p"));
-  expect(fake.state.config.quality.remoteMovie).toBe("");
-});
-
-it("clears a legacy away default for one media while preserving the other", async () => {
-  const { fake } = renderApp("/releases/profiles", {}, (server) => {
-    server.state.config.quality.remote = "1080p";
-    server.state.config.quality.remoteMovie = "";
-    server.state.config.quality.remoteTv = "";
-  });
-  fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, { timeout: 10000 }));
-  const drawer = await screen.findByRole("dialog", { name: "1080p" });
-  fireEvent.click(within(drawer).getByRole("button", { name: "Away" }));
-  fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
-  await waitFor(() => expect(fake.state.config.quality.remote).toBe(""));
-  expect(fake.state.config.quality.remoteMovie).toBe("");
-  expect(fake.state.config.quality.remoteTv).toBe("1080p");
-});
-
 it("settles dangling client rules when saving a profile", async () => {
   const { fake } = renderApp("/releases/profiles", {}, (server) => {
     server.state.config.quality.default = "Gone";
@@ -239,14 +139,12 @@ it("settles dangling client rules when saving a profile", async () => {
   const drawer = await screen.findByRole("dialog", { name: "4K" });
   fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
   await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
-  expect(fake.state.config.quality.default).toBe("");
-  // Mock fixture has movie [4K, 1080p] and tv [1080p], so a media-neutral
-  // dangling rule splits across each media's fallback profile.
+  // A Default or rule naming a missing profile falls back to the first one.
+  expect(fake.state.config.quality.default).toBe("4K");
   expect(fake.state.config.quality.rules).toEqual([
     { product: "Plex for Apple TV", profile: "4K" },
-    { product: "Roku", mediaType: "movie", profile: "4K", maxHeight: 1080 },
-    { product: "Roku", mediaType: "tv", profile: "1080p", maxHeight: 1080 },
+    { product: "Roku", profile: "4K", maxHeight: 1080 },
     { platform: "iOS", mediaType: "movie", profile: "4K" },
-    { userId: 7, mediaType: "tv", profile: "1080p" },
+    { userId: 7, mediaType: "tv", profile: "4K" },
   ]);
 });

@@ -465,13 +465,18 @@ func (s *Service) SetCardShape(ctx context.Context, id core.LibraryID, shape str
 	return s.setColumn(ctx, id, "card_shape", shape)
 }
 
-// SetQualityProfile sets the quality profile name titles in this library
-// rank with. An empty name means "Default" (today's Movies/Shows
-// home/away defaults). The name is stored verbatim; whether it names a
-// configured profile is checked at resolution time, so a profile rename
-// or a guide sync never leaves a library pointing at a missing profile.
+// SetQualityProfile sets the release profile titles in this library rank
+// with for viewers at home. An empty name means the Default profile. The
+// name is stored verbatim; a name no profile has falls back to Default at
+// resolution time.
 func (s *Service) SetQualityProfile(ctx context.Context, id core.LibraryID, name string) error {
 	return s.setColumn(ctx, id, "quality_profile", strings.TrimSpace(name))
+}
+
+// SetAwayQualityProfile is SetQualityProfile for viewers away from home.
+// An empty name means the Default away profile.
+func (s *Service) SetAwayQualityProfile(ctx context.Context, id core.LibraryID, name string) error {
+	return s.setColumn(ctx, id, "away_quality_profile", strings.TrimSpace(name))
 }
 
 // SetRules validates and stores TMDB visibility rules and default visibility

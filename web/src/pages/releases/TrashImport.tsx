@@ -19,15 +19,12 @@ import { ApiError, errorMessage, isAbort } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import {
-  appForMedia,
-  mediaLabel,
-  mediaTypeForApp,
   qualityGateLabel,
   releaseConsole,
   type ImportFormat,
   type QualityImportPlan,
   type QualityImportSource,
-  type ProfileMedia,
+  type StarrApp,
   type TrashProfileList,
 } from "../../lib/releases";
 import { itemName } from "../../lib/qualityRanking";
@@ -96,14 +93,12 @@ export function TrashImport({
   open,
   onClose,
   onImported,
-  media,
 }: {
   open: boolean;
-  media: ProfileMedia;
   onClose: () => void;
   onImported: () => Promise<void> | void;
 }) {
-  const app = appForMedia(media)!;
+  const [app, setApp] = useState<StarrApp>("radarr");
   const [mode, setMode] = useState<ImportMode>("guides");
   const [profileId, setProfileId] = useState("");
   const [pasted, setPasted] = useState("");
@@ -183,13 +178,6 @@ export function TrashImport({
     try {
       const p = await releaseConsole.previewImport(next, ctl.signal);
       if (ctl.signal.aborted) return;
-      if (p.app !== app) {
-        throw new Error(
-          t("This profile is for {actual}. Switch to {actual} before importing it.", {
-            actual: mediaLabel(mediaTypeForApp(p.app)),
-          }),
-        );
-      }
       setPlan(p);
       setSource({ ...next, app: p.app } as QualityImportSource);
       setName(p.profile.name);
@@ -266,12 +254,23 @@ export function TrashImport({
     >
       <SettingsSection title={t("Profile to import")}>
         <SettingsRow
-          title={t("App")}
-          description={t("Determined by the selected profile scope.")}
+          title={t("Guide")}
+          description={t("Radarr guides are written for films, Sonarr guides for episodes.")}
           control={
-            <Badge variant="secondary">
-              {app === "radarr" ? t("Movies (Radarr)") : t("Shows (Sonarr)")}
-            </Badge>
+            <Segmented
+              ariaLabel={t("Guide")}
+              size="sm"
+              value={app}
+              options={[
+                { value: "radarr" as const, label: "Radarr" },
+                { value: "sonarr" as const, label: "Sonarr" },
+              ]}
+              onChange={(v) => {
+                setApp(v);
+                setProfileId("");
+                clearPreview();
+              }}
+            />
           }
         />
         <SettingsRow
@@ -455,9 +454,7 @@ function ImportPreview({
           }
           control={
             <span className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="secondary">
-                {mediaLabel(plan.mediaType ?? mediaTypeForApp(plan.app))}
-              </Badge>
+              <Badge variant="secondary">{plan.app === "sonarr" ? "Sonarr" : "Radarr"}</Badge>
               <Badge variant="outline">{SOURCE_LABEL[plan.source ?? ""] ?? plan.source}</Badge>
             </span>
           }

@@ -18,13 +18,13 @@ import (
 // on any owner edit.
 const libraryProfileCacheEntries = 8192
 
-// libraryProfiles answers resolver.LibraryProfiles: which quality profile a
-// title ranks with, from the library it belongs to (spec #419). A filter
-// library that contains the title wins over the built-in Movies/TV Shows
-// library; the lowest library id with a compatible explicit profile breaks
-// a tie between matching filter/collection libraries, independent of entry point.
-// Membership is one indexed read per filter library (no walk),
-// and the answer is cached until local generations move or the short TTL expires.
+// libraryProfiles answers resolver.LibraryProfiles: which release profiles
+// a title ranks with, from the library it belongs to. A catalogue or
+// collection library that contains the title and chose a profile wins over
+// the built-in library; the lowest library id breaks a tie between them,
+// independent of entry point. Membership is one indexed read per such
+// library (no walk), and the answer is cached until local generations move
+// or the short TTL expires.
 type libraryProfiles struct {
 	app *App
 
@@ -33,30 +33,31 @@ type libraryProfiles struct {
 	catalogGen uint64
 	configGen  uint64
 	at         time.Time
-	cache      *lru.Cache[core.RatingKey, string]
+	cache      *lru.Cache[core.RatingKey, core.LibraryQuality]
 }
 
 func newLibraryProfiles(a *App) *libraryProfiles {
-	return &libraryProfiles{app: a, cache: lru.New[core.RatingKey, string](lru.Options[core.RatingKey, string]{MaxEntries: libraryProfileCacheEntries})}
+	return &libraryProfiles{app: a, cache: lru.New[core.RatingKey, core.LibraryQuality](lru.Options[core.RatingKey, core.LibraryQuality]{MaxEntries: libraryProfileCacheEntries})}
 }
 
-// QualityProfileForTitle returns the profile name set on the title's most
-// specific library, or "" for Default. It never blocks a request on more
-// than one indexed read per filter library, and caches the result.
-func (l *libraryProfiles) QualityProfileForTitle(ctx context.Context, t *core.Title) string {
+// LibraryQualityForTitle returns the profiles the title's most specific
+// library chose; empty names mean the server's Default ones. It never
+// blocks a request on more than one indexed read per library, and caches
+// the result.
+func (l *libraryProfiles) LibraryQualityForTitle(ctx context.Context, t *core.Title) core.LibraryQuality {
 	if l == nil || l.app == nil || l.app.libraries == nil || t == nil {
-		return ""
+		return core.LibraryQuality{}
 	}
 	key := libraryProfileKey(t)
-	if name, ok := l.cached(key); ok {
-		return name
+	if lq, ok := l.cached(key); ok {
+		return lq
 	}
-	name := l.resolve(ctx, t)
-	l.store(key, name)
-	return name
+	lq := l.resolve(ctx, t)
+	l.store(key, lq)
+	return lq
 }
 
-func (l *libraryProfiles) cached(key core.RatingKey) (string, bool) {
+func (l *libraryProfiles) cached(key core.RatingKey) (core.LibraryQuality, bool) {
 	gen := l.app.libraries.Generation()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -72,47 +73,58 @@ func (l *libraryProfiles) cached(key core.RatingKey) (string, bool) {
 	return l.cache.Get(key)
 }
 
-func (l *libraryProfiles) store(key core.RatingKey, name string) {
+func (l *libraryProfiles) store(key core.RatingKey, lq core.LibraryQuality) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.cache.Add(key, name)
+	l.cache.Add(key, lq)
 }
 
-// resolve picks the winning library and returns its profile name.
-func (l *libraryProfiles) resolve(ctx context.Context, t *core.Title) string {
+// libraryQuality is the profile choice a library made, keeping only names
+// a configured profile has.
+func libraryQuality(lib core.Library, profiles []core.QualityProfile) core.LibraryQuality {
+	var lq core.LibraryQuality
+	if _, ok := core.FindProfile(profiles, lib.QualityProfile); ok {
+		lq.Home = lib.QualityProfile
+	}
+	if _, ok := core.FindProfile(profiles, lib.AwayQualityProfile); ok {
+		lq.Away = lib.AwayQualityProfile
+	}
+	return lq
+}
+
+// resolve picks the winning library and returns its profile choice.
+func (l *libraryProfiles) resolve(ctx context.Context, t *core.Title) core.LibraryQuality {
 	media := titleMedia(t)
 	if media == core.MediaAny {
-		return ""
+		return core.LibraryQuality{}
 	}
 	libs, err := l.app.libraries.List(ctx)
 	if err != nil {
-		return ""
+		return core.LibraryQuality{}
 	}
-	// Filter and collection libraries are more specific than the built-in
-	// library. Among several matches the lowest id wins; the list is
-	// already in sort/id order, but such a library may sort anywhere, so
-	// track the minimum.
+	// Catalogue and collection libraries are more specific than the
+	// built-in library. Among several matches the lowest id wins; the list
+	// is in sort/id order, but such a library may sort anywhere, so track
+	// the minimum.
 	var winner core.Library
+	var winnerQ core.LibraryQuality
 	found := false
 	profiles := l.app.cfg.Read().Quality.Profiles
 	for _, lib := range libs {
-		if lib.QualityProfile == "" || lib.ID == core.LibraryMovies || lib.ID == core.LibraryShows {
+		if core.IsBuiltinLibrary(lib.ID) || (lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection) {
 			continue
 		}
-		scope := core.MediaMovie
-		if media == string(core.TypeShow) {
-			scope = core.MediaTV
-		}
-		if _, ok := core.FindProfile(profiles, lib.QualityProfile, scope); !ok {
-			continue
-		}
-		if lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
+		lq := libraryQuality(lib, profiles)
+		if lq == (core.LibraryQuality{}) {
 			continue
 		}
 		if lib.MediaType != "" && string(lib.MediaType) != media {
 			continue
 		}
 		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
+			continue
+		}
+		if found && lib.ID > winner.ID {
 			continue
 		}
 		membership := libraryScopeFilter(lib, core.Filter{})
@@ -123,24 +135,20 @@ func (l *libraryProfiles) resolve(ctx context.Context, t *core.Title) string {
 		if err != nil || !ok {
 			continue
 		}
-		if !found || lib.ID < winner.ID {
-			winner, found = lib, true
-		}
+		winner, winnerQ, found = lib, lq, true
 	}
 	if found {
-		return winner.QualityProfile
+		return winnerQ
 	}
-	// No filter library matched: the canonical built-in library.
+	// No catalogue or collection library chose one: the built-in library.
 	canonical := core.LibraryMovies
 	if media == string(core.TypeShow) {
 		canonical = core.LibraryShows
 	}
-	if canonical != 0 {
-		if lib, err := l.app.libraries.Get(ctx, canonical); err == nil {
-			return lib.QualityProfile
-		}
+	if lib, err := l.app.libraries.Get(ctx, canonical); err == nil {
+		return libraryQuality(lib, profiles)
 	}
-	return ""
+	return core.LibraryQuality{}
 }
 
 // titleMedia classifies a title as a movie or a show for library matching.

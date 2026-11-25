@@ -195,27 +195,15 @@ interface ConsoleProfiles {
 export type StarrApp = "radarr" | "sonarr";
 
 /**
- * Media scopes (core.MediaAny/Movie/TV). Every profile serves exactly one
- * media; a client rule may leave it empty to apply to every media.
+ * Client rule scopes (core.MediaAny/Movie/TV): a rule may apply only to
+ * films or only to episodes. Release profiles have no media; each library
+ * chooses its profile.
  */
 export const MEDIA_ANY = "";
 export const MEDIA_MOVIE = "movie";
 export const MEDIA_TV = "tv";
-export type ProfileMedia = typeof MEDIA_MOVIE | typeof MEDIA_TV;
 
-/**
- * The media a profile can serve, in console order. Mirrors
- * core.ProfileMediaTypes; every media option in the console comes from
- * this list, so a new media (such as anime) is one more entry here.
- */
-export const PROFILE_MEDIA: readonly ProfileMedia[] = [MEDIA_MOVIE, MEDIA_TV];
-
-/** A profile's media. */
-export function profileMediaType(profile: { mediaType?: string }): string {
-  return profile.mediaType ?? MEDIA_ANY;
-}
-
-/** Whether a profile or rule scope applies when choosing for media ("" = unknown). */
+/** Whether a rule scope applies when choosing for media ("" = unknown). */
 export function mediaApplies(scope: string | undefined, media: string | undefined): boolean {
   if (!media) return true;
   return !scope || scope === media;
@@ -226,44 +214,6 @@ export function mediaLabel(media: string | undefined): string {
   if (media === MEDIA_MOVIE) return t("Movies");
   if (media === MEDIA_TV) return t("Shows");
   return t("Movies & shows");
-}
-
-/**
- * Profile names a client rule for media can pick. A movie and a TV profile
- * may share a name; a rule for every media names one that each media has,
- * and each media uses its own profile of that name.
- */
-export function ruleProfileNames(
-  profiles: { name: string; mediaType?: string }[] | null | undefined,
-  media: string | undefined,
-): string[] {
-  const list = profiles ?? [];
-  const names = [...new Set(list.map((p) => p.name))];
-  return names.filter((name) =>
-    (media ? [media] : PROFILE_MEDIA).every((m) =>
-      list.some((p) => p.name === name && p.mediaType === m),
-    ),
-  );
-}
-
-/** The media an import app's profiles describe. */
-export function mediaTypeForApp(app: StarrApp): ProfileMedia {
-  return app === "sonarr" ? MEDIA_TV : MEDIA_MOVIE;
-}
-
-/** The Starr app whose guide describes this media, or null for both. */
-export function appForMedia(media: string | undefined): StarrApp | null {
-  if (media === MEDIA_MOVIE) return "radarr";
-  if (media === MEDIA_TV) return "sonarr";
-  return null;
-}
-
-/** Profiles that apply to media, in their original order. */
-export function compatibleProfiles<T extends { mediaType?: string }>(
-  profiles: T[] | null | undefined,
-  media: string | undefined,
-): T[] {
-  return (profiles ?? []).filter((p) => mediaApplies(p.mediaType, media));
 }
 
 /** A TRaSH Guides or Profilarr (Dictionarry) quality profile offered for import. */
@@ -309,8 +259,6 @@ export interface QualityImportPlan {
   /** Source profile id/slug used to fetch it. */
   profileId?: string;
   trashId?: string;
-  /** The media the source app's profile describes. */
-  mediaType?: ProfileMedia;
   /** Non-empty when the profile cannot be imported. A score shortfall is a warning. */
   unusable?: string;
   profile: QualityProfile;
@@ -352,10 +300,7 @@ const post = <T>(path: string, body: unknown) =>
 const del = (path: string) => apiFetch<null>(base + path, { method: "DELETE" });
 
 export const releaseConsole = {
-  profiles: (media?: string) =>
-    apiFetch<ConsoleProfiles>(
-      `${base}/profiles${media ? `?media=${encodeURIComponent(media)}` : ""}`,
-    ),
+  profiles: () => apiFetch<ConsoleProfiles>(`${base}/profiles`),
   search: (key: string, opts: { profile?: string; fresh?: boolean } = {}, signal?: AbortSignal) =>
     apiFetch<ConsoleSearch>(
       `${base}/search${qs({ key, profile: opts.profile, fresh: opts.fresh ? 1 : undefined })}`,

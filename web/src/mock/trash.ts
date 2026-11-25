@@ -4,7 +4,6 @@
  * Used by mock mode and the tests; never shipped.
  */
 import type { ImportFormat, QualityImportPlan, StarrApp, TrashProfile } from "../lib/releases";
-import { mediaTypeForApp } from "../lib/releases";
 import type { EtherConfig, QualityItem, QualityProfile } from "../lib/types";
 
 type Reply = { status: number; body: unknown };
@@ -390,7 +389,6 @@ function plan(
     app,
     source: meta.source ?? "trash",
     profileId: meta.id,
-    mediaType: mediaTypeForApp(app),
     profile,
     scoreSet,
     formats,
@@ -488,7 +486,6 @@ export function createTrashMock() {
         {
           ...p.profile,
           name,
-          mediaType: p.mediaType,
           ...(p.source
             ? {
                 import: {

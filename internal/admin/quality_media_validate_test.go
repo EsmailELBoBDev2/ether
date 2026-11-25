@@ -13,6 +13,7 @@ func mediaConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Defaults(t.TempDir())
 	cfg.Quality = config.Quality{
+		Default: "Movies",
 		Profiles: []core.QualityProfile{
 			{Name: "Movies"},
 			{Name: "Shows"},
@@ -37,7 +38,7 @@ func TestValidateConfigProfileNamesAreUnique(t *testing.T) {
 		t.Fatalf("duplicate name accepted: %v", errs)
 	}
 	cfg = mediaConfig(t)
-	cfg.Quality.Rules = []config.QualityRule{{Product: "Roku", MediaType: core.MediaTV, Profile: "Gone"}}
+	cfg.Quality.Rules = []config.QualityRule{{Devices: []config.DeviceMatch{{Type: "Roku"}}, Kind: config.KindEpisode, Profile: "Gone"}}
 	if errs := ValidateConfig(cfg); !hasField(errs, "quality.rules[0].profile") {
 		t.Fatalf("rule naming a missing profile accepted: %v", errs)
 	}

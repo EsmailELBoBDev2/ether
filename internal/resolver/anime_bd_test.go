@@ -24,7 +24,7 @@ func TestAnimeBDPassesIdentityAndImportedQuality(t *testing.T) {
 			cfg.Quality.Profiles = []core.QualityProfile{{Name: "imported", AllowedQualities: []string{"bluray-1080"}, MaxHeight: 1080}}
 			cfg.Quality.Default = "imported"
 			cfg.Quality.Rules = nil
-			cfg.Quality.Remote = ""
+			cfg.Quality.DefaultAway = ""
 			r := rel("bd", tc.name, 500)
 			idx := &fakeIndexer{releases: []core.Release{r}}
 			svc := New(idx, fakeHealth{}, nil, cfg, Options{})

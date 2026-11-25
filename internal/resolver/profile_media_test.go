@@ -7,12 +7,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// Client rules may still be scoped to films or episodes.
+// Rules may be scoped to films or episodes; pre-title ApplyClientRules ignores
+// Kind-scoped rules so movie rules cannot narrow episode capabilities.
 func TestApplyClientRulesForMediaScopesRules(t *testing.T) {
 	q := config.Quality{
 		Profiles: []core.QualityProfile{{Name: "Movies", MaxHeight: 2160}, {Name: "Shows", MaxHeight: 1080}},
+		Default:  "Movies",
 		Rules: []config.QualityRule{
-			{MediaType: core.MediaMovie, Product: "Apple TV", Profile: "Movies", ConvertSurroundAudio: true},
+			{ID: "r_mov", Kind: config.KindMovie, Devices: []config.DeviceMatch{{Contains: "Apple TV"}}, Profile: "Movies", StereoAudio: true},
 		},
 	}
 	hasTrueHD := func(caps core.ClientCaps) bool {
@@ -26,10 +28,12 @@ func TestApplyClientRulesForMediaScopesRules(t *testing.T) {
 	if caps := ApplyClientRules(q, appleTVCaps(), nil); !hasTrueHD(caps) {
 		t.Fatal("title-neutral capabilities applied a movie-only audio rule")
 	}
-	if caps, _ := applyClientRules(q, appleTVCaps(), nil, core.MediaMovie, core.LibraryQuality{}); hasTrueHD(caps) {
+	movie := &core.Title{Key: core.MovieKey(603), Type: core.TypeMovie}
+	if caps := ApplyClientRulesForTitle(q, appleTVCaps(), nil, movie, nil); hasTrueHD(caps) {
 		t.Fatalf("movie rule did not convert surround audio: %+v", caps.AudioCodecs)
 	}
-	if caps, _ := applyClientRules(q, appleTVCaps(), nil, core.MediaTV, core.LibraryQuality{}); !hasTrueHD(caps) {
+	ep := &core.Title{Key: core.EpisodeKey(1399, 1, 1), Type: core.TypeEpisode}
+	if caps := ApplyClientRulesForTitle(q, appleTVCaps(), nil, ep, nil); !hasTrueHD(caps) {
 		t.Fatalf("tv should not apply the movie rule: %+v", caps.AudioCodecs)
 	}
 }

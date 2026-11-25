@@ -318,7 +318,8 @@ func TestInfuseConvertSurroundAudioRuleCopiesVideoAndTranscodesAudioToAAC(t *tes
 		Default:  "4K",
 		Profiles: []core.QualityProfile{{Name: "4K", MaxHeight: 2160}},
 		Rules: []config.QualityRule{{
-			Devices:     []config.DeviceMatch{{Contains: "Infuse"}},
+			ID:          "r_infuse",
+			Devices:     []config.DeviceMatch{{App: "jellyfin:Infuse"}},
 			Profile:     "4K",
 			StereoAudio: true,
 		}},

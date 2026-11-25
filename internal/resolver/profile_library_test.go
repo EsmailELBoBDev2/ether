@@ -10,43 +10,95 @@ import (
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
 
-// TestSelectProfileForTitlePrecedence pins the per-library release
-// profiles: a title ranks with the profiles its library chose, a client rule
-// still wins, the library's Away profile wins over Default away for a
-// remote client, Default away wins over the library's At home profile, and
-// an unknown name falls through to the Defaults.
+// TestSelectProfileForTitlePrecedence pins the unified ordered rules
+// precedence: first matching profile-setting rule wins, DefaultAway applies
+// away from home when no rule matches, and an unknown profile name falls
+// through.
 func TestSelectProfileForTitlePrecedence(t *testing.T) {
-	base := config.Quality{
-		Profiles: []core.QualityProfile{
-			{Name: "Default", MaxHeight: 2160}, {Name: "Anime", MaxHeight: 1080},
-			{Name: "Away", MaxHeight: 720}, {Name: "Rule", MaxHeight: 480}, {Name: "Travel", MaxHeight: 576},
-		},
-		Default: "Default",
-		Remote:  "Away",
+	profiles := []core.QualityProfile{
+		{Name: "Default", MaxHeight: 2160}, {Name: "Anime", MaxHeight: 1080},
+		{Name: "Away", MaxHeight: 720}, {Name: "Rule", MaxHeight: 480}, {Name: "Travel", MaxHeight: 576},
 	}
 	title := &core.Title{Key: core.EpisodeKey(2, 1, 1), Type: core.TypeEpisode}
+	inAnime := func(id core.LibraryID) bool { return id == 7 }
+	inNone := func(core.LibraryID) bool { return false }
 	remote := core.ClientCaps{Remote: true}
 	tests := []struct {
-		name string
-		q    config.Quality
-		caps core.ClientCaps
-		lib  core.LibraryQuality
-		want string
+		name  string
+		q     config.Quality
+		caps  core.ClientCaps
+		inLib Membership
+		want  string
 	}{
-		{name: "the library's profile wins over Default", q: base, lib: core.LibraryQuality{Home: "Anime"}, want: "Anime"},
-		{name: "no choice uses Default", q: base, want: "Default"},
-		{name: "an unknown name falls through", q: base, lib: core.LibraryQuality{Home: "Nope"}, want: "Default"},
-		{name: "a client rule beats the library", q: config.Quality{
-			Profiles: base.Profiles, Default: "Default",
-			Rules: []config.QualityRule{{Product: "Apple TV", Profile: "Rule"}},
-		}, caps: core.ClientCaps{Product: "Apple TV"}, lib: core.LibraryQuality{Home: "Anime"}, want: "Rule"},
-		{name: "Default away beats the library's At home profile", q: base, caps: remote, lib: core.LibraryQuality{Home: "Anime"}, want: "Away"},
-		{name: "the library's Away profile beats Default away", q: base, caps: remote, lib: core.LibraryQuality{Home: "Anime", Away: "Travel"}, want: "Travel"},
-		{name: "with no Default away, away uses the library's profile", q: config.Quality{Profiles: base.Profiles, Default: "Default"}, caps: remote, lib: core.LibraryQuality{Home: "Anime"}, want: "Anime"},
+		{
+			name: "library rule wins over Default",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default", DefaultAway: "Away",
+				Rules: []config.QualityRule{{ID: "r_1", Libraries: []int64{7}, Profile: "Anime"}},
+			},
+			inLib: inAnime, want: "Anime",
+		},
+		{
+			name: "no matching rule uses Default",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default", DefaultAway: "Away",
+				Rules: []config.QualityRule{{ID: "r_1", Libraries: []int64{7}, Profile: "Anime"}},
+			},
+			inLib: inNone, want: "Default",
+		},
+		{
+			name: "rule naming unknown profile falls through to Default",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default",
+				Rules: []config.QualityRule{{ID: "r_1", Libraries: []int64{7}, Profile: "Nope"}},
+			},
+			inLib: inAnime, want: "Default",
+		},
+		{
+			name: "earlier device rule beats library rule",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default",
+				Rules: []config.QualityRule{
+					{ID: "r_1", Devices: []config.DeviceMatch{{Contains: "Apple TV"}}, Profile: "Rule"},
+					{ID: "r_2", Libraries: []int64{7}, Profile: "Anime"},
+				},
+			},
+			caps: core.ClientCaps{Product: "Apple TV"}, inLib: inAnime, want: "Rule",
+		},
+		{
+			name: "away rule above library rule beats library rule",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default",
+				Rules: []config.QualityRule{
+					{ID: "r_1", Where: config.WhereAway, Profile: "Away"},
+					{ID: "r_2", Libraries: []int64{7}, Profile: "Anime"},
+				},
+			},
+			caps: remote, inLib: inAnime, want: "Away",
+		},
+		{
+			name: "library away rule beats DefaultAway",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default", DefaultAway: "Away",
+				Rules: []config.QualityRule{
+					{ID: "r_1", Libraries: []int64{7}, Where: config.WhereAway, Profile: "Travel"},
+					{ID: "r_2", Libraries: []int64{7}, Profile: "Anime"},
+				},
+			},
+			caps: remote, inLib: inAnime, want: "Travel",
+		},
+		{
+			name: "with no DefaultAway, away uses matching library rule",
+			q: config.Quality{
+				Profiles: profiles, Default: "Default",
+				Rules: []config.QualityRule{{ID: "r_1", Libraries: []int64{7}, Profile: "Anime"}},
+			},
+			caps: remote, inLib: inAnime, want: "Anime",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SelectProfileForTitle(tc.q, tc.caps, nil, title, tc.lib)
+			got := SelectProfileForTitle(tc.q, tc.caps, nil, title, tc.inLib)
 			if got.Name != tc.want {
 				t.Fatalf("SelectProfileForTitle = %q, want %q", got.Name, tc.want)
 			}
@@ -54,20 +106,27 @@ func TestSelectProfileForTitlePrecedence(t *testing.T) {
 	}
 }
 
-type invariantLibraryProfile struct{ name string }
-
-func (p *invariantLibraryProfile) LibraryQualityForTitle(context.Context, *core.Title) core.LibraryQuality {
-	return core.LibraryQuality{Home: p.name}
+type invariantLibraryProfile struct {
+	member bool
+	key    string
 }
-func (p *invariantLibraryProfile) PolicyKey(context.Context) string { return p.name }
+
+func (p *invariantLibraryProfile) InLibrary(context.Context, *core.Title, core.LibraryID) bool {
+	return p.member
+}
+func (p *invariantLibraryProfile) PolicyKey(context.Context) string { return p.key }
 
 func TestLibraryProfileEvidenceInvariant(t *testing.T) {
 	cfg := testCfg()
-	cfg.Quality = config.Quality{Profiles: []core.QualityProfile{
-		{Name: "Home", MaxHeight: 2160, AllowHDR: true},
-		{Name: "Library", MaxHeight: 720},
-	}, Default: "Home"}
-	lookup := &invariantLibraryProfile{name: "Library"}
+	cfg.Quality = config.Quality{
+		Profiles: []core.QualityProfile{
+			{Name: "Home", MaxHeight: 2160, AllowHDR: true},
+			{Name: "Library", MaxHeight: 720},
+		},
+		Default: "Home",
+		Rules:   []config.QualityRule{{ID: "r_lib7", Libraries: []int64{7}, Profile: "Library"}},
+	}
+	lookup := &invariantLibraryProfile{member: true, key: "v1"}
 	s := New(&fakeIndexer{}, nil, nil, cfg, Options{LibraryProfiles: lookup})
 	defer s.Close()
 	ctx := t.Context()
@@ -89,7 +148,8 @@ func TestLibraryProfileEvidenceInvariant(t *testing.T) {
 		t.Fatalf("batch feed ignored library: %+v %v", verdicts, err)
 	}
 	s.setAvailability(ctx, int64(title.Key), false, time.Hour)
-	lookup.name = "Home"
+	lookup.member = false
+	lookup.key = "v2"
 	if known, _ := s.Available(ctx, title.Key); known {
 		t.Fatal("old library availability survived profile change")
 	}

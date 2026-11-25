@@ -310,7 +310,7 @@ func TestPlezyFirstPlayRealManagerLabPattern(t *testing.T) {
 			dir := t.TempDir()
 			cfg := config.Defaults(dir)
 			cfg.Quality.Default = "lab1080"
-			cfg.Quality.Remote = ""
+			cfg.Quality.DefaultAway = ""
 			cfg.Quality.Rules = nil
 			cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 			cfg.Cache.DisableSpeculation = tc.disableSpeculation
@@ -658,7 +658,7 @@ func TestPlezyPlayVersionProbesNonAutoAndKeepsPlayedVersionInOwnSlot(t *testing.
 	dir := t.TempDir()
 	cfg := config.Defaults(dir)
 	cfg.Quality.Default = "lab1080"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 	cfg.Resolver.SameQualityAlternatives = 0
@@ -974,7 +974,7 @@ func TestPlezyFirstPlayProbesAutoAndVersionsConcurrentlyAsSlotsFill(t *testing.T
 	dir := t.TempDir()
 	cfg := config.Defaults(dir)
 	cfg.Quality.Default = "lab1080"
-	cfg.Quality.Remote = ""
+	cfg.Quality.DefaultAway = ""
 	cfg.Quality.Rules = nil
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
 	cfg.Resolver.SameQualityAlternatives = 0

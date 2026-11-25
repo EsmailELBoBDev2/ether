@@ -55,7 +55,7 @@ func TestAttachSharedUpgradesLegacyProfilesAndRetriesConflict(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "Concurrent rename" || got[1].Name != "Already TV" || got[0].Import == nil {
 		t.Fatalf("unexpected upgraded profiles: %+v", got)
 	}
-	if mig := store.Get().Quality.LibraryProfileMigration; mig == nil || mig.Home[core.MediaTV] != "Already TV" {
+	if mig := store.Get().Quality.RulesMigration; mig == nil || mig.Home[core.MediaTV] != "Already TV" {
 		t.Fatalf("library hand-off = %+v", mig)
 	}
 	plain, _, err := openDocument([]byte(backend.doc.Doc), store.credentialKey)

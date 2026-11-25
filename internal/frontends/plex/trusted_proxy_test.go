@@ -30,7 +30,7 @@ func TestTrustedLANProxyClientIPAndSessions(t *testing.T) {
 
 	quality := config.Quality{
 		Default: "home",
-		Remote:  "away",
+		DefaultAway: "away",
 		Profiles: []core.QualityProfile{
 			{Name: "home", MaxHeight: 2160},
 			{Name: "away", MaxHeight: 720},

@@ -119,18 +119,18 @@ func TestTraceAndHistoryRecordMaxHeightCeilings(t *testing.T) {
 	}
 }
 
-// A remote client must be resolved under q.Remote, not q.Default, and
+// A remote client must be resolved under q.DefaultAway, not q.Default, and
 // the trace/history must name that remote profile and its own ceiling
 // as the limiter when it is the distinct, lower ceiling (#86).
 func TestRemoteProfileCeilingRecordedInHistory(t *testing.T) {
 	cfg := testCfg()
 	q := fixtureQuality()
 	q.Default = "4K"  // 2160 configured for local/default clients
-	q.Remote = "720p" // 720 configured for remote clients: distinct ceiling
+	q.DefaultAway = "720p" // 720 configured for remote clients: distinct ceiling
 	q.Rules = nil     // a device rule would win over the remote profile
 	cfg.Quality = q
 
-	// Direct selection: Remote picks q.Remote and snapshots its ceiling.
+	// Direct selection: Remote picks q.DefaultAway and snapshots its ceiling.
 	caps := appleTVCaps() // client itself allows 2160
 	caps.Remote = true
 	if p := SelectProfile(cfg.Quality, caps, nil); p.Name != "720p" || p.ConfiguredMaxHeight != 720 || p.MaxHeight != 720 {

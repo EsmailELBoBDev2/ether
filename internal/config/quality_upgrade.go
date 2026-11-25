@@ -78,7 +78,7 @@ func normalizeQualityDocument(quality map[string]any) []string {
 	// Default, and a rule naming a removed profile keeps its conditions and
 	// limits but no longer picks a profile. Validation refuses a name no
 	// profile has, so left alone it would block every quality change.
-	if v := docString(quality, "default"); v != "" && !exists(v) {
+	if v := docString(quality, "default"); first != "" && (v == "" || !exists(v)) {
 		notes = append(notes, fmt.Sprintf("default named a missing profile %q; now %q", v, first))
 		quality["default"] = first
 	}

@@ -94,16 +94,17 @@ func velaDolbyVisionProfiles(cc *frontend.ClientCaps, c client) {
 		cc.DolbyVision = false
 		return
 	}
-	if !cc.DolbyVision || cc.DolbyVisionBaseOnly || c.DolbyVisionProfiles == nil || cc.DVProfilesForced {
+	if !cc.DolbyVision || cc.DolbyVisionBaseOnly || c.DolbyVisionProfiles == nil {
 		return
 	}
 	if len(*c.DolbyVisionProfiles) == 0 {
 		cc.DVProfiles = nil
 		cc.DVProfilesExplicit = true
+		cc.DVProfilesForced = false
 		cc.DolbyVision = false
 		return
 	}
-	if len(cc.DVProfiles) > 0 {
+	if cc.DVProfilesForced || len(cc.DVProfiles) > 0 {
 		return
 	}
 	for _, variant := range *c.DolbyVisionProfiles {

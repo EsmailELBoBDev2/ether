@@ -358,7 +358,14 @@ func TestVelaDeclaredDVProfilesOffAndroid(t *testing.T) {
 		t.Errorf("macOS received undeclared 8.4: %s", d.Reason)
 	}
 	apple := velaClientOn("tvos", "Den", hdr, map[string]any{"dolbyVisionProfiles": []string{}})
-	if _, signalled, d := newDVHarness().dvPlan(t, apple, "5"); signalled || d.VideoCopy {
-		t.Errorf("an empty Apple list admitted Profile 5: %s", d.Reason)
+	for _, overrides := range [][]core.ClientCapabilityOverride{
+		nil,
+		{{Force: true, Product: "Vela", DolbyVisionProfiles: []int{5}}},
+	} {
+		h := newDVHarness()
+		h.overrides = overrides
+		if _, signalled, d := h.dvPlan(t, apple, "5"); signalled || d.VideoCopy {
+			t.Errorf("an empty Apple list admitted Profile 5: %s", d.Reason)
+		}
 	}
 }

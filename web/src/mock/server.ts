@@ -3343,7 +3343,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const tvr = liveTV.handle(method, seg, q, body);
     if (tvr) return json(tvr.body, tvr.status);
 
-    const tr = trash.handle(method, seg, body, state.config);
+    const tr = trash.handle(method, seg, body, state.config, q);
     if (tr) return json(tr.body, tr.status);
 
     const qm = qualityMock.handle(

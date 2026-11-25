@@ -590,7 +590,7 @@ func (p QualityImportPlan) Apply(c *config.Config, name string) error {
 		}
 		have[id] = true
 		if p.Source != "" {
-			f.ManagedBy = p.Source + ":" + p.App
+			f.ManagedBy = managedBySource(p.Source, p.Database, p.App)
 		}
 		c.Resolver.CustomFormats = append(c.Resolver.CustomFormats, f)
 	}
@@ -612,4 +612,14 @@ func (p QualityImportPlan) Added() int {
 		}
 	}
 	return n
+}
+
+func managedBySource(source, dbID, app string) string {
+	if source == "" {
+		return ""
+	}
+	if strings.TrimSpace(dbID) != "" {
+		return source + ":" + strings.TrimSpace(dbID) + ":" + app
+	}
+	return source + ":" + app
 }

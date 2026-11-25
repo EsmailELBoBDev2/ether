@@ -81,7 +81,7 @@ func (h *consoleAPI) dictionarryForDatabase(database string) (*Dictionarry, erro
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrDictionarryUnavailable, err)
 			}
-			return h.deps.Dictionarry.ForArchive(norm.ArchiveURL), nil
+			return h.deps.Dictionarry.ForDatabase(db.ID, norm.ArchiveURL), nil
 		}
 	}
 	return nil, ErrDictionarryNotFound
@@ -121,7 +121,9 @@ func (h *consoleAPI) checkQualityDatabase(w http.ResponseWriter, r *http.Request
 		Repo   string `json:"repo"`
 		Branch string `json:"branch"`
 	}
-	if !decodeBody(w, r, &in) {
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err := d.Decode(&in); err != nil {
+		consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid request body"})
 		return
 	}
 	norm, err := config.NormalizeProfileDatabase(in.Repo, in.Branch)
@@ -131,9 +133,8 @@ func (h *consoleAPI) checkQualityDatabase(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	client := h.deps.Dictionarry.ForArchive(norm.ArchiveURL)
+	client := h.deps.Dictionarry.ForDatabase(norm.ID, norm.ArchiveURL)
 	seen := map[string]bool{}
-	var profiles []TrashProfile
 	for _, app := range []string{"radarr", "sonarr"} {
 		items, ferr := client.Profiles(ctx, app)
 		if ferr != nil {
@@ -141,13 +142,10 @@ func (h *consoleAPI) checkQualityDatabase(w http.ResponseWriter, r *http.Request
 			return
 		}
 		for _, item := range items {
-			if !seen[item.ID] {
-				seen[item.ID] = true
-				profiles = append(profiles, item)
-			}
+			seen[item.ID] = true
 		}
 	}
-	if len(profiles) == 0 {
+	if len(seen) == 0 {
 		consoleJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "This database does not contain any quality profiles."})
 		return
 	}
@@ -157,7 +155,7 @@ func (h *consoleAPI) checkQualityDatabase(w http.ResponseWriter, r *http.Request
 		"name":     norm.Name,
 		"repo":     norm.Repo,
 		"branch":   norm.Branch,
-		"profiles": profiles,
+		"profiles": len(seen),
 	})
 }
 

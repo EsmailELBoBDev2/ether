@@ -11,11 +11,11 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Download, Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
-import { NumberInput, Segmented } from "../../components/fields";
+import { NumberInput } from "../../components/fields";
 import { Section, SubtabNav } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -23,15 +23,9 @@ import { localized, t, tn } from "../../i18n";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { ApiError, api } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
-import { itemName, resolutionGroups } from "../../lib/qualityRanking";
+import { itemName } from "../../lib/qualityRanking";
 import { profileUses, withProfileRenamed } from "../../lib/qualityRules";
-import {
-  MEDIA_MOVIE,
-  MEDIA_TV,
-  releaseConsole,
-  type ProfileMedia,
-  type QualitySyncReport,
-} from "../../lib/releases";
+import { releaseConsole, type QualitySyncReport } from "../../lib/releases";
 import type { CustomFormatDefinition, QualityProfile } from "../../lib/types";
 import { parseDuration } from "../settings/duration";
 import { SourceOrderSection } from "../sources/EqualQuality";
@@ -57,35 +51,6 @@ import {
 import { TrashImport } from "./TrashImport";
 import { localizedRule, useRuleNames } from "./RuleDrawer";
 import { useQuality, type Quality } from "./useQuality";
-/**
- * A new profile starts with the first profile's format scores, so it ranks
- * like the owner's own until changed.
- */
-function blankProfile(profiles: QualityProfile[]): QualityProfile {
-  const taken = (name: string) => profiles.some((p) => p.name === name);
-  let n = profiles.length + 1;
-  while (taken(t("Profile {n}", { n }))) n++;
-  const base = profiles.find((p) => !p.import);
-  return {
-    name: t("Profile {n}", { n }),
-    maxHeight: 1080,
-    minHeight: 720,
-    allowHdr: false,
-    allowDolbyVision: false,
-    qualityOrder: resolutionGroups(1080, 720),
-    customFormatScores: Object.fromEntries(
-      Object.entries(base?.customFormatScores ?? {}).filter(([id]) => !id.startsWith("rule:")),
-    ),
-    minSizeMbPerMin: 5,
-    maxSizeMbPerMin: 150,
-    episodeMinSizeMbPerMin: 0,
-    episodeMaxSizeMbPerMin: 0,
-    preferredLanguages: null,
-    audioLanguageMode: "preferred",
-    allowCam: false,
-  };
-}
-
 const RESOLUTIONS = localized(() => [
   { value: "0", label: t("Any") },
   { value: "480", label: "480p" },
@@ -351,8 +316,6 @@ function ProfileList({
   const usesOf = (name: string) =>
     profileUses({ ...quality, rules: (quality.rules ?? []).map(localizedRule) }, name, names);
   const [importing, setImporting] = useState(false);
-  /** Which guide a preset import reads: Radarr's for movies, Sonarr's for episodes. */
-  const [importFor, setImportFor] = useState<ProfileMedia>(MEDIA_MOVIE);
   const [editing, setEditing] = useState<{ index: number; draft: QualityProfile } | null>(null);
   /** Set while removing a profile that is in use: the profile its rules switch to. */
   const [replacement, setReplacement] = useState<string | null>(null);
@@ -509,7 +472,7 @@ function ProfileList({
           "How releases are ranked: resolution, HDR, release type and language. A profile does nothing until a rule or a default uses it.",
         )}
         actions={
-          <Button size="sm" onClick={() => open(profiles.length, blankProfile(profiles))}>
+          <Button size="sm" onClick={() => setImporting(true)}>
             <Plus size={14} /> {t("Add profile")}
           </Button>
         }
@@ -557,12 +520,7 @@ function ProfileList({
         )}
       </Section>
 
-      <TrashImport
-        open={importing}
-        media={importFor}
-        onClose={() => setImporting(false)}
-        onImported={refresh}
-      />
+      <TrashImport open={importing} onClose={() => setImporting(false)} onImported={refresh} />
 
       <RecordDrawer
         open={editing !== null}
@@ -636,39 +594,6 @@ function ProfileList({
           drawerTab === "tiers" ? (
             <>
               <SettingsSection title={t("Profile")}>
-                {isNew ? (
-                  <SettingsRow
-                    title={t("Start from a preset")}
-                    description={t(
-                      "Copy quality order and format scores from TRaSH Guides or Profilarr.",
-                    )}
-                    control={
-                      <span className="flex flex-wrap items-center gap-2">
-                        <Segmented
-                          ariaLabel={t("Preset for")}
-                          size="sm"
-                          value={importFor}
-                          options={[
-                            { value: MEDIA_MOVIE, label: t("Movies (Radarr)") },
-                            { value: MEDIA_TV, label: t("Episodes (Sonarr)") },
-                          ]}
-                          onChange={setImportFor}
-                        />
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setEditing(null);
-                            setImporting(true);
-                          }}
-                        >
-                          <Download size={14} />
-                          {t("Import a preset quality profile")}
-                        </Button>
-                      </span>
-                    }
-                  />
-                ) : null}
                 <TextRow
                   label={t("Name")}
                   value={draft.name}

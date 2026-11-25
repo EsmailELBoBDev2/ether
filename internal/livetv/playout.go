@@ -125,6 +125,7 @@ type session struct {
 	user        core.User
 	caps        core.ClientCaps
 	last        time.Time
+	lastControl time.Time
 	closed      bool
 }
 
@@ -968,8 +969,8 @@ func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*ses
 	return ss, nil
 }
 
-// Only media consumption renews the lease. Subscription/timeline polling and
-// a repeatedly requested manifest can otherwise preserve a failed tune forever.
+// Media consumption renews the lease and records playback evidence. Playlist
+// polls do neither.
 func (s *Service) touchMedia(ss *session) {
 	ss.mu.Lock()
 	first := !ss.consumed
@@ -1571,7 +1572,12 @@ func (s *Service) sessionLivenessLocked(ss *session, now time.Time) core.Session
 		in.LastMediaAt = ss.last
 		in.MediaBytes = max(int64(1), ss.bytesServed)
 	}
-	return core.EvaluateSessionLiveness(in, now)
+	liveness := core.EvaluateSessionLiveness(in, now)
+	// Player observations renew the lease independently of media reads.
+	if !ss.closed && !ss.lastControl.IsZero() && now.Sub(ss.lastControl) <= in.IdleTimeout {
+		liveness.Expired = false
+	}
+	return liveness
 }
 
 // ViewingSessions reports one trusted reservation unit per live viewer. It is

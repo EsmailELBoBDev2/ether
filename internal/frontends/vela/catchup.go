@@ -222,10 +222,18 @@ func (i *instance) serveCatchUpMedia(w http.ResponseWriter, r *http.Request, v *
 		http.NotFound(w, r)
 		return
 	}
-	id := s.archive.tuneID
+	id, live := s.archive.tuneID, s.archive.info.ChannelID == ""
 	s.mu.Unlock()
 	done := s.beginMediaRead()
 	defer done()
+	if live {
+		if media, ok := i.host.LiveTV.(interface {
+			ServeLiveSessionMedia(http.ResponseWriter, *http.Request, *frontend.Viewer, string, string)
+		}); ok {
+			media.ServeLiveSessionMedia(w, r, v, id, file)
+			return
+		}
+	}
 	if file == "index.m3u8" {
 		i.host.LiveTV.ServePlaylist(w, r, id, v)
 		return
@@ -276,31 +284,6 @@ func (i *instance) playbackKeepAlive(ctx context.Context, access frontend.Sessio
 	return i.host.Sessions.KeepAlive(ctx, access, id)
 }
 
-func (i *instance) seekAfterStartOver(w http.ResponseWriter, r *http.Request, s *playSession, at time.Duration) bool {
-	if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), s.id, copy) }) {
-		return false
-	}
-	start, edge, ok := liveWindowBounds(s.plan["live"])
-	if !ok {
-		if at < 0 {
-			s.seek++
-			return true
-		}
-		i.unavailable(w, r)
-		return false
-	}
-	if at < 0 {
-		at = durationFromSeconds(edge)
-	} else if at.Seconds() < start || at.Seconds() > edge {
-		send(w, 409, object{"error": object{"class": "conflict", "code": "timeshift_outside_window", "message": "Position is outside the live window.", "retry": object{"allowed": false}, "windowStartSeconds": start, "liveEdgeSeconds": edge}})
-		return false
-	}
-	s.position = at
-	s.plan["live"].(object)["behindLiveSeconds"] = max(0, edge-at.Seconds())
-	s.seek++
-	return true
-}
-
 func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, kind string, position *float64) {
 	host := i.host.LiveTV.(frontend.LiveCatchUp)
 	a := s.archive
@@ -326,6 +309,7 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			return
 		}
 		if err == nil {
+			refreshStartOver(s, i.catchUpNow())
 			if kind == "pause" {
 				s.plan["state"] = "paused"
 			} else {
@@ -341,12 +325,6 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 		if !ok {
 			problem(w, 400, "request", "invalid_position")
 			return
-		}
-		if a.info.ChannelID == "" {
-			if !i.seekAfterStartOver(w, r, s, at) {
-				return
-			}
-			break
 		}
 		var next frontend.CatchUpInfo
 		if !s.port(w, func() { next, err = host.SeekCatchUp(r.Context(), v, id, at) }) {
@@ -369,12 +347,6 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			refreshStartOver(s, i.catchUpNow())
 		}
 	case "goLive":
-		if a.info.ChannelID == "" {
-			if !i.seekAfterStartOver(w, r, s, -1) {
-				return
-			}
-			break
-		}
 		if !a.info.StartOver {
 			problem(w, 400, "request", "invalid_command")
 			return
@@ -399,10 +371,12 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			selected["url"] = archiveMediaURL(s.id, a.mediaKey, "")
 			selected["timelineOriginSeconds"] = float64(0)
 			s.source++
+			s.seek++
 			s.position = 0
-			if !i.seekAfterStartOver(w, r, s, -1) {
+			if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), s.id, copy) }) {
 				return
 			}
+			alignUnobservedLivePosition(s)
 		}
 	default:
 		problem(w, 400, "request", "invalid_command")

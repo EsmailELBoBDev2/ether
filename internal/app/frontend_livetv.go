@@ -726,7 +726,7 @@ func (s surfaceLiveTV) CatchUpLiveWindow(ctx context.Context, id string) (fronte
 	if !s.Enabled() {
 		return frontend.LiveWindow{}, core.ErrNotAvailable
 	}
-	return s.app.livetv.LiveWindow(ctx, id)
+	return (sessionLive{service: s.app.livetv}).LiveWindow(ctx, id)
 }
 
 func (s surfaceLiveTV) ServeCatchUpTS(w http.ResponseWriter, r *http.Request, id string, v *frontend.User) {
@@ -768,4 +768,18 @@ func (s surfaceLiveTV) LiveTimeshiftMinutes(ctx context.Context, id string) int 
 		return 0
 	}
 	return s.app.livetv.LiveTimeshiftMinutes(ctx, id)
+}
+
+// ServeLiveSessionMedia keeps a start-over handoff on the scoped Vela media route.
+func (s surfaceLiveTV) ServeLiveSessionMedia(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, id, tail string) {
+	if !s.Enabled() {
+		http.NotFound(w, r)
+		return
+	}
+	viewer, err := s.viewer(r.Context(), v)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	(sessionLive{service: s.app.livetv}).Serve(w, r.WithContext(s.withApp(r.Context())), viewer, id, tail, "")
 }

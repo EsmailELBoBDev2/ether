@@ -570,7 +570,10 @@ func (s *Service) TouchLiveSession(ctx context.Context, u *core.User, id string)
 	ss.mu.Lock()
 	archive := ss.catchUp
 	if !ss.closed {
-		ss.last = s.clockNow()
+		ss.lastControl = s.clockNow()
+		if archive != nil {
+			ss.last = ss.lastControl
+		}
 	}
 	ss.mu.Unlock()
 	if archive != nil {

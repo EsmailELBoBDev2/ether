@@ -589,6 +589,7 @@ func (s *playSession) publish(kind string) {
 	s.plan["sourceGeneration"] = s.source
 	s.plan["seekGeneration"] = s.seek
 	s.plan["positionSeconds"] = s.position.Seconds()
+	s.updateBehindLive()
 	if kind == "plan" && s.trickplayCurrent != s.trickplayPublished {
 		s.trickplayPublished = s.trickplayCurrent
 		s.trickplayLastPublish = time.Now()
@@ -697,12 +698,23 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "preview_command_unsupported")
 		return
 	}
-	if s.archive != nil {
-		at := b.PositionSeconds
-		if b.AtSeconds != nil {
-			at = b.AtSeconds
+	position := b.PositionSeconds
+	if b.AtSeconds != nil {
+		position = b.AtSeconds
+	}
+	if _, live := s.plan["live"]; live && (s.archive == nil || s.archive.info.ChannelID == "") {
+		switch b.Kind {
+		case "pause", "resume", "seek", "goLive":
+			i.commandLive(w, r, v, s, b.Kind, position)
+			return
 		}
-		i.catchUpCommand(w, r, v, s, b.Kind, at)
+	}
+	if s.archive != nil {
+		i.catchUpCommand(w, r, v, s, b.Kind, position)
+		return
+	}
+	if b.Kind == "goLive" {
+		problem(w, 400, "request", "invalid_command")
 		return
 	}
 	id := r.PathValue("id")
@@ -1491,14 +1503,14 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
-		ended := !s.ended.IsZero()
+		ended, source := !s.ended.IsZero(), s.source
 		s.mu.Unlock()
 		if keepAlive && !ended {
 			// Backends without activity-only renewal retain their existing SSE behavior.
 			if err := i.playbackKeepAlive(ctx, i.access(r, viewer), id, s); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
 				if errors.Is(err, frontend.ErrNotFound) {
 					s.mu.Lock()
-					if s.ended.IsZero() {
+					if s.ended.IsZero() && !s.commandActive && s.source == source {
 						s.ended = time.Now()
 						s.clearDisconnectTimerLocked()
 						if s.plan != nil {

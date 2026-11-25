@@ -244,6 +244,7 @@ func newVelaMultiviewHarness(t *testing.T, live *mvBrokerLiveFake) (http.Handler
 		Sessions:     sessions.BindSurface(broker, "vela"),
 		LiveTV:       mvLiveGuideFake{},
 		Capabilities: frontendtest.Capabilities{},
+		Now:          func() time.Time { return time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC) },
 	}
 	inst, err := (Frontend{DB: db, ReplayKey: make([]byte, 32)}).Mount(ctx, host)
 	if err != nil {

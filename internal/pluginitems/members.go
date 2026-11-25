@@ -3,7 +3,6 @@ package pluginitems
 import (
 	"context"
 	"database/sql"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -71,17 +70,23 @@ func applyRecordingTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.
 	return nil
 }
 
-func replaceMembersTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, it core.KindItem) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_members WHERE item_ref = ?`, string(it.Ref)); err != nil {
+func writeMembersTx(ctx context.Context, tx *sql.Tx, isPG bool, ref core.ItemRef, count int, membersJSON string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_members WHERE item_ref = ? AND position >= ?`, string(ref), count); err != nil {
 		return err
 	}
-	for i, m := range it.Members {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_item_members(item_ref, position, member_ref) VALUES(?, ?, ?)`,
-			string(it.Ref), i, string(core.NewItemRef(pluginID, kindKey, strings.TrimSpace(m)))); err != nil {
-			return err
-		}
+	if count == 0 {
+		return nil
 	}
-	return nil
+	members := `SELECT ?, CAST(m.key AS INTEGER), m.value FROM json_each(?) m WHERE TRUE`
+	if isPG {
+		members = `SELECT ?, m.ord - 1, m.value FROM jsonb_array_elements_text(CAST(? AS jsonb)) WITH ORDINALITY AS m(value, ord)`
+	}
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_item_members(item_ref, position, member_ref)
+`+members+`
+ON CONFLICT(item_ref, position) DO UPDATE SET member_ref = excluded.member_ref
+WHERE plugin_item_members.member_ref <> excluded.member_ref`, string(ref), membersJSON)
+	return err
 }
 
 // MembersPage lists a list item's stored members in order from offset, at

@@ -104,13 +104,12 @@ func (s *Service) ParentCountsMany(ctx context.Context, libraryID core.LibraryID
 }
 
 // parentTallyTracker computes exact per-(parent_ref, child_level)
-// plugin_item_parent_tally deltas for a multi-level upsert chunk while the
-// transaction still reflects the pre-chunk state of plugin_items and
-// plugin_item_parent_tally. Tracking in-tx parent links, levels, and leaf
+// plugin_item_parent_tally deltas from the pre-chunk state of plugin_items
+// and plugin_item_parent_tally. Tracking parent links, levels, and leaf
 // counts handles out-of-order inserts, reparenting, branching trees, and level
 // changes within a single chunk identically to sequential writes.
 type parentTallyTracker struct {
-	tx         *sql.Tx
+	q          queryer
 	libraryID  int64
 	leafLevels map[string]bool
 	parentOf   map[core.ItemRef]core.ItemRef
@@ -119,7 +118,7 @@ type parentTallyTracker struct {
 	delta      map[parentTallyKey]parentTallyDelta
 }
 
-func newParentTallyTracker(tx *sql.Tx, libraryID core.LibraryID, leafLevels map[string]bool, existing map[core.ItemRef]existingItemMeta) *parentTallyTracker {
+func newParentTallyTracker(q queryer, libraryID core.LibraryID, leafLevels map[string]bool, existing map[core.ItemRef]existingItemMeta) *parentTallyTracker {
 	parentOf := make(map[core.ItemRef]core.ItemRef, len(existing))
 	levelOf := make(map[core.ItemRef]string, len(existing))
 	for ref, ex := range existing {
@@ -127,7 +126,7 @@ func newParentTallyTracker(tx *sql.Tx, libraryID core.LibraryID, leafLevels map[
 		levelOf[ref] = ex.level
 	}
 	return &parentTallyTracker{
-		tx:         tx,
+		q:          q,
 		libraryID:  int64(libraryID),
 		leafLevels: leafLevels,
 		parentOf:   parentOf,
@@ -179,7 +178,7 @@ func (t *parentTallyTracker) primeParents(ctx context.Context, refs []core.ItemR
 			t.parentOf[r] = ""
 			t.levelOf[r] = ""
 		}
-		rows, err := t.tx.QueryContext(ctx,
+		rows, err := t.q.QueryContext(ctx,
 			`SELECT item_ref, parent_ref, level FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
 			args...)
 		if err != nil {
@@ -235,7 +234,7 @@ func (t *parentTallyTracker) primeLeaves(ctx context.Context, refs []core.ItemRe
 			args = append(args, string(r))
 			t.leafOf[r] = 0
 		}
-		rows, err := t.tx.QueryContext(ctx,
+		rows, err := t.q.QueryContext(ctx,
 			`SELECT parent_ref, COALESCE(SUM(leaf_count), 0) FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref IN (`+strings.Join(placeholders, ",")+`) GROUP BY parent_ref`,
 			args...)
 		if err != nil {
@@ -267,7 +266,7 @@ func (t *parentTallyTracker) parentAndLevel(ctx context.Context, ref core.ItemRe
 		return p, t.levelOf[ref], nil
 	}
 	var parentStr, levelStr string
-	err := t.tx.QueryRowContext(ctx, `SELECT parent_ref, level FROM plugin_items WHERE item_ref = ?`, string(ref)).Scan(&parentStr, &levelStr)
+	err := t.q.QueryRowContext(ctx, `SELECT parent_ref, level FROM plugin_items WHERE item_ref = ?`, string(ref)).Scan(&parentStr, &levelStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		t.parentOf[ref] = ""
 		t.levelOf[ref] = ""
@@ -290,7 +289,7 @@ func (t *parentTallyTracker) leafCount(ctx context.Context, ref core.ItemRef) (i
 		return n, nil
 	}
 	var leafCount int64
-	err := t.tx.QueryRowContext(ctx,
+	err := t.q.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(leaf_count), 0) FROM plugin_item_parent_tally WHERE library_id = ? AND parent_ref = ?`,
 		t.libraryID, string(ref)).Scan(&leafCount)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -723,22 +723,10 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 	stats := UpsertStats{Accepted: len(items)}
 	var undo upsertUndoCapture
 	var totalItems int64
-	size := upsertChunkFirst
-	for start, end := 0, 0; start < len(prepared); start = end {
-		if err := ctx.Err(); err != nil {
-			return stats, undo, err
-		}
-		if start > 0 {
-			if err := store.WaitWALBudget(ctx, s.db); err != nil {
-				return stats, undo, err
-			}
-		}
-		end = min(start+size, len(prepared))
+	err = s.writeChunks(ctx, len(prepared), func(start, end int) (time.Duration, error) {
 		res, err := s.writeUpsertChunk(ctx, kind, pluginID, kindKey, prepared[start:end], seenAt, nowUnix, bumpGen && end == len(prepared), markOK, pin, captureUndo, snapshotPrevious)
 		if err != nil {
-			// The failed chunk rolled back; only earlier committed
-			// chunks are counted.
-			return stats, undo, err
+			return 0, err
 		}
 		stats.Added += res.added
 		stats.Updated += res.updated
@@ -751,7 +739,10 @@ func (s *Service) upsertItemsWithUndoLocked(ctx context.Context, pluginID, kindK
 		if res.totalItems > 0 {
 			totalItems = res.totalItems
 		}
-		size = nextUpsertChunkSize(end-start, res.held)
+		return res.held, nil
+	})
+	if err != nil {
+		return stats, undo, err
 	}
 	if notifyStats && totalItems > 0 {
 		s.noteLibraryItems(kind.LibraryID, totalItems, false)
@@ -1847,7 +1838,11 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 	}
 	var oldFTSBySeq map[int64]existingFTSRow
 	if !isPG {
-		oldFTSBySeq, err = s.lookupExistingSQLiteFTS(ctx, batch)
+		seqs := make([]any, len(batch))
+		for i, r := range batch {
+			seqs[i] = r.seq
+		}
+		oldFTSBySeq, err = s.lookupExistingSQLiteFTS(ctx, seqs)
 		if err != nil {
 			return 0, cursor, false, false, err
 		}
@@ -1905,7 +1900,7 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 				if hasFieldTally && pk.text != "" && r.level != "" {
 					addFieldTallyChange(deltaFor(r.libraryID), r.level, pk.field, pk.text, -1, tallyItemRank{}, r.itemRef)
 					if core.IsPluginPersonID(pk.intV) {
-						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, -1, "", pk.text, tallyItemRank{}, r.itemRef, tallyItemRank{}, r.itemRef)
+						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, -1, "", pk.text, tallyItemRank{}, r.itemRef, tallyItemRank{}, r.itemRef, r.itemRef)
 					}
 				}
 			}
@@ -1921,7 +1916,7 @@ LIMIT ?`, pluginID, kindKey, cursor, upsertChunkSize)
 						if itemPersonHasThumb[pk.intV] {
 							th = rank
 						}
-						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, 1, pk.text, "", rank, "", th, "")
+						addPersonTallyChange(personDeltaFor(r.libraryID), r.level, pk.field, pk.intV, 1, pk.text, "", rank, "", th, "", r.itemRef)
 					}
 				}
 			} else if ov != nv {
@@ -2117,24 +2112,16 @@ func (s *Service) lookupExistingIndexedFields(ctx context.Context, batch []reind
 	return out, nil
 }
 
-func (s *Service) lookupExistingSQLiteFTS(ctx context.Context, batch []reindexItemRow) (map[int64]existingFTSRow, error) {
-	out := make(map[int64]existingFTSRow, len(batch))
-	if len(batch) == 0 {
+func (s *Service) lookupExistingSQLiteFTS(ctx context.Context, seqs []any) (map[int64]existingFTSRow, error) {
+	out := make(map[int64]existingFTSRow, len(seqs))
+	if len(seqs) == 0 {
 		return out, nil
 	}
 	const chunkSize = 250
-	for start := 0; start < len(batch); start += chunkSize {
-		end := min(start+chunkSize, len(batch))
-		chunk := batch[start:end]
-		placeholders := make([]string, len(chunk))
-		args := make([]any, len(chunk))
-		for i, r := range chunk {
-			placeholders[i] = "?"
-			args[i] = r.seq
-		}
+	for start := 0; start < len(seqs); start += chunkSize {
+		end := min(start+chunkSize, len(seqs))
 		rows, err := s.db.QueryContext(ctx,
-			`SELECT rowid, item_ref, library_id, title, fields, people FROM plugin_item_fts WHERE rowid IN (`+strings.Join(placeholders, ",")+`)`,
-			args...)
+			`SELECT rowid, item_ref, library_id, title, fields, people FROM plugin_item_fts WHERE rowid IN (`+store.Placeholders(end-start)+`)`, seqs[start:end]...)
 		if err != nil {
 			return nil, err
 		}
@@ -2460,7 +2447,7 @@ type existingItemMeta struct {
 	recording string
 }
 
-func lookupExistingItemsTx(ctx context.Context, tx queryer, items []preparedItem) (map[core.ItemRef]existingItemMeta, error) {
+func lookupExistingItems(ctx context.Context, tx queryer, items []preparedItem) (map[core.ItemRef]existingItemMeta, error) {
 	out := make(map[core.ItemRef]existingItemMeta, len(items))
 	const chunkSize = 250
 	for start := 0; start < len(items); start += chunkSize {
@@ -2592,7 +2579,7 @@ type existingTextField struct {
 	intV  int64
 }
 
-func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.ItemRef) ([]existingTextField, error) {
+func lookupExistingTextFields(ctx context.Context, q queryer, refs []core.ItemRef) ([]existingTextField, error) {
 	if len(refs) == 0 {
 		return nil, nil
 	}
@@ -2607,7 +2594,7 @@ func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.Ite
 			placeholders[i] = "?"
 			args[i] = string(r)
 		}
-		rows, err := tx.QueryContext(ctx,
+		rows, err := q.QueryContext(ctx,
 			`SELECT item_ref, field, v_text, v_int FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) AND v_text <> ''`,
 			args...)
 		if err != nil {
@@ -2698,40 +2685,107 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 		}
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	leafLevels := kind.Decl.LeafLevels()
+	levelCount := len(kind.Decl.Levels)
+	targets, err := s.loadDeleteTargets(ctx, refs, levelCount, leafLevels)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
 
-	leafLevels := kind.Decl.LeafLevels()
-	if err := s.deleteRefsAndDescendantsTx(ctx, tx, kind.LibraryID, kind.Decl, refs, len(kind.Decl.Levels), leafLevels); err != nil {
-		return err
-	}
-	if bumpGen {
-		if _, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, s.now().Unix(), true); err != nil {
-			return err
+	// Commit children before their parents. If interrupted, a replay can
+	// still discover every remaining descendant from the original roots.
+	depth := func(t deleteTarget) int {
+		n := 0
+		for parent, ok := targets[t.parentRef]; ok && n < levelCount; parent, ok = targets[parent.parentRef] {
+			n++
 		}
+		return n
 	}
-	if err := tx.Commit(); err != nil {
+	ordered := make([]deleteTarget, 0, len(targets))
+	for _, t := range targets {
+		ordered = append(ordered, t)
+	}
+	slices.SortFunc(ordered, func(a, b deleteTarget) int {
+		if d := depth(b) - depth(a); d != 0 {
+			return d
+		}
+		return strings.Compare(string(a.ref), string(b.ref))
+	})
+
+	// Keep the state update in the last successful transaction, including
+	// for a tombstone that was already applied.
+	now := s.now().Unix()
+	isSQLite := store.DialectOf(s.db) == store.SQLite
+	write := func(start, end int) (time.Duration, error) {
+		chunk := ordered[start:end]
+		var plan *deleteChunkPlan
+		if isSQLite && len(chunk) > 0 {
+			var err error
+			plan, err = prepareDeleteChunk(ctx, s.db, kind, chunk, leafLevels)
+			if err != nil {
+				return 0, err
+			}
+			if err := prepareTallyRepairs(ctx, s.db, kind.LibraryID, kind.Decl, plan.fieldTally, plan.personTally); err != nil {
+				return 0, err
+			}
+		}
+		held, err := s.runWriteChunk(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			if len(chunk) > 0 {
+				if plan == nil {
+					var err error
+					plan, err = prepareDeleteChunk(ctx, tx, kind, chunk, leafLevels)
+					if err != nil {
+						return err
+					}
+				}
+				if err := deleteTargetsTx(ctx, tx, kind, isSQLite, chunk, plan); err != nil {
+					return err
+				}
+			}
+			if bumpGen && end == len(ordered) {
+				_, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, kind.LibraryID, now, true)
+				return err
+			}
+			return nil
+		})
+		if err == nil {
+			s.forgetPinnedRefs(refsFromDeleteTargets(chunk))
+			s.noteWrite()
+		}
+		return held, err
+	}
+	if len(ordered) == 0 {
+		if bumpGen {
+			_, err = write(0, 0)
+		}
+	} else {
+		err = s.writeChunks(ctx, len(ordered), write)
+	}
+	if err != nil {
 		return err
 	}
 	s.forgetPinnedRefs(refs)
-	s.noteWrite()
 	return nil
 }
 
-func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, decl plugins.MediaKindMeta, rootRefs []core.ItemRef, levelCount int, leafLevels map[string]bool) error {
-	if len(rootRefs) == 0 {
-		return nil
+type deleteTarget struct {
+	ref       core.ItemRef
+	seq       int64
+	level     string
+	parentRef core.ItemRef
+	recording string
+}
+
+func refsFromDeleteTargets(targets []deleteTarget) []core.ItemRef {
+	refs := make([]core.ItemRef, len(targets))
+	for i, t := range targets {
+		refs[i] = t.ref
 	}
-	type target struct {
-		ref       core.ItemRef
-		seq       int64
-		level     string
-		parentRef core.ItemRef
-	}
-	allTargets := make(map[core.ItemRef]target, len(rootRefs))
+	return refs
+}
+
+func (s *Service) loadDeleteTargets(ctx context.Context, rootRefs []core.ItemRef, levelCount int, leafLevels map[string]bool) (map[core.ItemRef]deleteTarget, error) {
+	allTargets := make(map[core.ItemRef]deleteTarget, len(rootRefs))
 	frontier := append([]core.ItemRef(nil), rootRefs...)
 
 	// Walk up to 5 hierarchy levels to collect all targets and their descendants.
@@ -2749,24 +2803,24 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 			inClause := strings.Join(placeholders, ",")
 			if depth == 0 {
-				rows, err := tx.QueryContext(ctx,
-					`SELECT item_ref, seq, level, parent_ref FROM plugin_items WHERE item_ref IN (`+inClause+`)`, args...)
+				rows, err := s.db.QueryContext(ctx,
+					`SELECT item_ref, seq, level, parent_ref, recording FROM plugin_items WHERE item_ref IN (`+inClause+`)`, args...)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				for rows.Next() {
-					var refStr, lv, parentStr string
+					var refStr, lv, parentStr, recording string
 					var seq int64
-					if err := rows.Scan(&refStr, &seq, &lv, &parentStr); err != nil {
+					if err := rows.Scan(&refStr, &seq, &lv, &parentStr, &recording); err != nil {
 						rows.Close()
-						return err
+						return nil, err
 					}
 					r := core.ItemRef(refStr)
-					allTargets[r] = target{ref: r, seq: seq, level: lv, parentRef: core.ItemRef(parentStr)}
+					allTargets[r] = deleteTarget{ref: r, seq: seq, level: lv, parentRef: core.ItemRef(parentStr), recording: recording}
 				}
 				if err := rows.Err(); err != nil {
 					rows.Close()
-					return err
+					return nil, err
 				}
 				rows.Close()
 			}
@@ -2784,7 +2838,7 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			parents := chunk
 			parentArgs := args
 			if len(leafLevels) > 0 {
-				parents = parents[:0]
+				parents = make([]core.ItemRef, 0, len(chunk))
 				parentArgs = parentArgs[:0]
 				for _, r := range chunk {
 					if t, known := allTargets[r]; known && leafLevels[t.level] {
@@ -2802,56 +2856,67 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 				}
 				inClause = strings.Join(placeholders, ",")
 			}
-			childrenQuery := `SELECT item_ref, seq, level, parent_ref FROM plugin_items WHERE parent_ref IN (` + inClause + `) AND parent_ref <> ''`
+			childrenQuery := `SELECT item_ref, seq, level, parent_ref, recording FROM plugin_items WHERE parent_ref IN (` + inClause + `) AND parent_ref <> ''`
 			if store.DialectOf(s.db) == store.SQLite {
-				childrenQuery = `SELECT item_ref, seq, level, parent_ref FROM plugin_items INDEXED BY plugin_items_parent WHERE parent_ref IN (` + inClause + `) AND parent_ref <> ''`
+				childrenQuery = `SELECT item_ref, seq, level, parent_ref, recording FROM plugin_items INDEXED BY plugin_items_parent WHERE parent_ref IN (` + inClause + `) AND parent_ref <> ''`
 			}
-			crows, err := tx.QueryContext(ctx, childrenQuery, parentArgs...)
+			crows, err := s.db.QueryContext(ctx, childrenQuery, parentArgs...)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			for crows.Next() {
-				var refStr, lv, parentStr string
+				var refStr, lv, parentStr, recording string
 				var seq int64
-				if err := crows.Scan(&refStr, &seq, &lv, &parentStr); err != nil {
+				if err := crows.Scan(&refStr, &seq, &lv, &parentStr, &recording); err != nil {
 					crows.Close()
-					return err
+					return nil, err
 				}
 				r := core.ItemRef(refStr)
 				if _, already := allTargets[r]; !already {
-					allTargets[r] = target{ref: r, seq: seq, level: lv, parentRef: core.ItemRef(parentStr)}
+					allTargets[r] = deleteTarget{ref: r, seq: seq, level: lv, parentRef: core.ItemRef(parentStr), recording: recording}
 					nextFrontier = append(nextFrontier, r)
 				}
 			}
 			if err := crows.Err(); err != nil {
 				crows.Close()
-				return err
+				return nil, err
 			}
 			crows.Close()
 		}
 		frontier = nextFrontier
 	}
 
-	if len(allTargets) == 0 {
-		return nil
-	}
+	return allTargets, nil
+}
 
-	targetRefs := make([]core.ItemRef, 0, len(allTargets))
-	for r := range allTargets {
-		targetRefs = append(targetRefs, r)
+type deleteChunkPlan struct {
+	refs        []core.ItemRef
+	fieldTally  map[fieldTallyKey]*fieldTallyChange
+	personTally map[personTallyKey]*personTallyChange
+	parentTally map[parentTallyKey]parentTallyDelta
+	levelTally  map[string]int64
+	recordings  map[string]int64
+}
+
+func prepareDeleteChunk(ctx context.Context, q queryer, kind KindRecord, targets []deleteTarget, leafLevels map[string]bool) (*deleteChunkPlan, error) {
+	libraryID := kind.LibraryID
+	levelCount := len(kind.Decl.Levels)
+	targetRefs := refsFromDeleteTargets(targets)
+	allTargets := make(map[core.ItemRef]deleteTarget, len(targets))
+	for _, t := range targets {
+		allTargets[t.ref] = t
 	}
-	slices.Sort(targetRefs)
 
 	var parentTally *parentTallyTracker
 	if levelCount > 1 && libraryID > 0 {
-		parentTally = newParentTallyTracker(tx, libraryID, leafLevels, nil)
+		parentTally = newParentTallyTracker(q, libraryID, leafLevels, nil)
 		skipSet := make(map[core.ItemRef]struct{}, len(allTargets))
 		for r := range allTargets {
 			skipSet[r] = struct{}{}
 		}
-		cutRoots := make([]target, 0, len(rootRefs))
-		primeParents := make([]core.ItemRef, 0, len(rootRefs))
-		primeLeaves := make([]core.ItemRef, 0, len(rootRefs))
+		cutRoots := make([]deleteTarget, 0, len(targets))
+		primeParents := make([]core.ItemRef, 0, len(targets))
+		primeLeaves := make([]core.ItemRef, 0, len(targets))
 		for _, r := range targetRefs {
 			t := allTargets[r]
 			if t.parentRef == "" {
@@ -2869,10 +2934,10 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		}
 		if len(cutRoots) > 0 {
 			if err := parentTally.primeParents(ctx, primeParents); err != nil {
-				return err
+				return nil, err
 			}
 			if err := parentTally.primeLeaves(ctx, primeLeaves); err != nil {
-				return err
+				return nil, err
 			}
 			for _, t := range cutRoots {
 				var childLeaves int64
@@ -2880,23 +2945,23 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 					var err error
 					childLeaves, err = parentTally.leafCount(ctx, t.ref)
 					if err != nil {
-						return err
+						return nil, err
 					}
 				}
 				sub := parentTally.ownLeaf(t.level) + childLeaves
 				parentTally.addChild(t.parentRef, t.level, -1)
 				if sub > 0 {
 					if err := parentTally.addLeafAncestors(ctx, t.parentRef, t.ref, t.level, -sub, skipSet); err != nil {
-						return err
+						return nil, err
 					}
 				}
 			}
 		}
 	}
 
-	oldFields, err := lookupExistingTextFieldsTx(ctx, tx, targetRefs)
+	oldFields, err := lookupExistingTextFields(ctx, q, targetRefs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fieldTallyDelta := map[fieldTallyKey]*fieldTallyChange{}
 	personTallyDelta := map[personTallyKey]*personTallyChange{}
@@ -2905,21 +2970,30 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			refStr := string(of.ref)
 			addFieldTallyChange(fieldTallyDelta, t.level, of.field, of.text, -1, tallyItemRank{}, refStr)
 			if core.IsPluginPersonID(of.intV) {
-				addPersonTallyChange(personTallyDelta, t.level, of.field, of.intV, -1, "", of.text, tallyItemRank{}, refStr, tallyItemRank{}, refStr)
+				addPersonTallyChange(personTallyDelta, t.level, of.field, of.intV, -1, "", of.text, tallyItemRank{}, refStr, tallyItemRank{}, refStr, refStr)
 			}
 		}
 	}
 
-	isSQLite := store.DialectOf(s.db) == store.SQLite
-	tallyDelta := map[string]int64{}
-	recordingDelta := map[string]int64{}
-	for _, r := range targetRefs {
-		t := allTargets[r]
-		tallyDelta[t.level]--
-		var rec string
-		if err := tx.QueryRowContext(ctx, `SELECT recording FROM plugin_items WHERE item_ref = ?`, string(t.ref)).Scan(&rec); err == nil && rec != "" {
-			recordingDelta[rec]--
+	plan := &deleteChunkPlan{
+		refs: targetRefs, fieldTally: fieldTallyDelta, personTally: personTallyDelta,
+		levelTally: make(map[string]int64), recordings: make(map[string]int64),
+	}
+	if parentTally != nil {
+		plan.parentTally = parentTally.delta
+	}
+	for _, t := range targets {
+		plan.levelTally[t.level]--
+		if t.recording != "" {
+			plan.recordings[t.recording]--
 		}
+	}
+	return plan, nil
+}
+
+func deleteTargetsTx(ctx context.Context, tx *sql.Tx, kind KindRecord, isSQLite bool, targets []deleteTarget, plan *deleteChunkPlan) error {
+	libraryID, decl := kind.LibraryID, kind.Decl
+	for _, t := range targets {
 		if isSQLite {
 			if err := sqliteDeleteFTS(ctx, tx, t.seq); err != nil {
 				return err
@@ -2927,9 +3001,12 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		}
 		refStr := string(t.ref)
 		partPrefix := refStr + "#part:"
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM plugin_resolutions WHERE item_ref = ? OR SUBSTR(item_ref, 1, ?) = ?`,
-			refStr, len(partPrefix), partPrefix); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_resolutions WHERE item_ref = ?`, refStr); err != nil {
+			return err
+		}
+		// Resolution keys use binary collation on both databases. The range
+		// seeks to this item's part keys through the primary index.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_resolutions WHERE item_ref >= ? AND item_ref < ?`, partPrefix, refStr+"#part;"); err != nil {
 			return err
 		}
 		for _, tbl := range []string{
@@ -2945,27 +3022,25 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 		}
 	}
-	if err := applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta); err != nil {
+	if err := applyTallyDeltaTx(ctx, tx, libraryID, plan.levelTally); err != nil {
 		return err
 	}
-	if err := applyRecordingTallyDeltaTx(ctx, tx, libraryID, recordingDelta); err != nil {
+	if err := applyRecordingTallyDeltaTx(ctx, tx, libraryID, plan.recordings); err != nil {
 		return err
 	}
-	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, !isSQLite, libraryID, fieldTallyDelta)
+	emptiedText, err := applyFieldTallyDeltaTx(ctx, tx, !isSQLite, libraryID, plan.fieldTally)
 	if err != nil {
 		return err
 	}
-	if err := applyPersonTallyDeltaTx(ctx, tx, !isSQLite, libraryID, decl, personTallyDelta, emptiedText); err != nil {
+	if err := applyPersonTallyDeltaTx(ctx, tx, !isSQLite, libraryID, decl, plan.personTally, emptiedText); err != nil {
 		return err
 	}
-	if levelCount > 1 && libraryID > 0 {
-		if err := deleteParentTallyRefsTx(ctx, tx, libraryID, targetRefs); err != nil {
+	if plan.parentTally != nil {
+		if err := deleteParentTallyRefsTx(ctx, tx, libraryID, plan.refs); err != nil {
 			return err
 		}
-		if parentTally != nil {
-			if err := applyParentTallyDeltaTx(ctx, tx, libraryID, parentTally.delta); err != nil {
-				return err
-			}
+		if err := applyParentTallyDeltaTx(ctx, tx, libraryID, plan.parentTally); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -1037,7 +1037,6 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 			return browseTallyInfo{libTotal: libTotal, singleLevel: singleLevel}, nil
 		}
 		kindRec = rec
-		hasKind = true
 	}
 	fieldTypes := make(map[string]string, len(kindRec.Decl.Fields))
 	for _, fd := range kindRec.Decl.Fields {

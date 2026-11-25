@@ -175,7 +175,7 @@ func TestVelaBootstrapRevalidatesCachedRowIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	rejected(id)
-	id, tag = home(tag, id)
+	_, tag = home(tag, id)
 	if out := get("bootstrap", tag); out.Code != http.StatusNotModified {
 		t.Fatalf("replacement bootstrap status = %d, want 304", out.Code)
 	}

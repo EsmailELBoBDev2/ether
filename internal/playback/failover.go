@@ -1362,6 +1362,17 @@ func (m *Manager) dropGeneration(g *generation) {
 	g.retire()
 }
 
+// forgetUnreadable marks a provably unreadable release bad, so neither the
+// resolver, a remembered resume nor another candidate pass of this title
+// picks it again.
+func (m *Manager) forgetUnreadable(s *session, g *generation, reason string) {
+	if g == nil || g.res == nil || g.releaseID() == "" || s.isKind() {
+		return
+	}
+	m.markBad(g.releaseID(), reason)
+	m.rememberOpenFailure(s, g.res.Release, g.sourceFailure())
+}
+
 func (m *Manager) markBad(releaseID, reason string) {
 	if m.deps.Resolver == nil {
 		return
@@ -1473,7 +1484,11 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	started := time.Now()
 
 	s.mu.Lock()
-	cur, closed, failovers, pinned := s.cur, s.closed, s.failovers, s.sourcePins > 0
+	cur, closed, failovers := s.cur, s.closed, s.failovers
+	// A release that is provably unreadable (corrupt or missing data) can
+	// never deliver this session, wherever its selection came from.
+	unreadable := !fo.encoder && cur == observed && cur != nil && permanentSourceFailure(cur.sourceFailure())
+	replaceable := s.replaceableLocked(unreadable)
 	direct := fo.strictDirect || (s.decision == core.DecisionDirectPlay && !spliceable(s.container, s.name))
 	s.mu.Unlock()
 	if closed {
@@ -1492,9 +1507,23 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			}
 		}()
 	}
-	if s.exact || pinned {
+	if !replaceable {
 		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
 			return cur, nil
+		}
+		if unreadable {
+			// The viewer's own pick (or a pinned source) stays put, but it
+			// cannot play: end with a reason the viewer can act on, and keep
+			// every later start off this release.
+			m.forgetUnreadable(s, cur, fo.reason)
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "error",
+				Level:   "error",
+				Failing: true,
+				Message: "This version can't be played: the file is incomplete on your provider",
+				Detail:  OwnerError(cur.sourceFailure()),
+			})
+			return nil, fmt.Errorf("release %s: %w", cur.releaseID(), core.ErrVersionUnreadable)
 		}
 		return nil, fmt.Errorf("%w: selected release cannot be replaced", core.ErrNotAvailable)
 	}
@@ -1518,8 +1547,8 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		Detail:  fo.reason,
 	})
 	// A provider outage is not evidence that the release itself is invalid.
-	if failure := cur.sourceFailure(); !fo.encoder && !s.isKind() && permanentSourceFailure(failure) {
-		m.markBad(cur.releaseID(), fo.reason)
+	if unreadable {
+		m.forgetUnreadable(s, cur, fo.reason)
 	}
 	if !fo.encoder && core.IsExplicitVersionSlotSelector(s.prefer) {
 		m.noteStaleRelease(s.ident.key, cur.releaseID(), s.title, "", fo.reason)

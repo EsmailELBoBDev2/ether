@@ -338,7 +338,7 @@ func (i *instance) autoSwitchPlan(r *http.Request, scope frontend.VersionScope, 
 	}
 	alt := base
 	alt.Version, alt.ResolvedRelease = handle, release
-	alt.Intent.ExactVersion = true
+	alt.Intent.ExactVersion, alt.Intent.AutoVersion = true, true
 	plan, err := i.host.Sessions.Plan(r.Context(), alt)
 	if err != nil || plan.Estimated {
 		return base, frontend.PlayPlan{}, "", false

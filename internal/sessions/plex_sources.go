@@ -71,7 +71,13 @@ func (s PartSources) Prepare(ctx context.Context, viewer *core.User, key core.Ra
 		}
 	}
 	if exact {
-		return exactPlayback.PrepareExactVariant(ctx, viewer, key, caps, release)
+		ps, err := exactPlayback.PrepareExactVariant(ctx, viewer, key, caps, release)
+		// A restart keeps the release being watched, not a new pick: it
+		// still moves off that release once it is proven unreadable.
+		if binder, ok := s.Playback.(core.SourceBinder); ok && err == nil && ps != nil {
+			binder.BindSource(ps.ID, core.SourceBindingRemembered)
+		}
+		return ps, err
 	}
 	if release != "" {
 		if p, ok := s.Playback.(core.VariantPlayback); ok {

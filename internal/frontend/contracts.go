@@ -1073,6 +1073,9 @@ type PlayIntent struct {
 	// ExactVersion treats PlanRequest.Version as a scoped opaque handle and
 	// refuses any substitute release, including during later source failover.
 	ExactVersion bool
+	// AutoVersion marks an ExactVersion handle that Auto chose rather than
+	// the viewer: it opens that release, then fails over like Auto.
+	AutoVersion bool
 	// Set flags distinguish omitted choices from stream index zero and
 	// an explicit subtitle-off choice (SubtitleStream == -1).
 	AudioSet    bool

@@ -294,8 +294,9 @@ type session struct {
 	// merely a new request. Guarded by mu; see takeStallContinue.
 	stallContinues   int
 	requiresRemux    bool
-	prefer           string // release ID the viewer picked (PrepareVariant); read-only after creation
-	exact            bool   // exact selection must never switch releases
+	prefer           string             // release ID the viewer picked (PrepareVariant); read-only after creation
+	exact            bool               // exact selection must never switch releases
+	binding          core.SourceBinding // why an exact session holds its release: which failures may still replace it
 	lastActive       time.Time
 	lastRead         time.Time
 	lastMediaAt      time.Time // last client-facing media bytes / segment / direct redirect served (zero until media delivered)

@@ -688,6 +688,7 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
 	return info, nil
 }
@@ -887,6 +888,7 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 	}
 	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
 	return info, nil
 }
@@ -999,6 +1001,7 @@ func (s *Service) Session(ctx context.Context, id string, u *core.User) (Session
 	ephemeral := ss.ephemeral
 	ss.mu.Unlock()
 	info.Channel.StreamURL = ""
+	info.Channel.redactArchiveSource()
 	info.Channel.StreamSources = nil
 	if ephemeral {
 		return info, nil

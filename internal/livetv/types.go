@@ -185,7 +185,7 @@ type Channel struct {
 	Rating                string             `json:"rating,omitempty"`
 	SourceID              string             `json:"sourceId,omitempty"`
 	GuideID               string             `json:"guideId,omitempty"`
-	TvgName               string             `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
+	TvgName               string             `json:"tvgName,omitempty"` // provider's label; a guide-matching hint
 	Archive               *ChannelArchive    `json:"archive,omitempty"`
 	StreamURL             string             `json:"streamUrl,omitempty"`     // owner API only
 	StreamSources         []StreamSource     `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
@@ -236,10 +236,14 @@ type Channel struct {
 	// makes them differ and sticks.
 	ProviderGuideID string `json:"providerGuideId,omitempty"`
 
+	archiveTimezone string // provider timezone for archive URL construction
+
 	// adult is the provider's own adult flag (Xtream is_adult); import only.
 	adult bool
 }
 type Source struct {
+	ArchiveTimezone string `json:"archiveTimezone,omitempty"`
+
 	UnratedRating string          `json:"unratedRating,omitempty"`
 	LoginPool     bool            `json:"loginPool,omitempty"`
 	Logins        []ProviderLogin `json:"logins,omitempty"`

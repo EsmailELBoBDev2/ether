@@ -169,9 +169,10 @@ const (
 	// after the films, series and people that match as well: the many talk
 	// show episodes called "Tom Hanks" follow his films, and episodes of
 	// other series called "Breaking Bad" follow the series and its film.
-	searchChildDiscount = 0.82
-	searchRemoteWait    = time.Second
-	searchRemoteGrace   = 150 * time.Millisecond
+	searchChildDiscount  = 0.82
+	searchRemoteWait     = time.Second
+	searchRemoteGrace    = 150 * time.Millisecond
+	coldSourceSearchWait = 2 * time.Second
 )
 
 // Search combines indexed titles with hits from configured metadata sources.
@@ -612,7 +613,12 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		// they are immediate.
 		wait = searchRemoteGrace
 	}
-	if noReadWait(ctx) {
+	if !tmdbReady && len(sources) > 0 && len(out) == 0 && core.ExplicitSearch(ctx) {
+		// A cold non-TMDB install has no indexed results to show yet. Give
+		// the explicit search one bounded provider lookup.
+		wait = coldSourceSearchWait
+		ctx = WithReadWaitBudget(ctx, wait)
+	} else if noReadWait(ctx) {
 		wait = 0
 	}
 	// A detached search that finished answers the next one: its hits are

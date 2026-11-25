@@ -48,11 +48,65 @@ func (i *instance) clientCompatibilityRoutes() error {
 		}
 	}
 	if i.protocol == "jellyfin" {
+		if err := i.router.Handle("GET", "/System/Configuration/Encoding", http.HandlerFunc(i.encodingOptions)); err != nil {
+			return err
+		}
 		if err := i.router.Handle("POST", "/ClientLog/Document", http.HandlerFunc(i.clientLogDocument)); err != nil {
 			return err
 		}
 	}
 	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+}
+
+// encodingOptions exposes Jellyfin's encoding configuration contract with
+// software defaults. Ether manages its encoders through its own settings.
+func (i *instance) encodingOptions(w http.ResponseWriter, r *http.Request) {
+	if v, _, err := i.viewer(r); err != nil || v == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	jsonReply(w, map[string]any{
+		"EncodingThreadCount":                -1,
+		"EnableFallbackFont":                 false,
+		"EnableAudioVbr":                     false,
+		"DownMixAudioBoost":                  2,
+		"DownMixStereoAlgorithm":             "None",
+		"MaxMuxingQueueSize":                 2048,
+		"EnableThrottling":                   false,
+		"ThrottleDelaySeconds":               180,
+		"EnableSegmentDeletion":              false,
+		"SegmentKeepSeconds":                 720,
+		"HardwareAccelerationType":           "none",
+		"EnableTonemapping":                  false,
+		"EnableVppTonemapping":               false,
+		"EnableVideoToolboxTonemapping":      false,
+		"TonemappingAlgorithm":               "bt2390",
+		"TonemappingMode":                    "auto",
+		"TonemappingRange":                   "auto",
+		"TonemappingDesat":                   0,
+		"TonemappingPeak":                    100,
+		"TonemappingParam":                   0,
+		"VppTonemappingBrightness":           16,
+		"VppTonemappingContrast":             1,
+		"H264Crf":                            23,
+		"H265Crf":                            28,
+		"DeinterlaceDoubleRate":              false,
+		"DeinterlaceMethod":                  "yadif",
+		"EnableDecodingColorDepth10Hevc":     true,
+		"EnableDecodingColorDepth10Vp9":      true,
+		"EnableDecodingColorDepth10HevcRext": false,
+		"EnableDecodingColorDepth12HevcRext": false,
+		"EnableEnhancedNvdecDecoder":         true,
+		"PreferSystemNativeHwDecoder":        true,
+		"EnableIntelLowPowerH264HwEncoder":   false,
+		"EnableIntelLowPowerHevcHwEncoder":   false,
+		"EnableHardwareEncoding":             false,
+		"AllowHevcEncoding":                  false,
+		"AllowAv1Encoding":                   false,
+		"EnableSubtitleExtraction":           true,
+		"HardwareDecodingCodecs":             []string{},
+		"AllowOnDemandMetadataBasedKeyframeExtractionForExtensions": []string{"mkv"},
+	})
 }
 
 // clientLogDocument accepts a client log upload the way Jellyfin 10.10

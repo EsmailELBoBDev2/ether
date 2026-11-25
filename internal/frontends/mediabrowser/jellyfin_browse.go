@@ -746,8 +746,8 @@ func (i *instance) nameChildSeries(r *http.Request, viewer *frontend.Viewer, par
 
 // attachParentIdentity writes the show and season ids and names the title
 // already carries. An episode key encodes its season when ShowKey was left
-// empty. A show key plus a season number encodes the season when the item
-// key does not.
+// empty. For episodes with an independent key, a canonical parent season
+// also identifies the show and season.
 func attachParentIdentity(m map[string]any, t frontend.Title) {
 	if mbDeclaredNonVideo(t) {
 		// A declared music/book/photo item names its immediate parent in
@@ -781,6 +781,13 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
 		show = frontend.ShowKey(t.Key.TMDB())
 	}
+	seasonKey := t.Key.Parent()
+	if t.Type == "episode" && seasonKey == 0 && t.ParentKey.Kind() == frontend.KindSeason {
+		if parentShow := t.ParentKey.Parent(); show == 0 || show == parentShow {
+			show = parentShow
+			seasonKey = t.ParentKey
+		}
+	}
 	if show == 0 && t.MBItemType == "Video" && t.ParentKey != 0 {
 		m["ParentId"] = ids.RatingKeyGUID(t.ParentKey)
 		if t.ItemIndex > 0 {
@@ -795,9 +802,10 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 	}
 	seasonNumber, episodeNumber := t.Season, t.Episode
 	if seasonNumber == 0 {
-		if n := t.Key.Season(); n > 0 {
-			seasonNumber = n
-		}
+		seasonNumber = t.Key.Season()
+	}
+	if seasonNumber == 0 && seasonKey.Kind() == frontend.KindSeason {
+		seasonNumber = seasonKey.Season()
 	}
 	if episodeNumber == 0 && t.Key.Kind() == frontend.KindEpisode {
 		if n := t.Key.Episode(); n > 0 {
@@ -819,7 +827,7 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 	}
 	if t.Type == "episode" {
-		season := t.Key.Parent()
+		season := seasonKey
 		if season == 0 && show.Kind() == frontend.KindShow && (seasonNumber > 0 || t.SeasonTitle != "") {
 			season = frontend.SeasonKey(show.TMDB(), seasonNumber)
 		}

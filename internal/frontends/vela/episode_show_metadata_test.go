@@ -103,6 +103,11 @@ func TestVelaEpisodeHomeAndRowPayloadsCarryShowNameAndShowID(t *testing.T) {
 		Episode: 2,
 		Runtime: 48 * time.Minute,
 	}
+	// Another episode from the same show supplies the name without a lookup.
+	epSibling := epContinue
+	epSibling.Key = core.EpisodeKey(101, 1, 4)
+	epSibling.ShowTitle = ""
+	epSibling.Episode = 4
 	// Non-video track in a Home row must never leak showId/showName.
 	musicTrack := core.Title{
 		Key:        core.PluginKey(9001),
@@ -146,6 +151,7 @@ func TestVelaEpisodeHomeAndRowPayloadsCarryShowNameAndShowID(t *testing.T) {
 				Purpose: frontend.RowRecentlyAdded,
 				Entries: []frontend.RowEntry{
 					{Kind: frontend.RowEntryTitle, Title: &epRecent, Handle: "r-rec"},
+					{Kind: frontend.RowEntryTitle, Title: &epSibling, Handle: "r-sibling"},
 					{Kind: frontend.RowEntryTitle, Title: &musicTrack, Handle: "r-track"},
 				},
 			},
@@ -256,7 +262,8 @@ func TestVelaEpisodeHomeAndRowPayloadsCarryShowNameAndShowID(t *testing.T) {
 	assertEpisode("bootstrap nextUp", byRowID["home.nextup"][0], showB.Key, "Andor", 1, 6)
 	assertEpisode("bootstrap recentlyAdded", byRowID["home.recent"][0], showC.Key, "Slow Horses", 2, 1)
 	assertEpisode("bootstrap recommendation", byRowID["home.picks"][1], showD.Key, "Silo", 1, 2)
-	trackWire := byRowID["home.recent"][1]
+	assertEpisode("bootstrap sibling", byRowID["home.recent"][1], showA.Key, "Severance", 1, 4)
+	trackWire := byRowID["home.recent"][2]
 	for _, forbidden := range []string{"showId", "showName", "seasonNumber", "episodeNumber"} {
 		if _, has := trackWire[forbidden]; has {
 			t.Fatalf("bootstrap music track leaked video field %q: %v", forbidden, trackWire)

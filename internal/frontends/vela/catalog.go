@@ -377,63 +377,38 @@ func videoShowName(t frontend.Title) string {
 // or seasons in ts using at most one TitleBatchReader lookup per response.
 // Shows already present in ts are reused without a lookup.
 func (i *instance) resolveShowNames(r *http.Request, v *frontend.Viewer, ts []frontend.Title) map[frontend.RatingKey]string {
-	cache, _ := r.Context().Value(showNamesKey{}).(map[frontend.RatingKey]string)
-	var missing []frontend.RatingKey
-	seenMissing := map[frontend.RatingKey]bool{}
+	names, _ := r.Context().Value(showNamesKey{}).(map[frontend.RatingKey]string)
+	if names == nil {
+		names = make(map[frontend.RatingKey]string)
+	}
+	// A show card or another episode can already carry the parent name.
 	for _, t := range ts {
-		showKey := videoShowKey(t)
-		if showKey == 0 || videoShowName(t) != "" || seenMissing[showKey] {
-			continue
-		}
-		seenMissing[showKey] = true
-		missing = append(missing, showKey)
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	names := make(map[frontend.RatingKey]string, len(missing))
-	resolved := make(map[frontend.RatingKey]bool, len(missing))
-	for _, k := range missing {
-		if cache != nil {
-			if name, ok := cache[k]; ok {
-				names[k] = name
-				resolved[k] = true
+		if key := videoShowKey(t); key != 0 {
+			if name := videoShowName(t); name != "" {
+				names[key] = name
 			}
 		}
-	}
-	for _, t := range ts {
-		if seenMissing[t.Key] && !resolved[t.Key] {
+		if t.Type == frontend.TypeShow && !nonVideoMedia(t) {
 			if name := strings.TrimSpace(t.Title); name != "" {
 				names[t.Key] = name
-				resolved[t.Key] = true
-				if cache != nil {
-					cache[t.Key] = name
-				}
 			}
 		}
 	}
 	var need []frontend.RatingKey
-	for _, k := range missing {
-		if !resolved[k] {
-			need = append(need, k)
+	for _, t := range ts {
+		key := videoShowKey(t)
+		if _, known := names[key]; key != 0 && !known {
+			need = append(need, key)
+			names[key] = ""
 		}
 	}
-	if len(need) > 0 && v != nil && i.host.Experience != nil {
-		if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok {
-			if shows, err := batch.BatchTitles(r.Context(), v, need); err == nil {
-				if cache != nil {
-					for _, k := range need {
-						cache[k] = ""
-					}
-				}
-				for _, sh := range shows {
-					if name := strings.TrimSpace(sh.Title); name != "" {
-						names[sh.Key] = name
-						if cache != nil {
-							cache[sh.Key] = name
-						}
-					}
-				}
+	if len(need) == 0 || v == nil {
+		return names
+	}
+	if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok {
+		if shows, err := batch.BatchTitles(r.Context(), v, need); err == nil {
+			for _, show := range shows {
+				names[show.Key] = strings.TrimSpace(show.Title)
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -31,8 +32,10 @@ type preparedItem struct {
 	parentRef      string
 	hintsStr       string
 	fieldsStr      string
+	membersJSON    string
 	unavailableStr string
 	playableInt    int
+	ratingLevel    int
 	hash           string
 }
 
@@ -60,6 +63,18 @@ func prepareUpsertItem(pluginID, kindKey, declHash string, v ValidatedItem) (pre
 	if it.Playable {
 		p.playableInt = 1
 	}
+	if len(it.Members) > 0 {
+		refs := make([]core.ItemRef, len(it.Members))
+		for i, member := range it.Members {
+			refs[i] = core.NewItemRef(pluginID, kindKey, strings.TrimSpace(member))
+		}
+		b, err := json.Marshal(refs)
+		if err != nil {
+			return preparedItem{}, err
+		}
+		p.membersJSON = string(b)
+	}
+	p.ratingLevel = contentRatingLevel(it.Fields)
 	p.hash = itemContentHash(declHash, p)
 	return p, nil
 }

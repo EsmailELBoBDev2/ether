@@ -160,7 +160,7 @@ func TestKindUpsertWithUndoSkipsUnchangedSnapshots(t *testing.T) {
 
 // #647: deleting from a flat single-level kind works and deleting ids
 // that do not exist stays a no-op; the descendant walk itself is kept an
-// index seek by construction (see deleteRefsAndDescendantsTx).
+// index seek by construction (see loadDeleteTargets).
 func TestDeleteFlatKindAndMissingIDs(t *testing.T) {
 	ctx := context.Background()
 	s, _ := openTestService(t, Options{})

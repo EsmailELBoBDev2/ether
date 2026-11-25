@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // pgIndexPrefixRunes bounds PostgreSQL btree expression index prefixes on text
@@ -946,6 +947,7 @@ type fieldTallyChange struct {
 	delta       int64
 	bestAdded   tallyItemRank
 	removedRefs map[string]struct{}
+	replacement *tallyItemRank
 	sampleRef   string
 }
 
@@ -1009,6 +1011,20 @@ type repRecomputePlan struct {
 	// below bounds the probe to released <= below when bounded is set.
 	below   int64
 	bounded bool
+	// Exclude pre-chunk rows that will be removed or whose rank changes.
+	// The caller compares the winner with the incoming candidates.
+	excluded map[string]struct{}
+}
+
+func (p repRecomputePlan) exclusion(col string) (string, []any) {
+	if len(p.excluded) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(p.excluded))
+	for ref := range p.excluded {
+		args = append(args, ref)
+	}
+	return " AND " + col + " NOT IN (" + store.Placeholders(len(args)) + ")", args
 }
 
 // planRepRecompute chooses the recompute plan for a value held by cnt items
@@ -1030,7 +1046,7 @@ func planRepRecompute(cnt, libTotal int64, prev tallyItemRank) repRecomputePlan 
 
 // libraryItemTotalTx returns the library's indexed item count from
 // plugin_item_tally (0 when the tally is empty).
-func libraryItemTotalTx(ctx context.Context, tx *sql.Tx, libID int64) (int64, error) {
+func libraryItemTotal(ctx context.Context, tx queryer, libID int64) (int64, error) {
 	var n int64
 	err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ?`, libID).Scan(&n)
 	return n, err
@@ -1073,18 +1089,20 @@ WHERE `)
 	} else {
 		b.WriteString(`w.level <> ''`)
 	}
+	exclude, excluded := plan.exclusion("w.item_ref")
 	b.WriteString(`
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = w.item_ref AND ` + holdsCond + `)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = w.item_ref AND ` + holdsCond + `)` + exclude + `
 ORDER BY w.released DESC, w.item_ref ASC
 LIMIT ` + strconv.Itoa(limit))
 	args = append(args, holdsArgs...)
+	args = append(args, excluded...)
 	return b.String(), args
 }
 
 // probeRepTx resolves the representative with the window probe. ok is false
 // when the probe cannot answer exactly (no holder inside the window, or a
 // released tie too wide to break cheaply); the caller then runs index-first.
-func probeRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level string, plan repRecomputePlan, holdsCond string, holdsArgs []any) (tallyItemRank, bool, error) {
+func probeRepTx(ctx context.Context, tx queryer, isPG bool, libID int64, level string, plan repRecomputePlan, holdsCond string, holdsArgs []any) (tallyItemRank, bool, error) {
 	if plan.window <= 0 {
 		return tallyItemRank{}, false, nil
 	}
@@ -1123,12 +1141,14 @@ func probeRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level s
 		levelCond = strings.TrimPrefix(levelCond, "+")
 	}
 	tieArgs = append(tieArgs, holdsArgs...)
+	exclude, excluded := plan.exclusion("i.item_ref")
+	tieArgs = append(tieArgs, excluded...)
 	var exact tallyItemRank
 	err = tx.QueryRowContext(ctx, `
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
 WHERE i.library_id = ? AND i.released = ? AND `+levelCond+`
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND `+holdsCond+`)
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND `+holdsCond+`)`+exclude+`
 ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.year)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1140,7 +1160,7 @@ LIMIT 1`, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.y
 	return exact, true, nil
 }
 
-func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field, text string, plan repRecomputePlan) (tallyItemRank, error) {
+func recomputeFieldRepTx(ctx context.Context, tx queryer, isPG bool, libID int64, level, field, text string, plan repRecomputePlan) (tallyItemRank, error) {
 	holdsCond := `f.field = ? AND f.v_text = ?`
 	holdsArgs := []any{field, text}
 	if isPG {
@@ -1159,6 +1179,7 @@ func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64
 		lookupCond = `left(f.v_text, 256) = ? AND f.v_text = ?`
 		lookupArgs = []any{field, pgTextPrefix(text), text}
 	}
+	exclude, excluded := plan.exclusion("i.item_ref")
 	var (
 		q    string
 		args []any
@@ -1168,7 +1189,7 @@ func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level = ?
+WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level = ?` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
 		args = append(lookupArgs, libID, level)
@@ -1177,13 +1198,13 @@ LIMIT 1`
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level <> ''
+WHERE f.field = ? AND ` + lookupCond + ` AND ` + libCheck + ` AND i.level <> ''` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
 		args = append(lookupArgs, libID)
 	}
 	var out tallyItemRank
-	err := tx.QueryRowContext(ctx, q, args...).Scan(&out.ref, &out.released, &out.addedAt, &out.year)
+	err := tx.QueryRowContext(ctx, q, append(args, excluded...)...).Scan(&out.ref, &out.released, &out.addedAt, &out.year)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tallyItemRank{}, nil
 	}
@@ -1290,31 +1311,36 @@ WHERE `+keyCond+` AND `+repParamBeats, pArgs...); err != nil {
 		}
 
 		if len(ch.removedRefs) > 0 {
-			var cur tallyItemRank
-			var curCnt int64
-			err := tx.QueryRowContext(ctx, `
+			var winner tallyItemRank
+			if ch.replacement != nil {
+				winner = *ch.replacement
+			} else {
+				var cur tallyItemRank
+				var curCnt int64
+				err := tx.QueryRowContext(ctx, `
 SELECT rep_ref, rep_released, rep_added, rep_year, cnt
 FROM plugin_item_field_tally
 WHERE `+keyCond, keyArgs(k)...).Scan(&cur.ref, &cur.released, &cur.addedAt, &cur.year, &curCnt)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
-			}
-			if cur.ref != "" {
-				if _, hit := ch.removedRefs[cur.ref]; !hit {
+				if errors.Is(err, sql.ErrNoRows) {
 					continue
 				}
-			}
-			if libTotal < 0 {
-				if libTotal, err = libraryItemTotalTx(ctx, tx, libID); err != nil {
-					return nil, err
+				if err != nil {
+					return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
-			}
-			winner, err := recomputeFieldRepTx(ctx, tx, isPG, libID, k.level, k.field, k.text, planRepRecompute(curCnt, libTotal, cur))
-			if err != nil {
-				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
+				if cur.ref != "" {
+					if _, hit := ch.removedRefs[cur.ref]; !hit {
+						continue
+					}
+				}
+				if libTotal < 0 {
+					if libTotal, err = libraryItemTotal(ctx, tx, libID); err != nil {
+						return nil, err
+					}
+				}
+				winner, err = recomputeFieldRepTx(ctx, tx, isPG, libID, k.level, k.field, k.text, planRepRecompute(curCnt, libTotal, cur))
+				if err != nil {
+					return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
+				}
 			}
 			wArgs := append([]any{winner.ref, winner.released, winner.addedAt, winner.year}, keyArgs(k)...)
 			if _, err := tx.ExecContext(ctx, `
@@ -1342,6 +1368,10 @@ type personTallyChange struct {
 	removedRepRefs   map[string]struct{}
 	bestThumbAdded   tallyItemRank
 	removedThumbRefs map[string]struct{}
+	removedLabelRefs map[string]struct{}
+	repReplacement   *tallyItemRank
+	thumbReplacement *tallyItemRank
+	labelReplacement *sql.NullString
 	sampleRef        string
 }
 
@@ -1355,6 +1385,7 @@ func addPersonTallyChange(
 	removedRepRef string,
 	addedThumb tallyItemRank,
 	removedThumbRef string,
+	labelRef string,
 ) {
 	if level == "" || field == "" || !core.IsPluginPersonID(vInt) {
 		return
@@ -1390,6 +1421,10 @@ func addPersonTallyChange(
 				ch.removedTexts = map[string]struct{}{}
 			}
 			ch.removedTexts[removedText] = struct{}{}
+			if ch.removedLabelRefs == nil {
+				ch.removedLabelRefs = map[string]struct{}{}
+			}
+			ch.removedLabelRefs[labelRef] = struct{}{}
 		}
 		if addedRep.valid() && addedRep.beats(ch.bestRepAdded) {
 			ch.bestRepAdded = addedRep
@@ -1412,7 +1447,7 @@ func addPersonTallyChange(
 	}
 }
 
-func recomputePersonRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan) (tallyItemRank, error) {
+func recomputePersonRepTx(ctx context.Context, tx queryer, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan) (tallyItemRank, error) {
 	holdsCond := `f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND f.v_text <> ''`
 	holdsArgs := []any{field, vInt}
 	if rep, ok, err := probeRepTx(ctx, tx, isPG, libID, level, plan, holdsCond, holdsArgs); err != nil || ok {
@@ -1423,6 +1458,7 @@ func recomputePersonRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int6
 	if isPG {
 		libCheck = `i.library_id = ?`
 	}
+	exclude, excluded := plan.exclusion("i.item_ref")
 	var (
 		q    string
 		args []any
@@ -1432,7 +1468,7 @@ func recomputePersonRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int6
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level = ? AND f.v_text <> ''
+WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level = ? AND f.v_text <> ''` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
 		args = []any{field, vInt, libID, level}
@@ -1441,13 +1477,13 @@ LIMIT 1`
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level <> '' AND f.v_text <> ''
+WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level <> '' AND f.v_text <> ''` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
 LIMIT 1`
 		args = []any{field, vInt, libID}
 	}
 	var out tallyItemRank
-	err := tx.QueryRowContext(ctx, q, args...).Scan(&out.ref, &out.released, &out.addedAt, &out.year)
+	err := tx.QueryRowContext(ctx, q, append(args, excluded...)...).Scan(&out.ref, &out.released, &out.addedAt, &out.year)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tallyItemRank{}, nil
 	}
@@ -1457,7 +1493,7 @@ LIMIT 1`
 // probePersonThumbTx resolves a person's thumb representative with the window
 // probe: the best holder whose credit carries a portrait. ok is false when
 // the window cannot prove the answer exact.
-func probePersonThumbTx(ctx context.Context, tx *sql.Tx, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, bool, error) {
+func probePersonThumbTx(ctx context.Context, tx queryer, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, bool, error) {
 	if plan.window <= 0 {
 		return tallyItemRank{}, false, nil
 	}
@@ -1500,7 +1536,7 @@ func probePersonThumbTx(ctx context.Context, tx *sql.Tx, libID int64, level, fie
 	return tallyItemRank{}, false, nil
 }
 
-func recomputePersonThumbTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, error) {
+func recomputePersonThumbTx(ctx context.Context, tx queryer, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, error) {
 	if len(peopleFields) == 0 {
 		return tallyItemRank{}, nil
 	}
@@ -1516,6 +1552,7 @@ func recomputePersonThumbTx(ctx context.Context, tx *sql.Tx, isPG bool, libID in
 	if isPG {
 		libCheck = `i.library_id = ?`
 	}
+	exclude, excluded := plan.exclusion("i.item_ref")
 	var (
 		q    string
 		args []any
@@ -1525,7 +1562,7 @@ func recomputePersonThumbTx(ctx context.Context, tx *sql.Tx, isPG bool, libID in
 SELECT i.item_ref, i.released, i.added_at, i.year, i.fields
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level = ? AND i.fields ` + likeOp + ` '%thumb%'
+WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level = ? AND i.fields ` + likeOp + ` '%thumb%'` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC`
 		args = []any{field, vInt, libID, level}
 	} else {
@@ -1533,11 +1570,11 @@ ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC`
 SELECT i.item_ref, i.released, i.added_at, i.year, i.fields
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level <> '' AND i.fields ` + likeOp + ` '%thumb%'
+WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND ` + libCheck + ` AND i.level <> '' AND i.fields ` + likeOp + ` '%thumb%'` + exclude + `
 ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC`
 		args = []any{field, vInt, libID}
 	}
-	rows, err := tx.QueryContext(ctx, q, args...)
+	rows, err := tx.QueryContext(ctx, q, append(args, excluded...)...)
 	if err != nil {
 		return tallyItemRank{}, err
 	}
@@ -1663,7 +1700,9 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND cnt <= 0`,
 		if needsLabelRefresh {
 			var newLabel sql.NullString
 			var err error
-			if k.level != "" {
+			if ch.labelReplacement != nil {
+				newLabel = *ch.labelReplacement
+			} else if k.level != "" {
 				err = tx.QueryRowContext(ctx, `
 SELECT `+minExpr+`
 FROM plugin_item_fields f
@@ -1752,15 +1791,20 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 			}
 			needRep := len(ch.removedRepRefs) > 0 && (curRep.ref == "" || func() bool { _, hit := ch.removedRepRefs[curRep.ref]; return hit }())
 			needThumb := len(ch.removedThumbRefs) > 0 && curThumb.ref != "" && func() bool { _, hit := ch.removedThumbRefs[curThumb.ref]; return hit }()
-			if (needRep || needThumb) && libTotal < 0 {
-				if libTotal, err = libraryItemTotalTx(ctx, tx, libID); err != nil {
+			if (needRep && ch.repReplacement == nil || needThumb && ch.thumbReplacement == nil) && libTotal < 0 {
+				if libTotal, err = libraryItemTotal(ctx, tx, libID); err != nil {
 					return err
 				}
 			}
 			if needRep {
-				winner, err := recomputePersonRepTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curRep))
-				if err != nil {
-					return wrapTallyItemErr(ch.sampleRef, k.field, err)
+				var winner tallyItemRank
+				if ch.repReplacement != nil {
+					winner = *ch.repReplacement
+				} else {
+					winner, err = recomputePersonRepTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curRep))
+					if err != nil {
+						return wrapTallyItemErr(ch.sampleRef, k.field, err)
+					}
 				}
 				if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_person_tally
@@ -1772,9 +1816,14 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 				}
 			}
 			if needThumb {
-				winner, err := recomputePersonThumbTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curThumb), peopleFields)
-				if err != nil {
-					return wrapTallyItemErr(ch.sampleRef, k.field, err)
+				var winner tallyItemRank
+				if ch.thumbReplacement != nil {
+					winner = *ch.thumbReplacement
+				} else {
+					winner, err = recomputePersonThumbTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curThumb), peopleFields)
+					if err != nil {
+						return wrapTallyItemErr(ch.sampleRef, k.field, err)
+					}
 				}
 				if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_item_person_tally

@@ -43,7 +43,10 @@ func packRoot(conf []byte, dataDir string) (string, error) {
 	return filepath.Join(dir, "vault", "packs"), nil
 }
 
-func copyPack(src io.Reader, dst string, size int64) (string, error) {
+func copyPack(src io.Reader, dst string, size int64, space *stageSpace) (string, error) {
+	if e := space.check(size); e != nil {
+		return "", e
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return "", err
 	}
@@ -52,7 +55,7 @@ func copyPack(src io.Reader, dst string, size int64) (string, error) {
 		return "", e
 	}
 	h := sha256.New()
-	_, e = io.CopyN(io.MultiWriter(f, h), src, size)
+	_, e = io.CopyN(io.MultiWriter(space.writer(f), h), src, size)
 	if e == nil {
 		e = f.Sync()
 	}
@@ -122,7 +125,7 @@ func packCipher(key []byte) (cipher.AEAD, error) {
 	}
 	return cipher.NewGCMWithRandomNonce(block)
 }
-func sealPack(f *os.File, dst string, size int64) (packRef, error) {
+func sealPack(f *os.File, dst string, size int64, space *stageSpace) (packRef, error) {
 	ref := packRef{Size: size, Key: make([]byte, 32)}
 	if _, err := rand.Read(ref.Key); err != nil {
 		return ref, err
@@ -138,7 +141,7 @@ func sealPack(f *os.File, dst string, size int64) (packRef, error) {
 	digest := sha256.Sum256(b)
 	ref.Digest = hex.EncodeToString(digest[:])
 	sealed := a.Seal(b[:0], nil, b, nil)
-	_, err = copyPack(bytes.NewReader(sealed), dst, int64(len(sealed)))
+	_, err = copyPack(bytes.NewReader(sealed), dst, int64(len(sealed)), space)
 	return ref, err
 }
 func unsealPack(path string, ref packRef) ([]byte, error) {
@@ -228,7 +231,7 @@ func priorPacks(path string, visit func(packRef) error) error {
 
 // Each snapshot owns links to its packs. Pruning an older snapshot therefore
 // cannot strand a newer one. Live writer packs are append-only.
-func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, index io.Writer) (int, error) {
+func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, index io.Writer, space *stageSpace) (int, error) {
 	snaps, err := listDir(dir)
 	if err != nil {
 		return 0, err
@@ -257,7 +260,7 @@ func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, ind
 			break
 		}
 	}
-	enc := json.NewEncoder(index)
+	enc := json.NewEncoder(space.writer(index))
 	count := 0
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, e error) error {
 		if errors.Is(e, fs.ErrNotExist) && path == src {
@@ -289,6 +292,9 @@ func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, ind
 			return errors.New("vault snapshot exceeds pack limits")
 		}
 		dst := filepath.Join(stage, rel)
+		if e = space.check(0); e != nil {
+			return e
+		}
 		if e = os.MkdirAll(filepath.Dir(dst), 0700); e != nil {
 			return e
 		}
@@ -306,7 +312,7 @@ func snapshotPacks(ctx context.Context, src, stage, dir string, shared bool, ind
 				return err
 			}
 			defer f.Close()
-			ref, err = sealPack(f, dst, size)
+			ref, err = sealPack(f, dst, size, space)
 			if err != nil {
 				return err
 			}
@@ -405,7 +411,7 @@ func exportSnapshot(ctx context.Context, f *os.File, w io.Writer) error {
 	return out.Close()
 }
 
-func restoreLocalPacks(ctx context.Context, tr io.Reader, bundle, stage string, count int) error {
+func restoreLocalPacks(ctx context.Context, tr io.Reader, bundle, stage string, count int, space *stageSpace) error {
 	return walkPackIndex(tr, count, func(ref packRef) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -415,7 +421,7 @@ func restoreLocalPacks(ctx context.Context, tr io.Reader, bundle, stage string, 
 		if err != nil {
 			return err
 		}
-		_, err = copyPack(bytes.NewReader(payload), filepath.Join(stage, packPrefix, rel), ref.Size)
+		_, err = copyPack(bytes.NewReader(payload), filepath.Join(stage, packPrefix, rel), ref.Size, space)
 		return err
 	})
 }
@@ -490,13 +496,13 @@ func installVault(staged, dataDir string) error {
 	})
 }
 
-func extractPack(tr *tar.Reader, h *tar.Header, stage string) error {
+func extractPack(tr *tar.Reader, h *tar.Header, stage string, space *stageSpace) error {
 	name := strings.TrimPrefix(h.Name, packPrefix)
 	want := h.PAXRecords[packDigest]
 	if !packName.MatchString(name) || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > maxPackSize || !validDigest(want) {
 		return errors.New("invalid vault pack entry")
 	}
-	digest, err := copyPack(tr, filepath.Join(stage, packPrefix, filepath.FromSlash(name)), h.Size)
+	digest, err := copyPack(tr, filepath.Join(stage, packPrefix, filepath.FromSlash(name)), h.Size, space)
 	if err == nil && digest != want {
 		return errors.New("vault checksum mismatch")
 	}

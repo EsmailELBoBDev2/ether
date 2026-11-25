@@ -222,12 +222,12 @@ func validateLogical(path string) error {
 	return e
 }
 
-func exportLogical(ctx context.Context, db *sql.DB, path string) error {
+func exportLogical(ctx context.Context, db *sql.DB, path string, space *stageSpace) error {
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
 		return e
 	}
-	e = store.ExportLogical(ctx, db, f)
+	e = store.ExportLogical(ctx, db, space.writer(f))
 	if se := f.Sync(); e == nil {
 		e = se
 	}
@@ -411,6 +411,10 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return out, e
 	}
+	space := stageSpace{path: dir, operation: "create this backup"}
+	if e := space.check(0); e != nil {
+		return out, e
+	}
 	stage, e := os.MkdirTemp(dir, ".snapshot-")
 	if e != nil {
 		return out, e
@@ -421,6 +425,9 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 		return out, e
 	}
 	if e = validateConfig(conf); e != nil {
+		return out, e
+	}
+	if e = space.check(int64(len(conf))); e != nil {
 		return out, e
 	}
 	if e = os.WriteFile(filepath.Join(stage, "config.json"), conf, 0600); e != nil {
@@ -441,14 +448,27 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	}
 	dbPath := filepath.Join(stage, dbEntry(dialect))
 	if dialect != "" {
-		if e = exportLogical(ctx, s.db, dbPath); e != nil {
+		if e = exportLogical(ctx, s.db, dbPath, &space); e != nil {
 			return out, e
 		}
 	} else {
+		// SQLite writes the VACUUM output itself, so reserve space for the
+		// current database before starting the copy.
+		var dbBytes int64
+		e = s.db.QueryRowContext(ctx, `SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&dbBytes)
+		if e != nil {
+			return out, e
+		}
+		if e = space.check(dbBytes); e != nil {
+			return out, e
+		}
 		endRead := store.BeginLongRead(s.db, "a backup")
 		_, e = s.db.ExecContext(ctx, `VACUUM INTO '`+strings.ReplaceAll(dbPath, "'", "''")+`'`)
 		endRead()
 		if e != nil {
+			return out, e
+		}
+		if e = space.check(0); e != nil {
 			return out, e
 		}
 		if e = validateDB(ctx, dbPath); e != nil {
@@ -493,7 +513,7 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 		if e != nil {
 			return out, e
 		}
-		count, e := snapshotPacks(ctx, root, filepath.Join(stage, "packs"), dir, shared, index)
+		count, e := snapshotPacks(ctx, root, filepath.Join(stage, "packs"), dir, shared, index, &space)
 		closeErr := index.Close()
 		if e != nil {
 			return out, e
@@ -512,6 +532,9 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	if e != nil {
 		return out, e
 	}
+	if e = space.check(int64(len(b))); e != nil {
+		return out, e
+	}
 	if e = os.WriteFile(filepath.Join(stage, "manifest.json"), b, 0600); e != nil {
 		return out, e
 	}
@@ -521,7 +544,7 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	if e != nil {
 		return out, e
 	}
-	gz := gzip.NewWriter(f)
+	gz := gzip.NewWriter(space.writer(f))
 	tw := tar.NewWriter(gz)
 	for _, name := range append(entries, names...) {
 		path := filepath.Join(stage, name)
@@ -553,6 +576,9 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 		}
 	}
 	if e != nil {
+		return out, e
+	}
+	if e = space.check(0); e != nil {
 		return out, e
 	}
 	target := filepath.Join(dir, name)
@@ -751,6 +777,10 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	if e := os.MkdirAll(parent, 0700); e != nil {
 		return e
 	}
+	space := stageSpace{path: parent, operation: "restore this backup"}
+	if e := space.check(0); e != nil {
+		return e
+	}
 	stage, e := os.MkdirTemp(parent, ".restore-")
 	if e != nil {
 		return e
@@ -782,7 +812,7 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 			if !ok || h.Typeflag != tar.TypeReg || packCount != 0 || m.VaultPackCount == 0 {
 				return errors.New("invalid vault manifest")
 			}
-			if e = restoreLocalPacks(ctx, tr, f.Name(), stage, m.VaultPackCount); e != nil {
+			if e = restoreLocalPacks(ctx, tr, f.Name(), stage, m.VaultPackCount, &space); e != nil {
 				return e
 			}
 			packCount = m.VaultPackCount
@@ -792,7 +822,7 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 			if packCount >= m.VaultPackCount {
 				return errors.New("invalid vault pack entry")
 			}
-			if e = extractPack(tr, h, stage); e != nil {
+			if e = extractPack(tr, h, stage, &space); e != nil {
 				return e
 			}
 			packCount++
@@ -803,7 +833,7 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 				return errors.New("invalid or unsafe bundle entry")
 			}
 			media[d] = true
-			if e = extractMedia(tr, filepath.Join(stage, OnAirAssetDir), d, h.Size); e != nil {
+			if e = extractMedia(tr, filepath.Join(stage, OnAirAssetDir), d, h.Size, &space); e != nil {
 				return e
 			}
 			continue
@@ -816,14 +846,18 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 			return errors.New("bundle metadata too large")
 		}
 		seen[h.Name] = true
+		if e = space.check(h.Size); e != nil {
+			return e
+		}
 		f, e := os.OpenFile(filepath.Join(stage, h.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if e != nil {
 			return e
 		}
+		dst := space.writer(f)
 		if h.Name == "manifest.json" {
-			e = decodeManifest(h, io.TeeReader(tr, f), &m)
+			e = decodeManifest(h, io.TeeReader(tr, dst), &m)
 		} else {
-			_, e = io.CopyN(f, tr, h.Size)
+			_, e = io.CopyN(dst, tr, h.Size)
 		}
 		ce := f.Close()
 		if e != nil {
@@ -916,6 +950,9 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	if e = ctx.Err(); e != nil {
 		return e
 	}
+	if e = space.check(0); e != nil {
+		return e
+	}
 	return os.Rename(stage, destination)
 }
 
@@ -933,7 +970,10 @@ func validDigest(d string) bool {
 
 // extractMedia writes one On Air asset entry to dir/<aa>/<digest>, checking
 // the bytes hash to the name they are stored under.
-func extractMedia(r io.Reader, dir, d string, size int64) error {
+func extractMedia(r io.Reader, dir, d string, size int64, space *stageSpace) error {
+	if e := space.check(size); e != nil {
+		return e
+	}
 	if e := os.MkdirAll(filepath.Join(dir, d[:2]), 0o700); e != nil {
 		return e
 	}
@@ -942,7 +982,7 @@ func extractMedia(r io.Reader, dir, d string, size int64) error {
 		return e
 	}
 	h := sha256.New()
-	_, e = io.CopyN(io.MultiWriter(f, h), r, size)
+	_, e = io.CopyN(io.MultiWriter(space.writer(f), h), r, size)
 	if ce := f.Close(); e == nil {
 		e = ce
 	}

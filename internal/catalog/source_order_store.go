@@ -99,10 +99,7 @@ func (c *Catalog) ensureOrderManifest(ctx context.Context, show *core.Title, ord
 	}
 	source := c.metadataSources.Get(order.Source)
 	if source == nil || !source.Configured() {
-		if stamp != 0 {
-			return seasons, nil
-		}
-		return nil, core.ErrUnsupported
+		return seasons, nil
 	}
 	_, err = c.orderFlights.Do(ctx, orderFetchKey{show.Key, order, -1}, func(ctx context.Context) (struct{}, error) {
 		_, current, err := c.orderManifest(ctx, show.Key, order)
@@ -264,10 +261,7 @@ func (c *Catalog) ensureOrderSeason(ctx context.Context, show *core.Title, order
 	}
 	source := c.metadataSources.Get(order.Source)
 	if source == nil || !source.Configured() {
-		if season.fetched != 0 {
-			return nil
-		}
-		return core.ErrUnsupported
+		return nil
 	}
 	_, err := c.orderFlights.Do(ctx, orderFetchKey{show.Key, order, season.Season}, func(ctx context.Context) (struct{}, error) {
 		var stamp int64

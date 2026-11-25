@@ -333,7 +333,7 @@ func (c *Catalog) CachedDiscoveryEpisodes(ctx context.Context, shows []core.Rati
 // CachedGetMany applies CachedGet's visibility gates to bounded local reads.
 // Missing or hidden titles are omitted. It never refreshes or admits fallbacks.
 func (c *Catalog) cachedListVisible(t *core.Title) bool {
-	return !t.Adult && (c.upcomingMovie(t) || (t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
+	return !t.Adult && (c.upcomingMovie(t) || (selectedEpisodeReleased(t, c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
 }
 
 func (c *Catalog) cachedStoredEntry(key core.RatingKey, gen uint64, minute int64) (storedTitle, bool) {
@@ -440,7 +440,25 @@ func (c *Catalog) putSnapshotLocked(key core.RatingKey, gen uint64, minute int64
 }
 
 func (c *Catalog) CachedGetMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
-	return c.cachedGetMany(ctx, keys, true)
+	out, err := c.cachedGetMany(ctx, keys, true)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]core.Title, 0, len(out))
+	for _, item := range out {
+		items = append(items, item)
+	}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if c.cachedListVisible(&item) {
+			out[item.Key] = item
+		} else {
+			delete(out, item.Key)
+		}
+	}
+	return out, nil
 }
 
 // cachedGetMany reads local titles. reuse serves the minute snapshot, which a
@@ -448,13 +466,14 @@ func (c *Catalog) CachedGetMany(ctx context.Context, keys []core.RatingKey) (map
 // false so they hydrate the current credit rows and leave that snapshot alone.
 func (c *Catalog) cachedGetMany(ctx context.Context, keys []core.RatingKey, reuse bool) (map[core.RatingKey]core.Title, error) {
 	out := make(map[core.RatingKey]core.Title, len(keys))
+	projected := reuse && c.canProjectAlternateOrders()
 	gen := c.writeGen.Load()
 	minute := c.minuteBucket()
 	missing := make([]core.RatingKey, 0, len(keys))
 	for _, key := range keys {
 		if reuse {
 			if title, ok := c.cachedStored(key, gen, minute); ok {
-				if c.cachedListVisible(&title) {
+				if c.cachedListVisible(&title) || projected && (title.Type == core.TypeEpisode || title.Type == core.TypeSeason) {
 					out[key] = title
 				}
 				continue
@@ -499,7 +518,7 @@ func (c *Catalog) cachedGetMany(ctx context.Context, keys []core.RatingKey, reus
 		}
 		visible := make([]storedTitle, 0, len(items))
 		for i := range items {
-			if c.cachedListVisible(&items[i]) {
+			if c.cachedListVisible(&items[i]) || projected && (items[i].Type == core.TypeEpisode || items[i].Type == core.TypeSeason) {
 				out[items[i].Key] = items[i]
 				st := *stored[i]
 				st.t = items[i]

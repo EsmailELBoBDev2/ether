@@ -233,6 +233,10 @@ func (c *Catalog) ExplainBrowsability(ctx context.Context, key core.RatingKey) (
 }
 
 func (c *Catalog) fetchUnstoredTitle(ctx context.Context, client TMDB, key core.RatingKey) (core.Title, error) {
+	if key.Allocated() {
+		return core.Title{}, core.ErrNotFound
+	}
+
 	switch key.Kind() {
 	case core.KindMovie:
 		d, err := client.MovieDetails(ctx, key.TMDB())
@@ -397,13 +401,34 @@ func (c *Catalog) IncludeTitle(ctx context.Context, key core.RatingKey) (Browsab
 	if key.Kind() != core.KindMovie && key.Kind() != core.KindShow {
 		return BrowsabilityStatus{}, core.ErrNotFound
 	}
+	key, err := c.canonicalSourceKey(ctx, key)
+	if err != nil {
+		return BrowsabilityStatus{}, err
+	}
+
 	st, err := c.loadByKey(ctx, key)
 	if err != nil && !errors.Is(err, core.ErrNotFound) {
 		return BrowsabilityStatus{}, err
 	}
 
+	if st == nil && (key.Allocated() || !c.TMDBConfigured()) {
+		typ := core.TypeShow
+		if key.Kind() == core.KindMovie {
+			typ = core.TypeMovie
+		}
+		title, lookupErr := c.openSourceTitle(ctx, key, typ)
+		if lookupErr != nil {
+			return BrowsabilityStatus{}, lookupErr
+		}
+		key = title.Key
+		st, err = c.loadByKey(ctx, key)
+		if err != nil {
+			return BrowsabilityStatus{}, err
+		}
+	}
+
 	needDetail := errors.Is(err, core.ErrNotFound) || !st.detail
-	if needDetail && c.TMDBConfigured() {
+	if needDetail && c.TMDBConfigured() && !key.Allocated() {
 		client := c.tmdb()
 		switch key.Kind() {
 		case core.KindMovie:

@@ -142,12 +142,13 @@ func (c *Catalog) readEpisodeLayout(ctx context.Context, show *core.Title, order
 }
 
 func (c *Catalog) addCanonicalSpecials(ctx context.Context, show *core.Title, order core.EpisodeOrder, out *EpisodeLayout) error {
-	rows, err := c.db.QueryContext(ctx, `SELECT t.key,t.episode,t.tmdb_id,t.tvdb,t.imdb,t.released_ts FROM catalog_titles t
- WHERE t.show_key=? AND t.type='episode' AND t.season=0
- AND t.key>=? AND t.key<?
- AND NOT EXISTS (SELECT 1 FROM catalog_order_episodes e WHERE e.show_key=t.show_key AND e.provider=? AND e.order_kind=?
- AND (e.episode_key=t.key OR (e.season=0 AND e.episode=t.episode)))`, show.Key,
-		core.EpisodeKey(show.IDs.TMDB, 0, 0), core.EpisodeKey(show.IDs.TMDB, 1, 0), order.Source, order.Kind)
+	rows, err := c.db.QueryContext(ctx, `SELECT e.key,`+canonicalSpecialNumber+`,e.tmdb_id,e.tvdb,e.imdb,e.released_ts
+ FROM catalog_titles e CROSS JOIN (SELECT CAST(? AS TEXT) AS provider,CAST(? AS TEXT) AS order_kind) o
+ WHERE e.show_key=? AND e.type='episode' AND e.season=0 AND e.key>=? AND e.key<?
+ AND NOT EXISTS (SELECT 1 FROM catalog_order_episodes m
+ WHERE m.show_key=e.show_key AND m.provider=o.provider AND m.order_kind=o.order_kind AND m.episode_key=e.key)`,
+		order.Source, order.Kind, show.Key, core.EpisodeKey(show.IDs.TMDB, 0, 0), core.EpisodeKey(show.IDs.TMDB, 1, 0))
+
 	if err != nil {
 		return err
 	}

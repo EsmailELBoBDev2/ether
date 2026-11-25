@@ -186,7 +186,14 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
  JOIN catalog_order_seasons s ON s.show_key=e.show_key AND s.provider=e.provider AND s.order_kind=e.order_kind AND s.season=e.season
  UNION ALL
  SELECT s.season_key,s.season,0,0,s.air_date,s.season_key,s.title,s.summary,s.poster,s.episode_count,1,'','','',0,s.provider_id
- FROM chosen x JOIN catalog_order_seasons s ON s.season_key=x.key AND s.provider=x.provider AND s.order_kind=x.order_kind`, args...)
+ FROM chosen x JOIN catalog_order_seasons s ON s.season_key=x.key AND s.provider=x.provider AND s.order_kind=x.order_kind
+ UNION ALL
+ SELECT e.key,0,`+canonicalSpecialNumber+`,0,'',
+ COALESCE(s.season_key,3000000000000000+e.show_tmdb*10000),COALESCE(s.title,e.season_title),'','',0,2,'','','',0,''
+ FROM chosen o JOIN catalog_titles e ON e.key=o.key
+ LEFT JOIN catalog_order_seasons s ON s.show_key=e.show_key AND s.provider=o.provider AND s.order_kind=o.order_kind AND s.season=0
+ WHERE o.provider<>'tmdb' AND e.type='episode' AND e.season=0 AND e.key<5000000000000000 AND e.show_tmdb>0
+ AND NOT EXISTS (SELECT 1 FROM catalog_order_episodes m WHERE m.show_key=e.show_key AND m.provider=o.provider AND m.order_kind=o.order_kind AND m.episode_key=e.key)`, args...)
 		if err != nil {
 			return err
 		}
@@ -201,7 +208,11 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 			e.AirDate = metadataDate(date)
 			for _, i := range incoming[e.Key] {
 				t := &titles[i]
-				if isSeason != 0 {
+				if isSeason == 2 {
+					e.AirDate = t.EpisodeAirDate
+					applyEpisodeCoordinate(t, e)
+					t.SeasonTitle = name
+				} else if isSeason == 1 {
 					t.Season, t.SeasonTitle, t.Title, t.Summary, t.PosterPath = e.Season, name, name, summary, poster
 					t.ChildCount, t.LeafCount, t.Released = max(count, 0), max(count, 0), e.AirDate
 					id, _ := strconv.ParseInt(seasonID, 10, 64)

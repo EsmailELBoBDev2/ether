@@ -449,6 +449,15 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		if limit > pluginitems.MaxBrowseLimit {
 			limit = pluginitems.MaxBrowseLimit
 		}
+		mapBrowseErr := func(err error) error {
+			if err != nil && strings.Contains(err.Error(), "invalid cursor") {
+				return &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "cursor", Message: "invalid cursor"}}}
+			}
+			if errors.Is(err, pluginitems.ErrInvalidBrowseField) {
+				return &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "empty", Message: err.Error()}}}
+			}
+			return err
+		}
 		if queryStr := strings.TrimSpace(q.Query); queryStr != "" {
 			searchPolicy := policy.ForSearch()
 			page, err := items.Search(ctx, pluginitems.SearchQuery{
@@ -457,15 +466,17 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				Policy:        searchPolicy,
 				LibraryID:     lib.ID,
 				Query:         queryStr,
+				ExcludeQuery:  q.ExcludeQuery,
 				Level:         q.Level,
 				Facets:        q.Facets,
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
 				AnyGroups:     q.AnyGroups,
+				Empty:         q.Empty,
 				Limit:         limit,
 			})
 			if err != nil {
-				return core.KindPage{}, err
+				return core.KindPage{}, mapBrowseErr(err)
 			}
 			outItems := page.Items
 			var totalPtr *int
@@ -495,12 +506,6 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		if q.ParentID != "" {
 			parentRef = core.NewItemRef(pluginID, kindKey, q.ParentID)
 		}
-		mapBrowseErr := func(err error) error {
-			if err != nil && strings.Contains(err.Error(), "invalid cursor") {
-				return &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "cursor", Message: "invalid cursor"}}}
-			}
-			return err
-		}
 		if !filterSafety {
 			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
 				NoTotal:       noTotal,
@@ -515,6 +520,8 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
 				AnyGroups:     q.AnyGroups,
+				Empty:         q.Empty,
+				ExcludeQuery:  q.ExcludeQuery,
 				Cursor:        q.Cursor,
 				Limit:         limit,
 			})
@@ -550,6 +557,8 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 				AllFacets:     q.AllFacets,
 				ExcludeFacets: q.ExcludeFacets,
 				AnyGroups:     q.AnyGroups,
+				Empty:         q.Empty,
+				ExcludeQuery:  q.ExcludeQuery,
 				Cursor:        cursor,
 				Limit:         remaining,
 			})

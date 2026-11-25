@@ -730,6 +730,38 @@ func TestKindVisibleAndBrowseGuardsAndHostedBridge(t *testing.T) {
 			t.Fatalf("KindBrowse total=%q forwarded as %q", mode, gotQuery.Total)
 		}
 	}
+	// Unknown empty field rejected; declared + envelope empty fields pass without counting toward value bounds.
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		Empty: map[string]bool{"unknownField": true},
+	}); !errors.As(err, &valErr) {
+		t.Fatalf("KindBrowse unknown empty field: %v", err)
+	}
+	half := make([]string, MaxKindBrowseFacetValues/2)
+	for i := range half {
+		half[i] = "v"
+	}
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		AnyGroups: []core.KindBrowseFacetGroup{{Any: []core.KindBrowseFacetAlt{
+			{Field: "genre", Values: half},
+			{Field: "recordist", Values: half},
+		}}},
+		Empty:        map[string]bool{"genre": true, "released": false},
+		ExcludeQuery: "live",
+	}); err != nil {
+		t.Fatalf("KindBrowse valid empty + cross-field anyGroups + excludeQuery: %v", err)
+	}
+	if gotQuery.ExcludeQuery != "live" || !gotQuery.Empty["genre"] || gotQuery.Empty["released"] {
+		t.Fatalf("KindBrowse forwarded query = %+v", gotQuery)
+	}
+	overHalf := append(append([]string(nil), half...), "extra")
+	if _, err := h.KindBrowse(WithViewer(ctx, 42), "recording", core.KindBrowseRequest{
+		AnyGroups: []core.KindBrowseFacetGroup{{Any: []core.KindBrowseFacetAlt{
+			{Field: "genre", Values: half},
+			{Field: "recordist", Values: overHalf},
+		}}},
+	}); !errors.As(err, &valErr) {
+		t.Fatalf("KindBrowse over-limit cross-field anyGroups: %v", err)
+	}
 
 	// Non-adapter route carrying a forged X-Ether-Viewer header must NOT get viewer context or token.
 	nonAdapterReq := Request{

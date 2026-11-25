@@ -364,13 +364,44 @@ type KindPage struct {
 	Total      *int       `json:"total,omitempty"`      // provider claim; Ether never trusts it for its own totals
 }
 
-// KindBrowseFacetGroup is one OR-list of values on a single field for
-// KindBrowseRequest.AnyGroups (#767). Multiple groups — including repeated
-// groups on the same field — combine with AND alongside Facets, AllFacets,
-// and ExcludeFacets.
-type KindBrowseFacetGroup struct {
+// KindBrowseFacetAlt is one {field, values} alternative inside a cross-field
+// KindBrowseFacetGroup (#807).
+type KindBrowseFacetAlt struct {
 	Field  string   `json:"field"`
 	Values []string `json:"values"`
+}
+
+// KindBrowseFacetGroup is one OR-group for KindBrowseRequest.AnyGroups (#767, #807).
+// A group either names a single {field, values} OR-list or carries a list of
+// {field, values} alternatives in Any that are ORed together across fields
+// (and ANDed with the rest). Multiple groups — including repeated groups on
+// the same field — combine with AND alongside Facets, AllFacets,
+// ExcludeFacets, Empty, and ExcludeQuery.
+type KindBrowseFacetGroup struct {
+	Field  string               `json:"field,omitempty"`
+	Values []string             `json:"values,omitempty"`
+	Any    []KindBrowseFacetAlt `json:"any,omitempty"`
+}
+
+// Alternatives returns the {field, values} alternatives carried by g. A
+// single-field {field, values} group returns a slice of one; when Any is
+// present, its alternatives are returned (after the top-level field/values if
+// both were supplied).
+func (g KindBrowseFacetGroup) Alternatives() []KindBrowseFacetAlt {
+	hasSingle := strings.TrimSpace(g.Field) != "" && len(g.Values) > 0
+	if len(g.Any) == 0 {
+		if !hasSingle {
+			return nil
+		}
+		return []KindBrowseFacetAlt{{Field: g.Field, Values: g.Values}}
+	}
+	if !hasSingle {
+		return g.Any
+	}
+	out := make([]KindBrowseFacetAlt, 0, len(g.Any)+1)
+	out = append(out, KindBrowseFacetAlt{Field: g.Field, Values: g.Values})
+	out = append(out, g.Any...)
+	return out
 }
 
 // KindBrowseRequest is the request body sent to a catalog_provider
@@ -386,15 +417,23 @@ type KindBrowseRequest struct {
 	// Facets requires any of the listed values per field (OR within a
 	// field, AND across fields). AllFacets requires every listed value
 	// per field, ExcludeFacets drops items having any listed value, and
-	// AnyGroups adds one OR-list per group so the same field can carry
-	// several any-of lists ANDed together (#767). All four combine with
-	// AND and accept the same per-type values (including lo..hi ranges
-	// and people names).
+	// AnyGroups adds one OR-group per entry — either a single {field,
+	// values} list or {any: [{field, values}, ...]} ORed across fields
+	// (#767, #807). All four combine with AND and accept the same
+	// per-type values (including lo..hi ranges and people names).
 	Facets        map[string][]string    `json:"facets,omitempty"`
 	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
 	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
-	Query         string                 `json:"query,omitempty"`
+	// Empty tests field presence or absence per field key (#807): true
+	// keeps items with no value in the field, false keeps items with at
+	// least one. Counts toward neither facet value bound; unknown fields
+	// are rejected.
+	Empty map[string]bool `json:"empty,omitempty"`
+	Query string          `json:"query,omitempty"`
+	// ExcludeQuery drops items whose indexed text matches, using the same
+	// text matching as Query (#807).
+	ExcludeQuery string `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total (#682):
 	//   - "" or "cheap" (default): populate Total only when O(1) (item or
 	//     field tallies, a cached exact count, or a single-page result) and

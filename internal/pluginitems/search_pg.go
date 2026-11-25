@@ -8,14 +8,7 @@ import (
 )
 
 func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
-	parts := make([]string, 0, len(tokens))
-	for i, tok := range tokens {
-		if searchTokenPrefix(tok, i, len(tokens)) {
-			tok += ":*"
-		}
-		parts = append(parts, tok)
-	}
-	tsQuery := strings.Join(parts, " & ")
+	tsQuery := buildPostgresTSQuery(tokens)
 
 	var where strings.Builder
 	args := []any{int64(q.LibraryID), tsQuery}
@@ -43,6 +36,10 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets, q.AnyGroups); err != nil {
 		return BrowsePage{}, err
 	}
+	if err := s.appendBrowseEmptyFields(ctx, q.LibraryID, &where, &args, q.Empty); err != nil {
+		return BrowsePage{}, err
+	}
+	appendBrowseExcludeQuery(&where, &args, q.ExcludeQuery, true)
 	viewerID := q.ViewerID
 	if viewerID <= 0 {
 		viewerID = core.CatalogViewerID(ctx)

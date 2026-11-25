@@ -52,15 +52,7 @@ func sqliteDeleteFTS(ctx context.Context, tx *sql.Tx, seq int64) error {
 }
 
 func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
-	parts := make([]string, 0, len(tokens))
-	for i, tok := range tokens {
-		part := `"` + strings.ReplaceAll(tok, `"`, `""`) + `"`
-		if searchTokenPrefix(tok, i, len(tokens)) {
-			part += "*"
-		}
-		parts = append(parts, part)
-	}
-	matchExpr := strings.Join(parts, " AND ")
+	matchExpr := buildSQLiteFTSMatch(tokens)
 
 	var where strings.Builder
 	args := []any{matchExpr, int64(q.LibraryID)}
@@ -92,6 +84,10 @@ func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []stri
 	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets, q.AllFacets, q.ExcludeFacets, q.AnyGroups); err != nil {
 		return BrowsePage{}, err
 	}
+	if err := s.appendBrowseEmptyFields(ctx, q.LibraryID, &where, &args, q.Empty); err != nil {
+		return BrowsePage{}, err
+	}
+	appendBrowseExcludeQuery(&where, &args, q.ExcludeQuery, false)
 	viewerID := q.ViewerID
 	if viewerID <= 0 {
 		viewerID = core.CatalogViewerID(ctx)

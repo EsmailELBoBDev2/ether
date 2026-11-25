@@ -922,19 +922,27 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
-A `kinds.browse` query filters with three facet maps and optional
-any-of groups that all combine with AND: `facets` (any of the listed
-values per field), `allFacets` (every listed value per field, for
-"tagged both X and Y"), `excludeFacets` (none of the listed values, for
-"without X"), and `anyGroups` (an array of `{field, values}` OR-lists,
-so the same multi-valued field can carry several any-of groups ANDed
-together — for example `(Rock OR Hard Rock) AND (Live OR Live
-Recording)` on `genres`). All four accept the same per-type values as
-`facets`, including `lo..hi` ranges for numbers and dates and people
-names, and are evaluated inside the browse query so paging and `total`
-stay correct. A query may carry at most 32 `anyGroups` and at most 256
-total facet values across `facets`, `allFacets`, `excludeFacets`, and
-`anyGroups`. Pass `total` to control whether `KindPage.total` is
+A `kinds.browse` query filters with facet maps, any-of groups, field
+presence tests, and text matching that all combine with AND: `facets`
+(any of the listed values per field), `allFacets` (every listed value
+per field, for "tagged both X and Y"), `excludeFacets` (none of the
+listed values, for "without X"), `anyGroups` (an array of OR-groups,
+each either `{field, values}` on one field — for example `(Rock OR Hard
+Rock) AND (Live OR Live Recording)` on `genres` — or `{any: [{field,
+values}, ...]}` to OR alternatives across fields, for example `label =
+"North" OR parentLabel = "North"`), `empty` (a `{field: bool}` map where
+`true` keeps items with no value in the field and `false` keeps items
+with at least one, covering declared fields and item columns such as
+`released`, `year`, `rating`, `summary`, and `recording`; unknown fields
+are rejected), `query` (full-text match), and `excludeQuery` (same text
+matching as `query`; matching items are dropped). All facet filters
+accept the same per-type values as `facets`, including `lo..hi` ranges
+for numbers and dates and people names, and are evaluated inside the
+browse query so paging and `total` stay correct. A query may carry at
+most 32 `anyGroups` and at most 256 total facet values across `facets`,
+`allFacets`, `excludeFacets`, and `anyGroups` (counting every
+alternative's values in `{any: [...]}`); `empty` counts toward neither
+bound. Pass `total` to control whether `KindPage.total` is
 computed: `"cheap"` (the default) returns `total` only when it is O(1)
 (item or single-facet field tallies, an already-cached exact count, or a
 single-page result) and omits `total` otherwise rather than scanning the

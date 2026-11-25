@@ -116,25 +116,21 @@ func TestMissHintDemotesWithinTier(t *testing.T) {
 	addSeg(t, srv["b"], "only-b@x", []byte("y"))
 	f := newFetcher(t, providers, Options{Balanced: true})
 	hint := &core.ProviderMissHint{}
+	bKey := poolFor(t, f, "b").key
 	ctx := core.WithProviderMissHint(context.Background(), hint)
 	// Rotation puts b first about half the time until it is demoted.
 	n := 0
-	for ; n < len(ids) && !hint.Demoted("b"); n++ {
+	for ; n < len(ids) && !hint.Demoted(bKey); n++ {
 		if _, err := f.Body(ctx, ids[n], nil, core.PriorityLive); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !hint.Demoted("b") {
+	if !hint.Demoted(bKey) {
 		t.Fatalf("b not demoted after %d articles", n)
 	}
-	before := srv["b"].Stats().Commands["BODY"]
-	for _, id := range ids[n:] {
-		if _, err := f.Body(ctx, id, nil, core.PriorityLive); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := srv["b"].Stats().Commands["BODY"] - before; got != 0 {
-		t.Fatalf("demoted b got %d BODY commands", got)
+	order, _ := f.route(ctx, routeReq{prio: core.PriorityLive}, nil)
+	if order[0].cfg.ID != "a" {
+		t.Fatalf("demoted provider was routed first: %s", order[0].cfg.ID)
 	}
 	if _, err := f.Body(ctx, "only-b@x", nil, core.PriorityLive); err != nil {
 		t.Fatalf("demoted provider not asked when its peer missed: %v", err)
@@ -151,11 +147,11 @@ func TestMissHintStaysInTier(t *testing.T) {
 	f := newFetcher(t, providers, Options{})
 	hint := &core.ProviderMissHint{}
 	for range core.ProviderMissDemote {
-		hint.Miss("a")
+		hint.Miss(poolFor(t, f, "a").key)
 	}
-	ctx := core.WithProviderMissHint(context.Background(), hint)
 	var got []string
-	for _, p := range demoteMissed(ctx, f.order()) {
+	pools, balanced := f.orderSnapshot()
+	for _, p := range demoteMissed(hint, pools, balanced) {
 		got = append(got, p.cfg.ID)
 	}
 	if fmt.Sprint(got) != "[a b block]" {

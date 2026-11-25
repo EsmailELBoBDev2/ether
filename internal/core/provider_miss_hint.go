@@ -11,31 +11,43 @@ import (
 // retention then stops costing a round trip on every segment of an old post.
 // It is still asked whenever its peers miss too, so nothing is proved
 // missing that it could have served.
-const ProviderMissDemote = 3
+const (
+	ProviderMissDemote = 3
+	maxHintProviders   = 32
+	maxHintScore       = 2 * ProviderMissDemote
+)
 
 // ProviderMissHint remembers, for one posted file, which Usenet providers
-// keep missing its articles. Keys are stable provider identities. Safe for
+// keep missing its articles. Keys identify provider pool generations. Safe for
 // concurrent use; the zero value is ready.
 type ProviderMissHint struct {
 	mu     sync.Mutex
-	misses map[string]int
+	misses map[string]uint8
 }
 
 // Miss records a "no such article" answer from provider.
 func (h *ProviderMissHint) Miss(provider string) {
 	h.mu.Lock()
-	if h.misses == nil {
-		h.misses = map[string]int{}
+	defer h.mu.Unlock()
+	score := h.misses[provider]
+	if score == maxHintScore || (score == 0 && len(h.misses) == maxHintProviders) {
+		return
 	}
-	h.misses[provider]++
-	h.mu.Unlock()
+	if h.misses == nil {
+		h.misses = make(map[string]uint8)
+	}
+	h.misses[provider] = score + 1
 }
 
 // Hit records a delivery from provider, letting it work its way back up.
 func (h *ProviderMissHint) Hit(provider string) {
 	h.mu.Lock()
-	if h.misses[provider] > 0 {
-		h.misses[provider]--
+	switch score := h.misses[provider]; score {
+	case 0:
+	case 1:
+		delete(h.misses, provider)
+	default:
+		h.misses[provider] = score - 1
 	}
 	h.mu.Unlock()
 }

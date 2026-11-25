@@ -34,16 +34,13 @@ type pool struct {
 	bodyPipelined atomic.Int64
 	key           string // unique per pool instance (provider id + generation)
 	cfg           config.UsenetProvider
-	// tier is the rank buildTiers grouped this pool by: cfg.Priority, or 0
-	// for every primary in balanced mode. Compare tiers by it, not Priority.
-	tier      atomic.Int64
-	dialGen   uint64 // fetcher dial generation; a bump drops warm connections
-	o         *Options
-	addrs     *addrPlan
-	log       *slog.Logger
-	sem       *prioSem
-	brk       *breaker
-	statTrust *statTrust
+	dialGen       uint64 // fetcher dial generation; a bump drops warm connections
+	o             *Options
+	addrs         *addrPlan
+	log           *slog.Logger
+	sem           *prioSem
+	brk           *breaker
+	statTrust     *statTrust
 
 	mu       sync.Mutex
 	warmMu   sync.Mutex

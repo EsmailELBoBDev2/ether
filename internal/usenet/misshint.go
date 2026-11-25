@@ -1,9 +1,6 @@
 package usenet
 
 import (
-	"cmp"
-	"context"
-
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -17,26 +14,22 @@ import (
 // without it a short-retention account at the head of the rotation costs a
 // round trip on every segment of an old post.
 
-// providerID is a pool's stable provider identity, the same across the pool
-// rebuilds that change pool.key.
-func (p *pool) providerID() string { return cmp.Or(p.cfg.ID, p.cfg.Host) }
-
-func samePoolTier(a, b *pool) bool {
-	return a.cfg.Backfill == b.cfg.Backfill && a.tier.Load() == b.tier.Load()
+func samePoolTier(a, b *pool, balanced bool) bool {
+	return a.cfg.Backfill == b.cfg.Backfill &&
+		((balanced && !a.cfg.Backfill) || a.cfg.Priority == b.cfg.Priority)
 }
 
 // demoteMissed returns pools with, inside each run of one tier, the providers
-// ctx's hint demotes moved behind the others (stable). pools is returned as
+// the hint demotes moved behind the others (stable). pools is returned as
 // is when nothing moves.
-func demoteMissed(ctx context.Context, pools []*pool) []*pool {
-	h := core.ProviderMissHintFrom(ctx)
+func demoteMissed(h *core.ProviderMissHint, pools []*pool, balanced bool) []*pool {
 	if h == nil || len(pools) < 2 {
 		return pools
 	}
 	demoted := make([]bool, len(pools))
 	moved := false
 	for i, p := range pools {
-		demoted[i] = h.Demoted(p.providerID())
+		demoted[i] = h.Demoted(p.key)
 		moved = moved || demoted[i]
 	}
 	if !moved {
@@ -45,7 +38,7 @@ func demoteMissed(ctx context.Context, pools []*pool) []*pool {
 	out := make([]*pool, 0, len(pools))
 	for start := 0; start < len(pools); {
 		end := start + 1
-		for end < len(pools) && samePoolTier(pools[start], pools[end]) {
+		for end < len(pools) && samePoolTier(pools[start], pools[end], balanced) {
 			end++
 		}
 		for _, late := range []bool{false, true} {

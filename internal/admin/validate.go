@@ -272,10 +272,8 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		}
 	}
 
-	switch cfg.Usenet.LoadMode {
-	case "", config.UsenetLoadInOrder, config.UsenetLoadBalanced:
-	default:
-		v.add("usenet.loadMode", "must be inOrder or balanced")
+	if mode := cfg.Usenet.LoadMode; mode != "" {
+		v.oneOf("usenet.loadMode", mode, config.UsenetLoadInOrder, config.UsenetLoadBalanced)
 	}
 	seenProv := map[string]bool{}
 	for i, p := range cfg.Usenet.Providers {

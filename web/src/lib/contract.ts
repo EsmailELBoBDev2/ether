@@ -549,5 +549,6 @@ export interface ActivityDay {
   date: string;
   plays: number;
   hours: number;
+  watchedMs?: number;
   uniqueViewers: number;
 }

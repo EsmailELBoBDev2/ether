@@ -704,8 +704,12 @@ export const api = {
     const r = await apiFetch<RankerInsight | { ranker: RankerInsight }>("/insights/ranker");
     return "ranker" in r ? r.ranker : r;
   },
-  activity: async () =>
-    (await apiFetch<{ days: ActivityDay[] | null }>("/insights/activity")).days ?? [],
+  activity: async () => {
+    const tz = -new Date().getTimezoneOffset();
+    return (
+      (await apiFetch<{ days: ActivityDay[] | null }>(`/insights/activity?tz=${tz}`)).days ?? []
+    );
+  },
 };
 
 /**

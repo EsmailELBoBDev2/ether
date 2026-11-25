@@ -46,7 +46,7 @@ import { StatusDot } from "../components/status";
 import { getLocale, localized, t, tn } from "../i18n";
 import { api } from "../lib/api";
 import type { ActivityDay, RowInsight, Viewer } from "../lib/contract";
-import { formatNumber, formatPercent, formatRate, relativeTime } from "../lib/format";
+import { fixed, formatNumber, formatPercent, formatRate, relativeTime } from "../lib/format";
 import { channelLabel, isPausedSession, type HealthItem, type NowPlaying } from "../lib/health";
 import { useAsync, useInterval } from "../lib/hooks";
 import { fetchLiveSessions, useLiveSessionsRefresh } from "../lib/sessions";
@@ -55,6 +55,7 @@ import { useTitle } from "../lib/titles";
 import type { EtherConfig } from "../lib/types";
 import { useLocale } from "../i18n/react";
 import { PlayDrawer, usePlayParam } from "./activity/PlayDrawer";
+import { hoursOf } from "./activity/types";
 import { connectDevicePath } from "./setup/connect-path";
 
 const GETTING_STARTED_KEY = "ether.getting-started.dismissed";
@@ -577,7 +578,10 @@ function ActivityPanel({
   const days = state.data ?? [];
   const totals = useMemo(() => {
     const plays = days.reduce((n, x) => n + x.plays, 0);
-    const hours = days.reduce((n, x) => n + x.hours, 0);
+    const hasWatchedMs = days.some((x) => x.watchedMs !== undefined);
+    const hours = hasWatchedMs
+      ? hoursOf(days.reduce((n, x) => n + (x.watchedMs ?? 0), 0))
+      : days.reduce((n, x) => n + x.hours, 0);
     const peakViewers = days.reduce((n, x) => Math.max(n, x.uniqueViewers), 0);
     const half = Math.floor(days.length / 2);
     const recent = days.slice(half).reduce((n, x) => n + x.plays, 0);
@@ -657,7 +661,7 @@ function ActivityPanel({
             />
             <Readout
               label={t("Hours watched")}
-              value={na ?? formatNumber(totals.hours, 0)}
+              value={na ?? fixed(totals.hours, 1)}
               detail={t("Last 30 days")}
             />
             <Readout

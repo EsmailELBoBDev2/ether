@@ -165,9 +165,10 @@ type RowInsight struct {
 
 // ActivityDay is one day of server-wide viewing.
 type ActivityDay struct {
-	Date          string  `json:"date"` // YYYY-MM-DD, server local time
+	Date          string  `json:"date"` // YYYY-MM-DD, local time
 	Plays         int     `json:"plays"`
 	Hours         float64 `json:"hours"`
+	WatchedMS     int64   `json:"watchedMs,omitempty"`
 	UniqueViewers int     `json:"uniqueViewers"`
 }
 

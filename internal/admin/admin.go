@@ -283,6 +283,10 @@ type Deps struct {
 	// /api/row-sources/* and /api/insights/* (internal/personalize.Engine).
 	// Viewers are listed from Users.
 	Personalization Personalization
+	// ActivityStats backs GET /api/insights/activity from observed playback
+	// telemetry (stats_plays) so Overview matches Activity › Viewing. Nil
+	// falls back to Personalization.Activity.
+	ActivityStats ActivityStats
 
 	// Collections backs /api/collections* (Collection Studio).
 	Collections CollectionStudio

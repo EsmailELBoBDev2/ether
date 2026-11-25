@@ -114,8 +114,19 @@ func TestIPTVStagedPublishSharesRelayUntilLastViewer(t *testing.T) {
 	if err != nil || len(tc.requests) != 1 || tc.requests[0].InputURL != input {
 		t.Fatal("relay did not retain its original input grant")
 	}
+	for _, viewer := range []*session{firstSession, secondSession} {
+		if got, err := s.relayInput(viewer); err != nil || got != input {
+			t.Fatal("viewer could not resolve the shared relay grant")
+		}
+	}
 	if err := s.Stop(ctx, first.ID, u); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.relayInput(firstSession); !errors.Is(err, core.ErrNotAvailable) {
+		t.Fatal("stopped viewer still resolves the shared relay grant")
+	}
+	if got, err := s.relayInput(secondSession); err != nil || got != input {
+		t.Fatal("remaining viewer lost the shared relay grant")
 	}
 	if grant.ctx.Err() != nil || tc.hls[0].closed {
 		t.Fatal("stopping the first viewer interrupted the second viewer")

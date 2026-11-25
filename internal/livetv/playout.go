@@ -82,8 +82,11 @@ type session struct {
 	// owned is the Ether-owned client timeline of a Direct (passthrough or
 	// relay) session; ServePlaylist and ServeRelaySegment read it.
 	owned *ownedLease
-	dash  core.DASHSession
-	http  core.HTTPSession
+	// sharedInput points to the shared relay's grant owner while this viewer
+	// holds its lease. Input readers can resolve it while already holding mu.
+	sharedInput atomic.Pointer[session]
+	dash        core.DASHSession
+	http        core.HTTPSession
 	// httpStart is closed when an in-flight ensureHTTP StartHLS finishes.
 	// Waiters re-check liveHTTP instead of starting a second encoder.
 	httpStart chan struct{}
@@ -334,7 +337,7 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 	broadcast := ss.broadcast
 	ss.broadcast = nil
 	owned := ss.owned
-	ss.owned = nil
+	ss.publishOwnedLocked(nil)
 	dash := ss.dash
 	archive := ss.catchUp
 	httpStream := ss.http
@@ -1106,7 +1109,8 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 	ss.inputURL, ss.inputSource, ss.inputHeaders = stage.inputURL, stage.inputSource, stage.inputHeaders
 	ss.sniffedManifest = stage.sniffedManifest
 	ss.info.MediaInfo, ss.info.ActiveSourceID = stage.info.MediaInfo, stage.info.ActiveSourceID
-	ss.relayInfo, ss.owned = stage.relayInfo, stage.owned
+	ss.relayInfo = stage.relayInfo
+	ss.publishOwnedLocked(stage.owned)
 	ss.startDeadline = stage.startDeadline
 	ss.broadcast = stage.broadcast
 	s.transferInput(stage, ss)
@@ -1473,7 +1477,8 @@ func (s *Service) passthroughToRelay(ctx context.Context, ss *session) (*ownedLe
 		return nil, core.ErrNotFound
 	}
 	old := ss.owned
-	ss.owned, ss.relayInfo, ss.info.MediaInfo = next, &output, info
+	ss.relayInfo, ss.info.MediaInfo = &output, info
+	ss.publishOwnedLocked(next)
 	ss.mu.Unlock()
 	old.close()
 	s.sessionLog(ss).Info("live playback path selected", "path", "relay", "reason", "provider variants need remux")

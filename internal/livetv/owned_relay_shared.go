@@ -147,3 +147,14 @@ func (s *Service) sharedRelayLease(key relayOutputKey, sh *sharedRelay) *ownedLe
 		}
 	}}
 }
+
+// publishOwnedLocked updates the viewer's lease and the input readers' view
+// together. The grant itself stays owned by the producer.
+func (ss *session) publishOwnedLocked(lease *ownedLease) {
+	ss.owned = lease
+	var owner *session
+	if lease != nil && lease.relay != nil && lease.relay.shared {
+		owner = lease.relay.sess.Load()
+	}
+	ss.sharedInput.Store(owner)
+}

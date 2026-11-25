@@ -63,6 +63,12 @@ type QualitySummaryCell struct {
 	Stereo         bool          `json:"stereo"`
 	LimitRuleIDs   []string      `json:"limitRuleIds"`
 	PartialRuleIDs []string      `json:"partialRuleIds"`
+	// DeviceMaxHeight and DeviceMaxBitrateKbps are the filtered device's
+	// own ceiling (after a rule lifts an Android phone's 1080p), set only
+	// when the summary is filtered to one device or app; 0 = none. The
+	// play gets the lower of these and MaxHeight / MaxBitrateKbps.
+	DeviceMaxHeight      int `json:"deviceMaxHeight,omitempty"`
+	DeviceMaxBitrateKbps int `json:"deviceMaxBitrateKbps,omitempty"`
 }
 
 // QualitySummaryException lists a viewer- or device-scoped rule that can match

@@ -1268,6 +1268,13 @@ export interface QualitySummaryCell {
   stereo: boolean;
   limitRuleIds: string[];
   partialRuleIds: string[];
+  /**
+   * The filtered device's own ceiling (after a rule lifts an Android phone's
+   * 1080p), only when the summary is filtered to one device or app; absent =
+   * none. The play gets the lower of this and maxHeight / maxBitrateKbps.
+   */
+  deviceMaxHeight?: number;
+  deviceMaxBitrateKbps?: number;
 }
 
 export interface QualitySummaryCellPair {

@@ -806,7 +806,10 @@ export default function Setup() {
   const providers = cfg.usenet.providers ?? [];
   const indexers = cfg.indexers ?? [];
   const setProviders = (list: UsenetProvider[]) =>
-    setCfg({ ...cfg, usenet: { providers: list.map((p, i) => ({ ...p, priority: i })) } });
+    setCfg({
+      ...cfg,
+      usenet: { ...cfg.usenet, providers: list.map((p, i) => ({ ...p, priority: i })) },
+    });
   const setIndexers = (list: Indexer[]) =>
     setCfg({ ...cfg, indexers: list.map((x, i) => ({ ...x, priority: i })) });
   const patchProvider = (i: number, p: Partial<UsenetProvider>) =>

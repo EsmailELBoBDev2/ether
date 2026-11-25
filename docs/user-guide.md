@@ -586,6 +586,8 @@ file under these names:
   (default on) keeps soft encode rungs under Direct Stream / video-copy when
   `abrLadder` is on; set it false to advertise only the copy primary.
 - `usenet.minIdle`: warm provider connections kept ready for playback.
+- `usenet.loadMode`: `inOrder` (default) or `balanced`; see
+  [Source interruptions](#source-interruptions).
 
 Preview thumbnails appear while a title plays and fill in as playback
 progresses.
@@ -1162,6 +1164,16 @@ when that provider is otherwise idle. Backfill (block) accounts are used only
 for articles the other providers lack, so a busy primary never spends block
 data. **Sources › Stats** shows how many requests each provider took over from
 a busy one this month.
+
+If you pay for several comparable unlimited accounts, set **Server load** on
+the Usenet providers page to **Balanced**. Every account that is not a backfill
+account then takes requests, the least busy first, so they share the work
+instead of the first one carrying it. List order no longer decides which
+account goes first, and because the accounts share one tier, the take-over
+count above stays near zero. For each file, Ether asks an account that keeps
+missing that file's articles after the others, but still asks it when they miss
+too. Backfill accounts behave the same in both modes. **In order** suits a
+second account you want to use only for overflow.
 
 If a server refuses connections because the account is at its limit, Ether
 learns that limit by itself. The provider list then shows, for example,

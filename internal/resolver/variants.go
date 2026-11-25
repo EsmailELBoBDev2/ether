@@ -45,11 +45,10 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	if max <= 0 || max > maxVariants {
 		max = maxVariants
 	}
-	media := titleMedia(req.Title)
 	q := s.qualityCfg()
-	libProfile := s.libProfileForTitle(ctx, req.Title)
-	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
-	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
+	dec := decideProfile(q, req.Client, req.User, titleTarget(req.Title, s.membershipFor(ctx, req.Title)))
+	req.Client = dec.caps
+	profile := dec.profile
 	sreq := s.cachedSearchRequest(req.Title)
 	results, ok := s.peekSearchCache(searchCacheKey(sreq))
 	titleVC := s.viewerTitleChoiceForResolve(req, nil)

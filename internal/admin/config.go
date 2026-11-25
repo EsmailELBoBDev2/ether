@@ -35,6 +35,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // saveConfig validates and persists next (secrets already unredacted),
 // preserving identity fields the UI must never rotate accidentally.
 func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]json.RawMessage, rollPosters bool) ([]FieldError, error) {
+	config.AssignRuleIDs(&next.Quality)
 	errs := ValidateConfig(next)
 	if h.deps.ValidateExtra != nil {
 		errs = append(errs, h.deps.ValidateExtra(next)...)
@@ -73,11 +74,15 @@ func (h *Handler) saveConfig(next, prev config.Config, plexFields map[string]jso
 		// config document loaded before setup finished must not clear it.
 		keepSetup := c.SetupComplete
 		keepExtrasMigrated := c.Extras.DefaultOnMigrated
+		keepMigratedRules := c.Quality.MigratedRules
 		keepPosterGen := c.Posters.Generation
 		*c = next
 		c.Database = keepDatabase
 		c.SetupComplete = keepSetup
 		c.Extras.DefaultOnMigrated = keepExtrasMigrated || c.Extras.DefaultOnMigrated
+		if keepMigratedRules > c.Quality.MigratedRules {
+			c.Quality.MigratedRules = keepMigratedRules
+		}
 		if rollPosters {
 			c.Posters.Generation = keepPosterGen + 1
 		} else {

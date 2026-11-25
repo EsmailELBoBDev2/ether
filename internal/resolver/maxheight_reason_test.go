@@ -224,7 +224,7 @@ func TestConsoleDownloadProfileRecordsConfiguredCeiling(t *testing.T) {
 	cfg.Quality.Default = "4K"
 	svc := New(&fakeIndexer{}, nil, nil, cfg, Options{})
 	defer svc.Close()
-	p, caps, err := svc.consoleProfile(ProfileDownload)
+	p, caps, err := svc.consoleProfile(context.Background(), ProfileDownload, nil)
 	if err != nil || !caps.Download {
 		t.Fatalf("console download caps=%+v err=%v", caps, err)
 	}
@@ -236,7 +236,7 @@ func TestConsoleDownloadProfileRecordsConfiguredCeiling(t *testing.T) {
 	cfg.Quality.Profiles = []core.QualityProfile{{Name: "any"}}
 	svc2 := New(&fakeIndexer{}, nil, nil, cfg, Options{})
 	defer svc2.Close()
-	p, _, err = svc2.consoleProfile(ProfileDownload)
+	p, _, err = svc2.consoleProfile(context.Background(), ProfileDownload, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

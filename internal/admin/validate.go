@@ -458,22 +458,17 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		v.add("resolver.sameQualityAlternatives", "must be between 0 and 3")
 	}
 
-	// Names are unique per media: a movie and a TV profile may share one.
-	type profileKey struct{ media, name string }
-	profiles := map[profileKey]bool{}
+	profiles := map[string]bool{}
 	for i, p := range cfg.Quality.Profiles {
 		f := fmt.Sprintf("quality.profiles[%d]", i)
-		if !core.IsProfileMedia(p.MediaType) {
-			v.add(f+".mediaType", "must be one of %s", strings.Join(core.ProfileMediaTypes, ", "))
-		}
 		if strings.TrimSpace(p.Name) == "" {
 			v.add(f+".name", "is required")
 			continue
 		}
-		if profiles[profileKey{p.MediaType, p.Name}] {
+		if profiles[p.Name] {
 			v.add(f+".name", "duplicate profile name %q", p.Name)
 		}
-		profiles[profileKey{p.MediaType, p.Name}] = true
+		profiles[p.Name] = true
 		if _, err := releasepolicy.Compile(p.ReleaseRules); err != nil {
 			v.add(f+".releaseRules", "%s", err)
 		} else if msg := releasepolicy.Conflict(p.ReleaseRules); msg != "" {
@@ -518,50 +513,75 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			v.add(f+".episodeMinSizeMbPerMin", "must be <= episodeMaxSizeMbPerMin")
 		}
 	}
-	exists := func(name, media string) bool {
-		_, ok := core.FindProfile(cfg.Quality.Profiles, name, media)
+	exists := func(name string) bool {
+		_, ok := core.FindProfile(cfg.Quality.Profiles, name)
 		return ok
 	}
-	if cfg.Quality.Default != "" && len(profiles) > 0 && !exists(cfg.Quality.Default, core.MediaAny) {
+	if len(profiles) > 0 && strings.TrimSpace(cfg.Quality.Default) == "" {
+		v.add("quality.default", "is required")
+	} else if cfg.Quality.Default != "" && len(profiles) > 0 && !exists(cfg.Quality.Default) {
 		v.add("quality.default", "names a profile that does not exist")
 	}
-	if cfg.Quality.Remote != "" && len(profiles) > 0 && !exists(cfg.Quality.Remote, core.MediaAny) {
-		v.add("quality.remote", "names a profile that does not exist")
+	if cfg.Quality.DefaultAway != "" && len(profiles) > 0 && !exists(cfg.Quality.DefaultAway) {
+		v.add("quality.defaultAway", "names a profile that does not exist")
 	}
-	checkMediaProfile := func(field, name, media string) {
-		if name == "" {
-			return
-		}
-		if !exists(name, core.MediaAny) {
-			v.add(field, "names a profile that does not exist")
-			return
-		}
-		if !exists(name, media) {
-			noun := "movies"
-			if media == core.MediaTV {
-				noun = "shows"
-			}
-			v.add(field, "names a profile that does not apply to %s", noun)
-		}
-	}
-	checkMediaProfile("quality.defaultMovie", cfg.Quality.DefaultMovie, core.MediaMovie)
-	checkMediaProfile("quality.defaultTv", cfg.Quality.DefaultTV, core.MediaTV)
-	checkMediaProfile("quality.remoteMovie", cfg.Quality.RemoteMovie, core.MediaMovie)
-	checkMediaProfile("quality.remoteTv", cfg.Quality.RemoteTV, core.MediaTV)
+	ruleIDs := map[string]bool{}
 	for i, r := range cfg.Quality.Rules {
 		f := fmt.Sprintf("quality.rules[%d]", i)
-		v.oneOf(f+".mediaType", r.MediaType, core.MediaAny, core.MediaMovie, core.MediaTV)
-		if r.Profile == "" {
-			v.add(f+".profile", "is required")
-		} else if len(profiles) > 0 {
-			if !exists(r.Profile, core.MediaAny) {
-				v.add(f+".profile", "names a profile that does not exist")
-			} else if !exists(r.Profile, r.MediaType) {
-				v.add(f+".profile", "names a profile that does not apply to this rule's media")
+		if r.ID != "" {
+			if ruleIDs[r.ID] {
+				v.add(f+".id", "is used by another rule")
+			}
+			ruleIDs[r.ID] = true
+		}
+		v.oneOf(f+".where", r.Where, "", config.WhereHome, config.WhereAway)
+		v.oneOf(f+".kind", r.Kind, "", config.KindMovie, config.KindEpisode)
+		if r.Profile == "" && !r.HasLimits() {
+			v.add(f+".profile", "choose a profile or at least one limit")
+		} else if r.Profile != "" && len(profiles) > 0 && !exists(r.Profile) {
+			v.add(f+".profile", "names a profile that does not exist")
+		}
+		switch r.MaxHeight {
+		case 0, 480, 720, 1080, 2160:
+		default:
+			v.add(f+".maxHeight", "must be 0, 480, 720, 1080 or 2160")
+		}
+		if r.MaxBitrateKbps < 0 {
+			v.add(f+".maxBitrateKbps", "must be >= 0")
+		}
+		for j, d := range r.Devices {
+			n := 0
+			for _, s := range []string{d.Group, d.Type, d.App, d.Client, d.Contains} {
+				if strings.TrimSpace(s) != "" {
+					n++
+				}
+			}
+			if n != 1 {
+				v.add(fmt.Sprintf("%s.devices[%d]", f, j), "must name exactly one device kind, type, app, device or text")
+			}
+			if d.Group != "" {
+				v.oneOf(fmt.Sprintf("%s.devices[%d].group", f, j), d.Group, "tv", "mobile", "computer")
 			}
 		}
-		if r.MaxHeight < 0 {
-			v.add(f+".maxHeight", "must be >= 0")
+		if r.ExceptLibraries && len(r.Libraries) == 0 {
+			v.add(f+".libraries", "choose the libraries to leave out")
+		}
+		if r.ExceptViewers && len(r.Viewers) == 0 {
+			v.add(f+".viewers", "choose the viewers to leave out")
+		}
+		if r.ExceptDevices && len(r.Devices) == 0 {
+			v.add(f+".devices", "choose the devices to leave out")
+		}
+	}
+	dbIDs := map[string]bool{}
+	for i, d := range cfg.Quality.Databases {
+		f := fmt.Sprintf("quality.databases[%d]", i)
+		if strings.TrimSpace(d.ID) == "" || dbIDs[d.ID] {
+			v.add(f+".id", "must be unique and not empty")
+		}
+		dbIDs[d.ID] = true
+		if !validProfileDatabaseRepo(d.Repo) {
+			v.add(f+".repo", "must be https://github.com/<owner>/<repo> or an https tarball URL")
 		}
 	}
 	if cfg.Quality.Sync.Enabled && time.Duration(cfg.Quality.Sync.Interval) <= 0 {
@@ -679,4 +699,11 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		}
 	}
 	return v.errs
+}
+
+// validProfileDatabaseRepo accepts a GitHub repository URL
+// (https://github.com/<owner>/<repo>) or an https tarball URL.
+func validProfileDatabaseRepo(repo string) bool {
+	_, err := config.NormalizeProfileDatabase(repo, "")
+	return err == nil
 }

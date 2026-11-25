@@ -76,7 +76,7 @@ func (a *App) supportSettings(cfg config.Config) diagnostics.Settings {
 		LogLevel:              cfg.Server.LogLevel,
 		FriendlyName:          cfg.Server.FriendlyName,
 		QualityDefault:        cfg.Quality.Default,
-		QualityRemote:         cfg.Quality.Remote,
+		QualityRemote:         cfg.Quality.DefaultAway,
 		ProfileName:           name,
 		ProfileMaxHeight:      height,
 		ProfileAllowHDR:       hdr,

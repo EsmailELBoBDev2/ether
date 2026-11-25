@@ -23,6 +23,11 @@ func (a *App) buildServerRole(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	if err = a.migrateQualityRules(ctx); err != nil {
+		return err
+	}
+	cfg = a.cfg.Get()
+	a.libProfiles = newLibraryProfiles(a)
 	if err = a.buildCatalogue(ctx, cfg); err != nil {
 		return err
 	}

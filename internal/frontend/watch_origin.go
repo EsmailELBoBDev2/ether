@@ -89,6 +89,11 @@ type PendingWatchState interface {
 	HasPendingWatch(int64) bool
 }
 
+// PendingWatchKeys lists titles with uncommitted watch updates.
+type PendingWatchKeys interface {
+	PendingKeys(int64) []RatingKey
+}
+
 // RecentlyViewedSettingsState reads history filtered by recently-viewed settings.
 type RecentlyViewedSettingsState interface {
 	RecentlyViewedSettings(context.Context, int64, time.Time, int) ([]HistoryEntry, error)

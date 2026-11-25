@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
@@ -51,11 +50,11 @@ func (i *instance) searchRemoteMatch(typ frontend.MediaType) http.HandlerFunc {
 				SearchProvider: label, ProviderIDs: nativeProviderIDs(t.IDs)}
 			match.ProviderIDs[idName] = ref.ID
 			switch ref.Source {
-			case core.MetadataTMDB:
-				if core.ValidArtworkPath(t.PosterPath) {
+			case frontend.MetadataTMDB:
+				if frontend.ValidArtworkPath(t.PosterPath) {
 					match.ImageURL = "https://image.tmdb.org/t/p/w342" + t.PosterPath
 				}
-			case core.MetadataTVDB:
+			case frontend.MetadataTVDB:
 				if strings.HasPrefix(t.PosterPath, "https://artworks.thetvdb.com/") {
 					match.ImageURL = t.PosterPath
 				}
@@ -107,7 +106,7 @@ func (i *instance) applyRemoteMatch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func nativeProviderIDs(ids core.IDs) map[string]string {
+func nativeProviderIDs(ids frontend.IDs) map[string]string {
 	providers := map[string]string{}
 	if ids.TMDB > 0 {
 		providers["Tmdb"] = strconv.FormatInt(ids.TMDB, 10)
@@ -121,11 +120,11 @@ func nativeProviderIDs(ids core.IDs) map[string]string {
 	return providers
 }
 
-func remoteMatchProvider(source core.MetadataSourceID) (label, idName string) {
+func remoteMatchProvider(source frontend.MetadataSourceID) (label, idName string) {
 	switch source {
-	case core.MetadataTMDB:
+	case frontend.MetadataTMDB:
 		return "TheMovieDb", "Tmdb"
-	case core.MetadataTVDB:
+	case frontend.MetadataTVDB:
 		return "TheTVDB", "Tvdb"
 	default:
 		return string(source), string(source)
@@ -147,9 +146,9 @@ func (m remoteMatch) providerID(provider string) string {
 	return id
 }
 
-func (m remoteMatch) references(typ frontend.MediaType) []core.ProviderRef {
-	var refs []core.ProviderRef
-	for _, source := range []core.MetadataSourceID{core.MetadataTMDB, core.MetadataTVDB, "imdb"} {
+func (m remoteMatch) references(typ frontend.MediaType) []frontend.ProviderRef {
+	var refs []frontend.ProviderRef
+	for _, source := range []frontend.MetadataSourceID{frontend.MetadataTMDB, frontend.MetadataTVDB, "imdb"} {
 		id := m.providerID(string(source))
 		if source == "imdb" {
 			digits, ok := strings.CutPrefix(id, "tt")
@@ -159,14 +158,14 @@ func (m remoteMatch) references(typ frontend.MediaType) []core.ProviderRef {
 		} else if n, err := strconv.ParseInt(id, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != id {
 			continue
 		}
-		refs = append(refs, core.ProviderRef{Source: source, ID: id, Type: typ})
+		refs = append(refs, frontend.ProviderRef{Source: source, ID: id, Type: typ})
 	}
 	return refs
 }
 
-func (m remoteMatch) selectedReference(typ frontend.MediaType) (core.ProviderRef, bool) {
+func (m remoteMatch) selectedReference(typ frontend.MediaType) (frontend.ProviderRef, bool) {
 	label := strings.TrimSpace(m.SearchProvider)
-	var selected core.ProviderRef
+	var selected frontend.ProviderRef
 	for _, ref := range m.references(typ) {
 		if ref.Source == "imdb" {
 			continue
@@ -179,20 +178,20 @@ func (m remoteMatch) selectedReference(typ frontend.MediaType) (core.ProviderRef
 			continue
 		}
 		if selected.ID != "" {
-			return core.ProviderRef{}, false
+			return frontend.ProviderRef{}, false
 		}
 		selected = ref
 	}
 	if strings.HasPrefix(label, "plugin:") {
 		if id := m.providerID(label); id != "" {
-			return core.ProviderRef{Source: core.MetadataSourceID(label), ID: id, Type: typ}, true
+			return frontend.ProviderRef{Source: frontend.MetadataSourceID(label), ID: id, Type: typ}, true
 		}
 	}
 	return selected, selected.ID != ""
 }
 
 func writeRemoteMatchError(w http.ResponseWriter, err error) {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, frontend.ErrNotFound) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

@@ -937,6 +937,24 @@
   },
   {
     "kind": "rowSource",
+    "id": "collection-cards",
+    "owner": "builtin",
+    "label": {
+      "source": "Collections"
+    },
+    "hint": {
+      "source": "Show collections as clickable cards."
+    },
+    "group": "collections",
+    "order": 530,
+    "meta": {
+      "hubId": "collection-cards",
+      "rowKind": "collection-cards",
+      "source": "engine"
+    }
+  },
+  {
+    "kind": "rowSource",
     "id": "surface",
     "owner": "builtin",
     "label": {
@@ -946,7 +964,7 @@
       "source": "A row a plugin draws in Vela (Sports Tonight). Only in Vela."
     },
     "group": "plugins",
-    "order": 530,
+    "order": 540,
     "meta": {
       "hubId": "surface",
       "rowKind": "surface",
@@ -964,7 +982,7 @@
       "source": "A shelf this library's plugin declares."
     },
     "group": "plugins",
-    "order": 540,
+    "order": 550,
     "meta": {
       "hubId": "shelf",
       "rowKind": "shelf",
@@ -982,7 +1000,7 @@
       "source": "The library's playlists."
     },
     "group": "keep",
-    "order": 550,
+    "order": 560,
     "meta": {
       "hubId": "library-playlists",
       "rowKind": "library-playlists",

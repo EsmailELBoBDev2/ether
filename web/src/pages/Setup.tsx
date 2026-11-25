@@ -1047,7 +1047,7 @@ export default function Setup() {
                     onClick={() => setStep(i)}
                     aria-current={i === step ? "step" : undefined}
                     title={label}
-                    aria-label={label}
+                    aria-label={s.id === "language" ? s.heading : label}
                     className={cn(
                       "w-full min-w-0 text-left disabled:cursor-not-allowed",
                       i <= step ? "text-fg" : "text-fg-subtle",

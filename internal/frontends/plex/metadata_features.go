@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -290,7 +289,7 @@ func (s *Server) episodeOrderList(ctx context.Context, pr *Request, ts []fronten
 // Viewer-specific TMDB groups only supplement an aired catalogue order.
 func viewerEpisodeOrder(t *frontend.Title) bool {
 	return !t.Key.IsPluginKey() && (t.EpisodeOrder.Source == "" ||
-		t.EpisodeOrder.Source == core.MetadataTMDB && t.EpisodeOrder.Kind == core.OrderAired)
+		t.EpisodeOrder.Source == frontend.MetadataTMDB && t.EpisodeOrder.Kind == frontend.OrderAired)
 }
 
 func virtualPlexSeason(t *frontend.Title) bool {

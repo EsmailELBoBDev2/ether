@@ -1,6 +1,14 @@
 package frontend
 
-import "context"
+import (
+	"context"
+
+	"github.com/braedonsaunders/ether/internal/core"
+)
+
+const MaxCollectionCards = core.MaxCollectionCards
+
+func ValidRowID(id string) bool { return core.ValidRowID(id) }
 
 // CollectionCardArtworkSubject distinguishes an authorized card image from a
 // full collection poster. It is included in the signed image claim.

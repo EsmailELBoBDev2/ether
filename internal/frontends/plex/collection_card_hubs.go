@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
@@ -42,7 +41,7 @@ func (s *Server) renderCollectionCardHub(ctx context.Context, pr *Request, hub f
 }
 
 func (s *Server) writeCollectionCardPage(w http.ResponseWriter, r *http.Request, pr *Request, id string) bool {
-	if !strings.HasPrefix(id, "home.") || !core.ValidRowID(strings.TrimPrefix(id, "home.")) {
+	if !strings.HasPrefix(id, "home.") || !frontend.ValidRowID(strings.TrimPrefix(id, "home.")) {
 		return false
 	}
 	source, ok := s.recommender().(collectionCardHubSource)
@@ -51,7 +50,7 @@ func (s *Server) writeCollectionCardPage(w http.ResponseWriter, r *http.Request,
 	}
 	ctx := r.Context()
 	hc := s.hubContext(pr, 0)
-	for _, hub := range source.CollectionCardHubs(ctx, pr.User, hc, core.MaxCollectionCards) {
+	for _, hub := range source.CollectionCardHubs(ctx, pr.User, hc, frontend.MaxCollectionCards) {
 		if hub.ID != id {
 			continue
 		}

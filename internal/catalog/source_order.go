@@ -215,6 +215,7 @@ func (c *Catalog) SetEpisodeOrder(ctx context.Context, show core.RatingKey, orde
 	_, err = c.db.ExecContext(ctx, `INSERT INTO catalog_episode_order(show_key,provider,order_kind) VALUES (?,?,?)
  ON CONFLICT(show_key) DO UPDATE SET provider=excluded.provider,order_kind=excluded.order_kind`, show, order.Source, order.Kind)
 	if err == nil {
+		c.hasEpisodeLayouts.Store(true)
 		c.writeGen.Add(1)
 	}
 	return err

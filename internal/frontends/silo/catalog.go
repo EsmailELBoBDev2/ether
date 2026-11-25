@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
@@ -102,7 +101,7 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 	if collectionID := r.PathValue("collection_id"); collectionID != "" {
 		key, keyErr := ids.ParseRatingKeyGUID(collectionID)
 		view, viewErr := i.nativeID(r.Context(), "library", r.PathValue("id"))
-		if keyErr != nil || viewErr != nil || key.Kind() != core.KindSmart {
+		if keyErr != nil || viewErr != nil || key.Kind() != frontend.KindSmart {
 			notFound(w)
 			return
 		}

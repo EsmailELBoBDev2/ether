@@ -549,10 +549,23 @@ func (s *Server) notifyTimeline(key frontend.RatingKey, t frontend.MediaType, ti
 	// client can refresh the show's rows (Continue Watching, On Deck).
 	var parent, root string
 	switch key.Kind() {
-	case frontend.KindEpisode:
-		parent, root = key.Parent().String(), frontend.ShowKey(key.TMDB()).String()
-	case frontend.KindSeason:
-		parent = key.Parent().String()
+	case frontend.KindEpisode, frontend.KindSeason:
+		ctx := context.Background()
+		var row *frontend.Title
+		if cached, ok := s.catalog().(frontend.CachedTitleReader); ok {
+			row, _ = cached.CachedGet(ctx, key)
+		}
+		if row == nil {
+			row = &frontend.Title{Key: key, Type: t}
+		}
+		if p := titleParent(row); p != 0 {
+			parent = p.String()
+		}
+		if key.Kind() == frontend.KindEpisode {
+			if show := titleShow(row); show != 0 {
+				root = show.String()
+			}
+		}
 	case frontend.KindMovie:
 		// An open movie detail is the item itself. Episodes refresh because
 		// the season and show ids are on the entry; a movie with only itemID

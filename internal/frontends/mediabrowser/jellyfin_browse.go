@@ -643,8 +643,7 @@ func (i *instance) boxSetDTO(collection frontend.Collection) map[string]any {
 }
 
 // fillSeriesTitles copies each episode or season's show title onto the row
-// when the list item did not carry it. The show id comes from ShowKey or
-// from the episode key. One lookup is shared by every row of that show.
+// when the list item did not carry it. One lookup serves each distinct show.
 func (i *instance) fillSeriesTitles(r *http.Request, viewer *frontend.Viewer, titles []frontend.Title) {
 	if i == nil || r == nil || viewer == nil || i.host.Experience == nil {
 		return
@@ -655,10 +654,7 @@ func (i *instance) fillSeriesTitles(r *http.Request, viewer *frontend.Viewer, ti
 		if title.ShowTitle != "" || (title.Type != "episode" && title.Type != "season") {
 			continue
 		}
-		show := title.ShowKey
-		if show == 0 && (title.Key.Kind() == frontend.KindEpisode || title.Key.Kind() == frontend.KindSeason) {
-			show = frontend.ShowKey(title.Key.TMDB())
-		}
+		show := parentShowKey(*title)
 		if show == 0 {
 			continue
 		}
@@ -778,16 +774,10 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 		return
 	}
-	show := t.ShowKey
-	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
-		show = frontend.ShowKey(t.Key.TMDB())
-	}
-	seasonKey := t.Key.Parent()
-	if t.Type == "episode" && seasonKey == 0 && t.ParentKey.Kind() == frontend.KindSeason {
-		if parentShow := t.ParentKey.Parent(); show == 0 || show == parentShow {
-			show = parentShow
-			seasonKey = t.ParentKey
-		}
+	show := parentShowKey(t)
+	seasonKey := t.ParentKey
+	if seasonKey == 0 && t.Type == frontend.TypeEpisode {
+		seasonKey = t.Key.Parent()
 	}
 	if show == 0 && t.MBItemType == "Video" && t.ParentKey != 0 {
 		m["ParentId"] = ids.RatingKeyGUID(t.ParentKey)
@@ -802,17 +792,6 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 	}
 	seasonNumber, episodeNumber := t.Season, t.Episode
-	if seasonNumber == 0 {
-		seasonNumber = t.Key.Season()
-	}
-	if seasonNumber == 0 && seasonKey.Kind() == frontend.KindSeason {
-		seasonNumber = seasonKey.Season()
-	}
-	if episodeNumber == 0 && t.Key.Kind() == frontend.KindEpisode {
-		if n := t.Key.Episode(); n > 0 {
-			episodeNumber = n
-		}
-	}
 	labeled := t
 	labeled.Season = seasonNumber
 	// Lab season rows put "Season N" in Name and omit SeasonName. Episodes
@@ -828,17 +807,8 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		}
 	}
 	if t.Type == "episode" {
-		season := seasonKey
-		if season == 0 && show.Kind() == frontend.KindShow && (seasonNumber > 0 || t.SeasonTitle != "") {
-			season = frontend.SeasonKey(show.TMDB(), seasonNumber)
-		}
-		// A plugin library published as TV shows keeps its own item tree:
-		// the season is the episode's parent container item.
-		if season == 0 && t.Key.IsPluginKey() && t.ParentKey != 0 && t.ParentKey != show {
-			season = t.ParentKey
-		}
-		if season != 0 {
-			id := ids.RatingKeyGUID(season)
+		if seasonKey != 0 && seasonKey != show {
+			id := ids.RatingKeyGUID(seasonKey)
 			m["SeasonId"] = id
 			m["ParentId"] = id
 		}
@@ -846,8 +816,8 @@ func attachParentIdentity(m map[string]any, t frontend.Title) {
 		m["IndexNumber"] = episodeNumber
 	}
 	if t.Type == "season" {
-		parent := t.Key.Parent()
-		if parent == 0 && show != 0 {
+		parent := t.ParentKey
+		if parent == 0 {
 			parent = show
 		}
 		if parent != 0 {
@@ -1540,14 +1510,21 @@ func (i *instance) attachParentArtwork(r *http.Request, viewer *frontend.Viewer,
 	}
 }
 
-// parentShowKey is the series of an episode or season: its ShowKey, or the
-// show its key encodes.
+// parentShowKey resolves the series relationship for season and episode rows.
 func parentShowKey(title frontend.Title) frontend.RatingKey {
-	show := title.ShowKey
-	if show == 0 && (title.Key.Kind() == frontend.KindEpisode || title.Key.Kind() == frontend.KindSeason) {
-		show = frontend.ShowKey(title.Key.TMDB())
+	if title.ShowKey != 0 {
+		return title.ShowKey
 	}
-	return show
+	switch title.Key.Kind() {
+	case frontend.KindSeason:
+		if title.ParentKey != 0 {
+			return title.ParentKey
+		}
+		return title.Key.Parent()
+	case frontend.KindEpisode:
+		return title.Key.Parent().Parent()
+	}
+	return 0
 }
 
 // prefetchParentArtwork signs the series artwork of every episode and

@@ -44,8 +44,12 @@ func Target(t *frontend.Title) frontend.RatingKey {
 		if t.ShowKey != 0 {
 			return t.ShowKey
 		}
-		if k := t.Key.Kind(); (k == frontend.KindSeason || k == frontend.KindEpisode) && t.Key.TMDB() > 0 {
-			return frontend.ShowKey(t.Key.TMDB())
+		parent := t.Key.Parent()
+		if t.Type == frontend.TypeEpisode {
+			parent = parent.Parent()
+		}
+		if parent != 0 {
+			return parent
 		}
 	}
 	return t.Key

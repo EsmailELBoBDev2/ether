@@ -44,6 +44,22 @@ type Continue struct {
 	Unrestricted func(*core.User) bool
 }
 
+func seriesOfTitle(t core.Title) core.RatingKey {
+	if t.Type == core.TypeShow {
+		return t.Key
+	}
+	if t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	if t.Type == core.TypeSeason {
+		return t.Key.Parent()
+	}
+	if t.Type == core.TypeEpisode {
+		return t.Key.Parent().Parent()
+	}
+	return 0
+}
+
 func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []core.Title, state map[core.RatingKey]core.WatchStatus, limit int) []core.Title {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	// Prefer one completed anchor per series, so a binge or movie history
@@ -60,22 +76,42 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	if err != nil {
 		return titles
 	}
-	seen := map[int64]bool{}
+	seen := map[core.RatingKey]bool{}
 	for _, t := range titles {
 		if t.Type == core.TypeEpisode {
-			seen[t.Key.TMDB()] = true
+			seen[seriesOfTitle(t)] = true
+		}
+	}
+	showByEpisode := make(map[core.RatingKey]core.RatingKey, len(history))
+	var unknown []core.RatingKey
+	for _, h := range history {
+		if !h.Completed || h.Key.Kind() != core.KindEpisode {
+			continue
+		}
+		if h.Snapshot != nil && h.Snapshot.ShowKey != 0 {
+			showByEpisode[h.Key] = h.Snapshot.ShowKey
+		} else if show := h.Key.Parent().Parent(); show != 0 {
+			showByEpisode[h.Key] = show
+		} else {
+			unknown = append(unknown, h.Key)
+		}
+	}
+	if c.GetTitles != nil && len(unknown) > 0 {
+		for _, title := range c.GetTitles(ctx, unknown) {
+			showByEpisode[title.Key] = seriesOfTitle(title)
 		}
 	}
 	var recent []core.HistoryEntry
 	var keys, shows []core.RatingKey
 	for _, h := range history {
-		if !h.Completed || h.Key.Kind() != core.KindEpisode || seen[h.Key.TMDB()] {
+		show := showByEpisode[h.Key]
+		if !h.Completed || show == 0 || seen[show] {
 			continue
 		}
-		seen[h.Key.TMDB()] = true
+		seen[show] = true
 		recent = append(recent, h)
 		keys = append(keys, h.Key)
-		shows = append(shows, core.ShowKey(h.Key.TMDB()))
+		shows = append(shows, show)
 		if len(recent) >= min(max(limit, 1), 50) {
 			break
 		}
@@ -88,7 +124,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 			c.PrepareShowOnDeck(ctx, shows)
 		}
 		for _, h := range recent {
-			ep, states := c.ShowOnDeck(ctx, core.ShowKey(h.Key.TMDB()))
+			ep, states := c.ShowOnDeck(ctx, showByEpisode[h.Key])
 			if ep == nil || !c.Visible(ctx, viewer, ep) || c.SameDayUnavailable(ctx, ep) {
 				continue
 			}
@@ -123,7 +159,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 	firstNextRead := false
 	var walk []core.RatingKey
 	for _, h := range recent {
-		if ctx.Err() == nil && statuses[h.Key].ViewCount != 0 && !grouped[core.ShowKey(h.Key.TMDB())] {
+		if ctx.Err() == nil && statuses[h.Key].ViewCount != 0 && !grouped[showByEpisode[h.Key]] {
 			walk = append(walk, h.Key)
 		}
 	}
@@ -161,9 +197,10 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 			continue
 		} // subsequently marked unwatched
 		current := h.Key
+		show := showByEpisode[h.Key]
 		var ordered []core.Title
-		if grouped[core.ShowKey(current.TMDB())] {
-			eps, e := c.Grandchildren(ctx, core.ShowKey(current.TMDB()))
+		if grouped[show] {
+			eps, e := c.Grandchildren(ctx, show)
 			if e != nil {
 				continue
 			}
@@ -177,7 +214,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 		for n := 0; n < 32; n++ {
 			var next *core.Title
 			var nextErr error
-			if grouped[core.ShowKey(current.TMDB())] {
+			if grouped[show] {
 				if n >= len(ordered) {
 					break
 				}
@@ -203,7 +240,7 @@ func (c Continue) appendNext(ctx context.Context, viewer *core.User, titles []co
 				break
 			}
 			st, ok := nextStates[next.Key]
-			if (!ok && (!nextStatesRead || grouped[core.ShowKey(h.Key.TMDB())])) || n > 0 {
+			if (!ok && (!nextStatesRead || grouped[show])) || n > 0 {
 				var e error
 				if st, e = c.State.Get(ctx, viewer.ID, next.Key); e != nil {
 					break
@@ -317,7 +354,7 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 			if title.Type != core.TypeEpisode {
 				continue
 			}
-			key := core.ShowKey(title.Key.TMDB())
+			key := seriesOfTitle(title)
 			if !seen[key] {
 				seen[key] = true
 				keys = append(keys, key)
@@ -331,7 +368,7 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 			PrioritizeFavoriteShows(titles, favorites)
 		}
 	}
-	seenShows := map[int64]bool{}
+	seenShows := map[core.RatingKey]bool{}
 	out := titles[:0:0]
 	for _, ti := range titles {
 		if t != "" {
@@ -348,10 +385,12 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 			continue
 		}
 		if ti.Type == core.TypeEpisode {
-			if seenShows[ti.Key.TMDB()] {
-				continue
+			if show := seriesOfTitle(ti); show != 0 {
+				if seenShows[show] {
+					continue
+				}
+				seenShows[show] = true
 			}
-			seenShows[ti.Key.TMDB()] = true
 		}
 		out = append(out, ti)
 		if limit > 0 && len(out) >= limit {
@@ -378,11 +417,7 @@ func PrioritizeFavoriteShows(titles []core.Title, favorites map[core.RatingKey]b
 			if t.Type != core.TypeEpisode {
 				return false
 			}
-			key := t.ShowKey
-			if key == 0 {
-				key = core.ShowKey(t.Key.TMDB())
-			}
-			return favorites[key]
+			return favorites[seriesOfTitle(t)]
 		}
 		return favorite(titles[i]) && !favorite(titles[j])
 	})

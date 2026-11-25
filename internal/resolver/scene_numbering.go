@@ -22,7 +22,7 @@ func applyReleaseNumbering(req core.SearchRequest, numbering core.ReleaseNumberi
 }
 
 func (s *Service) numberedRequest(ctx context.Context, req core.SearchRequest, cachedOnly bool) core.SearchRequest {
-	if s.episodeNumbering == nil || req.Type != core.TypeEpisode || req.IDs.TMDB <= 0 {
+	if s.episodeNumbering == nil || req.Type != core.TypeEpisode || req.EpisodeSource == core.MetadataTVDB || req.IDs.TMDB <= 0 {
 		return req
 	}
 	if numbering, err := s.episodeNumbering(ctx, req, cachedOnly); err == nil {
@@ -36,7 +36,7 @@ func (s *Service) numberedRequest(ctx context.Context, req core.SearchRequest, c
 // Automatic XEM discovery remains lazy unless canonical season-numbered
 // discovery fails to settle the episode.
 func (s *Service) explicitNumberedRequest(ctx context.Context, req core.SearchRequest) core.SearchRequest {
-	if s.episodeNumbering == nil || req.Type != core.TypeEpisode || req.IDs.TMDB <= 0 || req.ReleaseNumberingKnown ||
+	if s.episodeNumbering == nil || req.Type != core.TypeEpisode || req.EpisodeSource == core.MetadataTVDB || req.IDs.TMDB <= 0 || req.ReleaseNumberingKnown ||
 		core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx) {
 		return req
 	}

@@ -1,6 +1,7 @@
 package silo
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,8 +32,8 @@ func titleDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
 	if t.Language != "" {
 		out["original_language"] = t.Language
 	}
-	if !t.Released.IsZero() {
-		out["release_date"] = t.Released.Format("2006-01-02")
+	if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+		out["release_date"] = date.Format("2006-01-02")
 	}
 	if t.Type == "show" && t.Status != "" {
 		out["show_status"] = strings.ReplaceAll(strings.ToLower(t.Status), " ", "_")

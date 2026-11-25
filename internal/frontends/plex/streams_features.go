@@ -19,9 +19,26 @@ type MarkerProvider = frontend.MarkerRanges
 func (s *Server) trackScope(ctx context.Context, key frontend.RatingKey) frontend.TrackScope {
 	scope := frontend.TrackScope{Device: FromContext(ctx).ClientID}
 	wanted := frontend.TypeMovie
-	if key.Kind() == frontend.KindShow || key.Kind() == frontend.KindSeason || key.Kind() == frontend.KindEpisode {
+	switch key.Kind() {
+	case frontend.KindShow:
 		wanted = frontend.TypeShow
-		scope.Series = strconv.FormatInt(int64(frontend.ShowKey(key.TMDB())), 10)
+		scope.Series = key.String()
+	case frontend.KindSeason, frontend.KindEpisode:
+		wanted = frontend.TypeShow
+		show := key.Parent()
+		if key.Kind() == frontend.KindEpisode {
+			show = show.Parent()
+		}
+		if show == 0 {
+			if local, ok := s.catalog().(frontend.StoredTitleLookup); ok {
+				if title, err := local.StoredTitle(ctx, key); err == nil && title != nil {
+					show = titleShow(title)
+				}
+			}
+		}
+		if show != 0 {
+			scope.Series = show.String()
+		}
 	}
 	for _, section := range s.getSectionsCtx(ctx) {
 		if section.Type == wanted {
@@ -36,6 +53,12 @@ func (s *Server) trackPreferences() frontend.TrackPreferenceSelector {
 	return s.exp().NewTrackPreferenceSelector(frontend.TrackPreferenceSelectorOptions{Source: s.svc().trackPrefs, GetTitle: func(ctx context.Context, key frontend.RatingKey) (*frontend.Title, error) {
 		if s.catalog() == nil {
 			return nil, frontend.ErrNotAvailable
+		}
+		if key.Kind() == frontend.KindEpisode {
+			if local, ok := s.catalog().(frontend.StoredTitleLookup); ok {
+				return local.StoredTitle(ctx, key)
+			}
+			return s.catalog().Get(ctx, key)
 		}
 		return &frontend.Title{Key: key, Language: s.showLanguage(ctx, key)}, nil
 	}})
@@ -304,13 +327,13 @@ func (s *Server) preloadShowLanguages(ctx context.Context, pr *Request, ts []fro
 	seen := map[frontend.RatingKey]bool{}
 	var shows []frontend.RatingKey
 	for i := range ts {
-		if ts[i].Type != frontend.TypeEpisode || ts[i].Language != "" || ts[i].Key.TMDB() <= 0 {
+		if ts[i].Type != frontend.TypeEpisode || ts[i].Language != "" || titleShow(&ts[i]) == 0 {
 			continue
 		}
 		if allowed != nil && !allowed[ts[i].Key] {
 			continue
 		}
-		show := frontend.ShowKey(ts[i].Key.TMDB())
+		show := titleShow(&ts[i])
 		if !seen[show] {
 			seen[show] = true
 			shows = append(shows, show)

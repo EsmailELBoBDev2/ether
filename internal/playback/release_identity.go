@@ -2,6 +2,7 @@ package playback
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"path"
@@ -28,14 +29,6 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 		return true
 	}
 	season, episode := title.Season, title.Episode
-	if title.Key.Kind() == core.KindEpisode {
-		if season == 0 {
-			season = title.Key.Season()
-		}
-		if episode == 0 {
-			episode = title.Key.Episode()
-		}
-	}
 	if episode <= 0 {
 		return true
 	}
@@ -88,7 +81,7 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 				}
 			}
 		}
-		if season > 0 && !info.FullSeason && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+		if season > 0 && !info.FullSeason && releaseparse.EpisodeMatchesAirDate(info, cmp.Or(title.EpisodeAirDate, title.Released)) {
 			if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
 				return true
 			}
@@ -123,9 +116,6 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 	expected := title.IDs
 	if title.Type == core.TypeEpisode {
 		expected = title.ShowIDs
-		if expected.TMDB == 0 && title.Key.Kind() == core.KindEpisode {
-			expected.TMDB = title.Key.TMDB()
-		}
 	}
 	idMatch, idConflict := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), expected)
 	if idConflict {
@@ -135,14 +125,6 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 		return true
 	}
 	season, episode := title.Season, title.Episode
-	if title.Key.Kind() == core.KindEpisode {
-		if season == 0 {
-			season = title.Key.Season()
-		}
-		if episode == 0 {
-			episode = title.Key.Episode()
-		}
-	}
 	origSeason, origEpisode := season, episode
 	absolute := playbackAbsoluteEpisode(title, season, episode)
 	var valid bool
@@ -194,7 +176,7 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 					}
 				}
 			}
-			if !matched && season > 0 && !releaseparse.AbsoluteConflict(info, absolute) && releaseparse.EpisodeMatchesAirDate(info, title.Released) {
+			if !matched && season > 0 && !releaseparse.AbsoluteConflict(info, absolute) && releaseparse.EpisodeMatchesAirDate(info, cmp.Or(title.EpisodeAirDate, title.Released)) {
 				if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
 					matched = true
 				} else if season > 1 && absolute <= 0 && len(info.Seasons) == 0 && len(info.AbsoluteEpisodes) == 0 && len(info.Episodes) == 1 && info.Episodes[0] > episode {
@@ -211,8 +193,15 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 		return false
 	}
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-	if !releaseparse.SeriesYearMatches(year, title.ShowYear) ||
-		((season != 0 || episode <= 0) && year == 0 && !idMatch && !releaseparse.EpisodeTitleMatches(rel.Name, title.Title)) {
+	// A dated TVDB release can identify itself with a series name and
+	// broadcast date even when its filename omits an episode title.
+	daily := title.EpisodeOrder.Source == core.MetadataTVDB && info.AirDate != "" &&
+		len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 && !info.FullSeason
+	dailyMatch := daily && releaseparse.EpisodeMatchesAirDate(info, cmp.Or(title.EpisodeAirDate, title.Released)) &&
+		(releaseparse.TitleMatchesAny(info, title.ShowTitle, title.ShowAlternativeTitles) ||
+			releaseparse.TitleMatchesAny(info, title.ShowOriginalTitle, []string{title.ShowEnglishTitle}))
+	if (daily && !idMatch && !dailyMatch) || !releaseparse.SeriesYearMatches(year, title.ShowYear) ||
+		((season != 0 || episode <= 0) && year == 0 && !idMatch && !dailyMatch && !releaseparse.EpisodeTitleMatches(rel.Name, title.Title)) {
 		return false
 	}
 	// A torrent descriptor embeds the expected identity for file selection.

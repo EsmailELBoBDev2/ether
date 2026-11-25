@@ -92,7 +92,11 @@ func (s *Receipts) issueBatchAttempt(ctx context.Context, viewer *core.User, dev
 			seen[key] = true
 			keys = append(keys, key)
 			if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
-				if show := core.ShowKey(key.TMDB()); show != 0 && !seen[show] {
+				show := key.Parent()
+				if key.Kind() == core.KindEpisode {
+					show = show.Parent()
+				}
+				if show != 0 && !seen[show] {
 					seen[show] = true
 					keys = append(keys, show)
 				}

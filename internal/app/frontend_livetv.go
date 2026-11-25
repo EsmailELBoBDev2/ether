@@ -66,7 +66,7 @@ func (s surfaceLiveTV) liveChannel(ctx context.Context, viewer *core.Viewer, c l
 	if err != nil {
 		return frontend.LiveChannel{}, err
 	}
-	result := frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group, Groups: groups}
+	result := frontend.LiveChannel{ArchiveDays: c.ArchiveDays(), ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group, Groups: groups}
 	if s.channelArtwork != nil {
 		if image := s.channelArtwork(viewer, c); image.Path != "" {
 			result.Images = []frontend.Image{image}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -902,7 +904,7 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			// plugin's daily background allowance.
 			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
-					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{pluginSourceCandidate(cand)}}, nil
 				}
 			}
 			if backends.AdmitBackgroundUsenetCheck == nil {
@@ -917,7 +919,7 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 						resetAt,
 					)
 				}
-				return core.SourceResolveResult{}, admitErr
+				return core.SourceResolveResult{}, pluginSourceError(admitErr)
 			}
 		} else {
 			// On-demand viewer calls never count against the daily background
@@ -960,9 +962,52 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				)
 			}
 		}
-		return core.SourceResolveResult{}, rerr
+		return core.SourceResolveResult{}, pluginSourceError(rerr)
+	}
+	res.Candidates = slices.Clone(res.Candidates)
+	for i := range res.Candidates {
+		res.Candidates[i] = pluginSourceCandidate(res.Candidates[i])
 	}
 	return res, nil
+}
+
+// Keep indexer-owned locators on the host, including inside magnet parameters.
+// The same response boundary serves hosted, HTTP, and tunnel plugins.
+func pluginSourceCandidate(c core.SourceCandidate) core.SourceCandidate {
+	if !strings.HasPrefix(c.NZBURL, core.PluginNZBRefPrefix) {
+		c.NZBURL = ""
+	}
+	if !strings.HasPrefix(c.TorrentURL, core.PluginTorrentRefPrefix) {
+		c.TorrentURL = ""
+	}
+	if c.Magnet != "" {
+		hash := newznab.InfoHashFromMagnet(c.Magnet)
+		c.Magnet = newznab.BareMagnet(hash)
+	}
+	return c
+}
+
+// Backend errors can contain an upstream response or request URL. Return
+// fixed classifications and allow structured errors produced by the host.
+func pluginSourceError(err error) error {
+	var invalid *ValidationError
+	var limit *RateLimitError
+	if errors.As(err, &invalid) {
+		return invalid
+	}
+	if errors.As(err, &limit) {
+		return limit
+	}
+	for _, public := range []error{
+		context.DeadlineExceeded, context.Canceled, ErrNotFound, ErrPermissionDenied,
+		core.ErrBudgetExhausted, core.ErrReleaseRejected, core.ErrSourceUnavailable,
+		core.ErrNotCached, core.ErrNotAvailable,
+	} {
+		if errors.Is(err, public) {
+			return public
+		}
+	}
+	return ErrUnavailable
 }
 
 func (h *host) CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (string, error) {

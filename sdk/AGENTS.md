@@ -597,7 +597,18 @@ references with an `ether-nzb:` or `ether-torrent:` prefix. Call
 `ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
 permanent vault reference. Use that reference in a release source's
 `release.nzbRef`, and use `release_files` for files inside archives.
-Configured indexer hosts reject direct plugin HTTP calls.
+Use this service for indexer search and NZB access from hosted, HTTP and
+tunnel plugins. Ether blocks its own plugin HTTP requests to configured indexer
+hosts. The indexer API URL and credentials stay in Ether's indexer settings.
+Plugin settings and secrets hold only that plugin's configuration. Do not ask
+owners to copy their indexer URLs or API keys into plugin settings. Source
+results carry opaque download references and trackerless magnets.
+
+An HTTP or tunnel sidecar runs under its own OS or container permissions.
+Ether controls what it sends to that process and requests Ether makes on its
+behalf. To enforce the same egress restriction on a sidecar's own traffic,
+restrict its outbound connections through its container network policy or
+host firewall.
 
 Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck

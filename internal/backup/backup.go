@@ -17,9 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/config"
-	"github.com/braedonsaunders/ether/internal/schedule"
-	"github.com/braedonsaunders/ether/internal/store"
 	"io"
 	"log/slog"
 	"net/url"
@@ -31,6 +28,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/schedule"
+	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 func init() {
@@ -187,10 +189,10 @@ type Settings struct {
 	SkipOnAirMedia bool `json:"skipOnAirMedia"`
 }
 type Manifest struct {
-	VaultPacks map[string]packRef `json:"vaultPacks,omitempty"`
-	Version    int                `json:"version"`
-	Created    time.Time          `json:"created"`
-	SHA256     map[string]string  `json:"sha256"`
+	VaultPackCount int               `json:"vaultPackCount,omitempty"`
+	Version        int               `json:"version"`
+	Created        time.Time         `json:"created"`
+	SHA256         map[string]string `json:"sha256"`
 	// Dialect is "postgres" for a logical dump; empty means SQLite.
 	Dialect string `json:"dialect,omitempty"`
 	// OnAirAssets are the On Air asset files in the bundle, each an
@@ -428,6 +430,15 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	if store.DialectOf(s.db) == store.Postgres {
 		dialect = string(store.Postgres)
 	}
+	var unpin func()
+	if !settings.SkipVault {
+		release, e := vault.PinPacks(ctx, s.db)
+		if e != nil {
+			return out, e
+		}
+		unpin = sync.OnceFunc(release)
+		defer unpin()
+	}
 	dbPath := filepath.Join(stage, dbEntry(dialect))
 	if dialect != "" {
 		if e = exportLogical(ctx, s.db, dbPath); e != nil {
@@ -473,14 +484,29 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 		}
 		manifest.SHA256[name] = h
 	}
-	root, e := packRoot(conf, filepath.Dir(s.configPath))
-	if e != nil {
-		return out, e
-	}
 	if !settings.SkipVault {
-		if e = snapshotPacks(ctx, root, filepath.Join(stage, "packs"), dir, &manifest); e != nil {
+		root, e := packRoot(conf, filepath.Dir(s.configPath))
+		if e != nil {
 			return out, e
 		}
+		index, e := os.OpenFile(filepath.Join(stage, packIndex), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		if e != nil {
+			return out, e
+		}
+		count, e := snapshotPacks(ctx, root, filepath.Join(stage, "packs"), dir, shared, index)
+		closeErr := index.Close()
+		if e != nil {
+			return out, e
+		}
+		if closeErr != nil {
+			return out, closeErr
+		}
+		unpin()
+		manifest.VaultPackCount = count
+	}
+	entries := []string{"manifest.json"}
+	if manifest.VaultPackCount > 0 {
+		entries = append(entries, packIndex)
 	}
 	b, e := json.Marshal(manifest)
 	if e != nil {
@@ -497,7 +523,7 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 	}
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
-	for _, name := range append([]string{"manifest.json"}, names...) {
+	for _, name := range append(entries, names...) {
 		path := filepath.Join(stage, name)
 		st, se := os.Stat(path)
 		if se != nil {
@@ -530,20 +556,20 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 		return out, e
 	}
 	target := filepath.Join(dir, name)
-	if len(manifest.VaultPacks) > 0 {
+	if manifest.VaultPackCount > 0 {
 		if e = os.Rename(filepath.Join(stage, "packs"), target+".packs"); e != nil {
 			return out, e
 		}
 	}
 	if e = os.Rename(temp, target); e != nil {
+		if manifest.VaultPackCount > 0 {
+			_ = os.RemoveAll(target + ".packs")
+		}
 		return out, e
 	}
 	retain := s.retain
 	if se == nil {
 		retain = settings.Retain
-	}
-	if _, e = s.db.ExecContext(ctx, `UPDATE backup_settings SET last_run=? WHERE id=1`, manifest.Created.Unix()); e != nil {
-		return out, e
 	}
 	snaps, e := listDir(dir)
 	if e != nil {
@@ -561,6 +587,9 @@ func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Set
 				return out, e
 			}
 		}
+	}
+	if _, e = s.db.ExecContext(ctx, `UPDATE backup_settings SET last_run=? WHERE id=1`, manifest.Created.Unix()); e != nil {
+		return out, e
 	}
 	if node != nil {
 		if e = s.record(ctx, *node, dir, shared); e != nil {
@@ -734,8 +763,8 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	seen := map[string]bool{}
-	packs := map[string]string{}
-	var vaultBytes int64
+	var m Manifest
+	packCount := 0
 	media := map[string]bool{}
 	for {
 		h, e := tr.Next()
@@ -745,10 +774,28 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 		if e != nil {
 			return e
 		}
-		if strings.HasPrefix(h.Name, packPrefix) {
-			if e = extractPack(tr, h, stage, packs, &vaultBytes); e != nil {
+		if e := ctx.Err(); e != nil {
+			return e
+		}
+		if h.Name == packIndex {
+			f, ok := r.(*os.File)
+			if !ok || h.Typeflag != tar.TypeReg || packCount != 0 || m.VaultPackCount == 0 {
+				return errors.New("invalid vault manifest")
+			}
+			if e = restoreLocalPacks(ctx, tr, f.Name(), stage, m.VaultPackCount); e != nil {
 				return e
 			}
+			packCount = m.VaultPackCount
+			continue
+		}
+		if strings.HasPrefix(h.Name, packPrefix) {
+			if packCount >= m.VaultPackCount {
+				return errors.New("invalid vault pack entry")
+			}
+			if e = extractPack(tr, h, stage); e != nil {
+				return e
+			}
+			packCount++
 			continue
 		}
 		if d, ok := strings.CutPrefix(h.Name, onairEntryPrefix); ok {
@@ -773,7 +820,11 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 		if e != nil {
 			return e
 		}
-		_, e = io.CopyN(f, tr, h.Size)
+		if h.Name == "manifest.json" {
+			e = decodeManifest(h, io.TeeReader(tr, f), &m)
+		} else {
+			_, e = io.CopyN(f, tr, h.Size)
+		}
 		ce := f.Close()
 		if e != nil {
 			return e
@@ -792,14 +843,6 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	if len(seen) != 3 && len(seen) != 4 {
 		return errors.New("incomplete backup bundle")
 	}
-	raw, e := os.ReadFile(filepath.Join(stage, "manifest.json"))
-	if e != nil {
-		return e
-	}
-	var m Manifest
-	if e = json.Unmarshal(raw, &m); e != nil {
-		return e
-	}
 	if m.Dialect != "" && m.Dialect != string(store.Postgres) {
 		return errors.New("unsupported backup manifest")
 	}
@@ -810,10 +853,8 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 	if (m.Version != 1 && m.Version != 2) || len(m.SHA256) != len(names) || len(seen) != len(names)+1 {
 		return errors.New("unsupported backup manifest")
 	}
-	for name, digest := range packs {
-		if m.VaultPacks[name].Digest != digest {
-			return errors.New("vault checksum mismatch")
-		}
+	if packCount != m.VaultPackCount {
+		return errMissingVaultPack
 	}
 	if len(m.OnAirAssets) != len(media) {
 		return errors.New("backup bundle On Air media does not match its manifest")
@@ -832,7 +873,7 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 			return fmt.Errorf("checksum mismatch for %s", name)
 		}
 	}
-	raw, e = os.ReadFile(filepath.Join(stage, "config.json"))
+	raw, e := os.ReadFile(filepath.Join(stage, "config.json"))
 	if e != nil {
 		return e
 	}
@@ -865,11 +906,6 @@ func restore(ctx context.Context, r io.Reader, destination string, finish func()
 		}
 		if sealed {
 			return errors.New("bundle has encrypted data but no credential key")
-		}
-	}
-	if f, ok := r.(*os.File); ok && len(packs) == 0 && len(m.VaultPacks) > 0 {
-		if e = restoreLocalPacks(f.Name(), stage, m); e != nil {
-			return e
 		}
 	}
 	if finish != nil {

@@ -67,6 +67,7 @@ import type {
   LogEntry,
   QualityAnswer,
   QualityClient,
+  QualityDevices,
   QualityQuestion,
   RequestPreview,
   SiteDefinition,
@@ -400,6 +401,9 @@ export const api = {
   // ---- Quality: who gets what -------------------------------------------------
   qualityClients: async () =>
     (await apiFetch<{ clients: QualityClient[] }>("/quality/clients")).clients,
+  /** Device kinds, device types, apps and seen devices a rule can match. */
+  qualityDevices: (signal?: AbortSignal) =>
+    apiFetch<QualityDevices>("/quality/devices", { signal }),
   explainQuality: (question: QualityQuestion, signal?: AbortSignal) =>
     post<QualityAnswer>("/quality/explain", question, signal),
 

@@ -8,17 +8,17 @@ import { DomainPage, useRouteTab } from "../../components/layout";
 import { RELEASE_SEARCH } from "../settings/schema";
 import { StartSpeed } from "../playback/StartSpeed";
 import { BlocklistTab } from "./Blocklist";
-import { ClientRulesTab } from "./ClientRules";
 import { HistoryTab } from "./History";
 import { PinnedTab } from "./Pinned";
 import { QualityTab } from "./Quality";
+import { RulesTab } from "./Rules";
 
 const TABS = localized(
   () =>
     [
       { key: "profiles", label: t("Profiles") },
       { key: "rules", label: t("Rules") },
-      { key: "check", label: t("Check quality") },
+      { key: "check", label: t("Who gets what") },
       { key: "searching", label: t("Searching") },
       { key: "blocklist", label: t("Blocklist") },
       { key: "pinned", label: t("Pinned") },
@@ -26,7 +26,7 @@ const TABS = localized(
     ] as const,
 );
 
-/** Tabs that show the Profiles → Rules → Check quality step bar. */
+/** Tabs that show the Profiles → Rules → Who gets what step bar. */
 const STEP_TABS = new Set(["profiles", "rules", "check"]);
 
 /** Which release Ether picks for each play, and why. */
@@ -43,18 +43,18 @@ export default function Releases() {
             {
               key: "profiles",
               title: t("Profiles"),
-              detail: t("Define quality tiers"),
+              detail: t("How releases are ranked"),
               Icon: Layers,
             },
             {
               key: "rules",
               title: t("Rules"),
-              detail: t("Pick a tier · first match wins"),
+              detail: t("Who gets which profile"),
               Icon: ListFilter,
             },
             {
               key: "check",
-              title: t("Check quality"),
+              title: t("Who gets what"),
               detail: t("See what a viewer gets"),
               Icon: MonitorCheck,
             },
@@ -99,7 +99,7 @@ export default function Releases() {
       ) : null}
       {tab === "check" ? <WhoGetsWhat /> : null}
       {tab === "profiles" ? <QualityTab /> : null}
-      {tab === "rules" ? <ClientRulesTab /> : null}
+      {tab === "rules" ? <RulesTab /> : null}
       {tab === "searching" ? (
         <>
           <StartSpeed />

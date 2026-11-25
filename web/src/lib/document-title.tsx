@@ -211,7 +211,7 @@ function resolveBuiltinSubparts(
         {
           profiles: () => t("Profiles"),
           rules: () => t("Rules"),
-          check: () => t("Check quality"),
+          check: () => t("Who gets what"),
           searching: () => t("Searching"),
           blocklist: () => t("Blocklist"),
           pinned: () => t("Pinned"),

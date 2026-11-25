@@ -488,7 +488,6 @@ export function createTrashMock() {
         {
           ...p.profile,
           name,
-          mediaType: p.mediaType,
           ...(p.source
             ? {
                 import: {

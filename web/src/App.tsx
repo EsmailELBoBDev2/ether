@@ -79,6 +79,7 @@ import { useOwnerViewerPath } from "./components/pickers";
 import { api, getToken, setToken } from "./lib/api";
 import { BUILTIN, textOf, useRegistry, type Descriptor } from "./lib/extend";
 import {
+  SYSTEM_NAV_GROUP,
   pluginNavGroup,
   pluginPageRoute,
   type NavItemMeta,
@@ -119,7 +120,7 @@ const Calendar = lazy(() => import("./pages/calendar/Calendar"));
 const Libraries = lazy(() => import("./pages/libraries/Libraries"));
 const Metadata = lazy(() => import("./pages/metadata/Metadata"));
 const Sources = lazy(() => import("./pages/sources/Sources"));
-const Quality = lazy(() => import("./pages/releases/Releases"));
+const Releases = lazy(() => import("./pages/releases/Releases"));
 const Cache = lazy(() => import("./pages/cache/Cache"));
 const Playback = lazy(() => import("./pages/playback/Playback"));
 const DeveloperReference = lazy(() => import("./pages/plugins/DeveloperReference"));
@@ -181,15 +182,18 @@ const NAV_GROUPS: { key: string; label: () => string }[] = [
   { key: "", label: () => "" },
   { key: "library", label: () => t("Content") },
   { key: "streaming", label: () => t("Streaming") },
-  { key: "server", label: () => t("Server") },
+  { key: "connect", label: () => t("Connect") },
+  { key: "automate", label: () => t("Automate") },
+  { key: SYSTEM_NAV_GROUP, label: () => t("System") },
 ];
 
 /**
  * The sidebar, from registry descriptors (WS1d). Built-in navItems come from
- * Go; a plugin page joins its declared nav group (or Server) with the
+ * Go; a plugin page joins its declared nav group (or System) with the
  * plugin's icon, after the built-ins of the same order.
  * Grouped by the owner's questions: what's happening and who watches; what
- * viewers see in their apps; how titles reach the screen; how the server runs.
+ * viewers see in their apps; how titles reach the screen; what Ether talks
+ * to; what it does on its own; how the server runs.
  */
 export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
   type Item = {
@@ -220,7 +224,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     const group =
       d.owner === BUILTIN
         ? (d.group ?? "")
-        : ((page ? pluginNavGroup(page) : undefined) ?? d.group ?? "server");
+        : ((page ? pluginNavGroup(page) : undefined) ?? SYSTEM_NAV_GROUP);
     const href =
       d.owner !== BUILTIN && meta.pageKey ? pluginPageRoute(d.owner, meta.pageKey) : meta.route;
     items.push({
@@ -242,7 +246,7 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
     items: items.filter((i) => i.group === g.key).map((i) => i.item),
   }));
   // A plugin may declare a group the console does not know; keep it visible
-  // under Server rather than dropping the page.
+  // under System rather than dropping the page.
   const known = new Set(NAV_GROUPS.map((g) => g.key));
   const stray = items.filter((i) => !known.has(i.group)).map((i) => i.item);
   if (stray.length) groups[groups.length - 1]!.items.push(...stray);
@@ -360,7 +364,7 @@ const BUILTIN_PAGES: Record<
   libraries: { element: <Libraries />, suffix: "/*" },
   metadata: { element: <Metadata />, suffix: "/:tab?" },
   sources: { element: <Sources />, suffix: "/:tab?/:section?" },
-  releases: { element: <Quality />, suffix: "/:tab?" },
+  releases: { element: <Releases />, suffix: "/:tab?" },
   cache: { element: <Cache />, suffix: "/:tab?" },
   playback: { element: <Playback />, suffix: "/:tab?/:section?" },
   notifications: { element: <Notifications />, suffix: "/:tab?" },

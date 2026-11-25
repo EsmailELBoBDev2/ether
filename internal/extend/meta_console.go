@@ -5,12 +5,18 @@ package extend
 // web/src/lib/console-descriptors.ts.
 
 // Nav groups for pages and nav items. The empty group is the unheaded top
-// group in the sidebar.
+// group in the sidebar. Connect, Automate and System are for built-in pages
+// only.
 const (
 	NavGroupTop       = ""
 	NavGroupLibrary   = "library"
 	NavGroupStreaming = "streaming"
-	NavGroupServer    = "server"
+	NavGroupConnect   = "connect"
+	NavGroupAutomate  = "automate"
+	NavGroupSystem    = "system"
+	// NavGroupServer is what a plugin page declares to sit beside the
+	// server's own pages; the console lists it under System.
+	NavGroupServer = "server"
 )
 
 // PageSection is one in-page section (tab) the sitemap and ⌘K can target.

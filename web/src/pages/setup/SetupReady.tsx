@@ -644,7 +644,7 @@ function SetupReadyInner({ initialConfig = null, tmdbAvailable }: SetupReadyProp
             movies: movieProfile,
             shows: showProfile,
           }),
-    to: "/quality/profiles",
+    to: "/releases/profiles",
   });
 
   const summaryLine =

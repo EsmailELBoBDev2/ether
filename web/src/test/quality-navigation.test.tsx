@@ -6,7 +6,7 @@ import { destinations } from "../lib/sitemap";
 import { settingsIndex } from "../lib/settings-index";
 
 it("gives the checker its own searchable destination and inline controls", async () => {
-  renderApp("/quality/check");
+  renderApp("/releases/check");
   const result = await screen.findByTestId("quality-headline", {}, { timeout: 10000 });
   expect(result).toHaveTextContent("4K");
   expect(screen.getAllByTestId("quality-headline")).toHaveLength(1);
@@ -18,8 +18,8 @@ it("gives the checker its own searchable destination and inline controls", async
   expect(row).toHaveClass("sm:grid-cols-3");
   expect(within(row as HTMLElement).getByRole("button", { name: "App" })).toBeVisible();
   expect(within(row as HTMLElement).getByRole("radio", { name: "Away" })).toBeVisible();
-  expect(destinations().some((d) => d.href === "/quality/check")).toBe(true);
-  expect(settingsIndex().find((d) => d.title === "Check quality")?.href).toBe("/quality/check");
+  expect(destinations().some((d) => d.href === "/releases/check")).toBe(true);
+  expect(settingsIndex().find((d) => d.title === "Check quality")?.href).toBe("/releases/check");
 });
 
 it("keeps the four search settings visible", () => {
@@ -33,7 +33,7 @@ it("keeps the four search settings visible", () => {
 });
 
 it("orders profile sections before away, source order, and versions", async () => {
-  renderApp("/quality/profiles");
+  renderApp("/releases/profiles");
   await screen.findByRole("button", { name: "Add profile" }, { timeout: 10000 });
   await screen.findByText("Same-quality versions to offer", {}, { timeout: 10000 });
   const flow = screen.getByRole("navigation", { name: "How quality works" });
@@ -52,7 +52,7 @@ it("orders profile sections before away, source order, and versions", async () =
 });
 
 it("switches profiles between movies and shows and badges each card", async () => {
-  renderApp("/quality/profiles", {}, (fake) => {
+  renderApp("/releases/profiles", {}, (fake) => {
     const profiles = fake.state.config.quality.profiles!;
     profiles.push({ ...structuredClone(profiles[2]!), name: "Sitcoms" });
   });
@@ -76,7 +76,7 @@ it("switches profiles between movies and shows and badges each card", async () =
 });
 
 it("offers only Movies and Shows, and a moved profile takes its rules along", async () => {
-  const { fake } = renderApp("/quality/profiles", {}, (f) => {
+  const { fake } = renderApp("/releases/profiles", {}, (f) => {
     f.state.config.quality.profiles!.push({
       ...structuredClone(f.state.config.quality.profiles![0]!),
       name: "Kids",
@@ -103,7 +103,7 @@ it("offers only Movies and Shows, and a moved profile takes its rules along", as
 });
 
 it("collapses guide sync to one line until a profile is imported", async () => {
-  renderApp("/quality/profiles");
+  renderApp("/releases/profiles");
   expect(
     await screen.findByText(
       "Applies once you import a profile from TRaSH Guides or Profilarr.",
@@ -118,7 +118,7 @@ it("collapses guide sync to one line until a profile is imported", async () => {
 });
 
 it("saves the automatic sync cadence as a patch and runs it", async () => {
-  const { fake } = renderApp("/quality/profiles", {}, (f) => {
+  const { fake } = renderApp("/releases/profiles", {}, (f) => {
     f.state.config.quality.profiles![0]!.import = {
       source: "trash",
       app: "radarr",
@@ -147,7 +147,7 @@ it("saves the automatic sync cadence as a patch and runs it", async () => {
 
 it("shows a sync failure without a settings save bar and clears it on retry", async () => {
   let fail = true;
-  renderApp("/quality/profiles", {}, (f) => {
+  renderApp("/releases/profiles", {}, (f) => {
     f.state.config.quality.profiles![0]!.import = {
       source: "trash",
       app: "radarr",
@@ -177,7 +177,7 @@ it("shows a sync failure without a settings save bar and clears it on retry", as
 });
 
 it("keeps an empty media tab selected so its first profile can be added", async () => {
-  renderApp("/quality/profiles", {}, (fake) => {
+  renderApp("/releases/profiles", {}, (fake) => {
     fake.state.config.quality.profiles = fake.state.config.quality.profiles!.map((p) => ({
       ...p,
       mediaType: "movie",
@@ -196,7 +196,7 @@ it("keeps an empty media tab selected so its first profile can be added", async 
 });
 
 it("sets a shared profile as the away default only for the selected media", async () => {
-  const { fake } = renderApp("/quality/profiles", {}, (server) => {
+  const { fake } = renderApp("/releases/profiles", {}, (server) => {
     server.state.config.quality.remote = "";
     server.state.config.quality.remoteMovie = "";
     server.state.config.quality.remoteTv = "";
@@ -211,7 +211,7 @@ it("sets a shared profile as the away default only for the selected media", asyn
 });
 
 it("clears a legacy away default for one media while preserving the other", async () => {
-  const { fake } = renderApp("/quality/profiles", {}, (server) => {
+  const { fake } = renderApp("/releases/profiles", {}, (server) => {
     server.state.config.quality.remote = "1080p";
     server.state.config.quality.remoteMovie = "";
     server.state.config.quality.remoteTv = "";
@@ -226,7 +226,7 @@ it("clears a legacy away default for one media while preserving the other", asyn
 });
 
 it("settles dangling client rules when saving a profile", async () => {
-  const { fake } = renderApp("/quality/profiles", {}, (server) => {
+  const { fake } = renderApp("/releases/profiles", {}, (server) => {
     server.state.config.quality.default = "Gone";
     server.state.config.quality.rules = [
       { product: "Plex for Apple TV", profile: "4K" },

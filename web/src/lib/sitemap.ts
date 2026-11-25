@@ -216,8 +216,9 @@ const PAGES = localized<PageDef[]>(() => [
     ],
   },
   {
-    href: "/quality",
-    title: t("Quality"),
+    href: "/releases",
+    title: t("Releases"),
+    keywords: searchTerms(msg("quality")),
     sections: [
       {
         key: "profiles",
@@ -267,6 +268,20 @@ const PAGES = localized<PageDef[]>(() => [
     title: t("Playback"),
     sections: [
       {
+        key: "audio",
+        title: t("Audio"),
+        keywords: searchTerms(
+          msg("audio languages original dub loudness night mode dialogue household"),
+        ),
+      },
+      {
+        key: "subtitles",
+        title: t("Subtitles"),
+        keywords: searchTerms(
+          msg("subtitles languages appearance timing sync providers opensubtitles subdl subsource"),
+        ),
+      },
+      {
         key: "transcoding",
         title: t("Streams & transcoding"),
         keywords: searchTerms(msg("ffmpeg hardware gpu streams at once limit rtx")),
@@ -287,11 +302,6 @@ const PAGES = localized<PageDef[]>(() => [
         keywords: searchTerms(
           msg("pre-roll preroll intro video before feature trailers cinema yt-dlp"),
         ),
-      },
-      {
-        key: "subtitles",
-        title: t("Audio & subtitles"),
-        keywords: searchTerms(msg("audio languages subtitles timing sync opensubtitles household")),
       },
     ],
   },

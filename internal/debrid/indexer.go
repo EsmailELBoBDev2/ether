@@ -369,7 +369,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 // keeps when none is cached (the rest are dropped so they do not use up the
 // resolver's check budget). Their availability answer is remembered, so each fails as not
 // cached at once without an API call, and when nothing else plays the
-// player and Quality › History say "not cached" instead of "no release
+// player and Releases › History say "not cached" instead of "no release
 // found".
 const keepUncached = 3
 

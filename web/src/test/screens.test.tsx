@@ -328,7 +328,7 @@ describe("Getting started", () => {
     expect(screen.getByRole("link", { name: "Add viewers" })).toHaveAttribute("href", "/viewers");
     expect(
       screen.getByRole("link", { name: "Playback quality: 1080p at home · change" }),
-    ).toHaveAttribute("href", "/quality/profiles");
+    ).toHaveAttribute("href", "/releases/profiles");
     expect(within(steps).queryByRole("link", { name: "Connect Plex" })).toBeNull(); // Plex is off
     fireEvent.click(within(steps).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("region", { name: "Next steps" })).not.toBeInTheDocument();
@@ -355,6 +355,6 @@ describe("Getting started", () => {
     const steps = await screen.findByRole("region", { name: "Next steps" }, WAIT);
     expect(
       within(steps).getByRole("link", { name: "Playback quality: 4K at home · change" }),
-    ).toHaveAttribute("href", "/quality/profiles");
+    ).toHaveAttribute("href", "/releases/profiles");
   });
 });

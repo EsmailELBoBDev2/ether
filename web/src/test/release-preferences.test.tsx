@@ -15,7 +15,7 @@ const ruleFields = rankingDescriptors.filter(
 const WAIT = { timeout: 4000 };
 
 async function openProfile() {
-  const { fake } = renderApp("/quality/profiles");
+  const { fake } = renderApp("/releases/profiles");
   fireEvent.click(await screen.findByRole("button", { name: "Edit 1080p" }, WAIT));
   const drawer = await screen.findByRole("dialog", { name: "1080p" }, WAIT);
   return { fake, drawer };
@@ -146,7 +146,7 @@ describe("profile rules and custom formats", () => {
   });
 
   it("sets a movie default without changing the legacy or show defaults", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
     const defaults = within(drawer).getByRole("group", { name: "Default for" });
@@ -161,7 +161,7 @@ describe("profile rules and custom formats", () => {
   });
 
   it("merges a custom format added by a concurrent import", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
     selectTab(drawer, "Scoring");

@@ -369,7 +369,7 @@ export const CATALOG: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** How many same-quality copies apps list after Auto. Edited on Quality › Profiles. */
+/** How many same-quality copies apps list after Auto. Edited on Releases › Profiles. */
 export const PLAY_VERSIONS: FieldGroup[] = localized(() => [
   {
     id: "versions",
@@ -406,7 +406,7 @@ export const PLAY_VERSIONS: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** Engine search memory. Edited on Quality › Searching. */
+/** Engine search memory. Edited on Releases › Searching. */
 export const RELEASE_SEARCH: FieldGroup[] = localized(() => [
   {
     title: t("How Ether searches"),

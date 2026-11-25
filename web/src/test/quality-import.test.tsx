@@ -20,7 +20,7 @@ async function openImport() {
 
 describe("Quality profile import from guides", () => {
   it("previews a TRaSH profile and adds it with its custom format scores", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     const drawer = await openImport();
     const add = within(drawer).getByRole("button", { name: "Add profile" });
     expect(add).toBeDisabled();
@@ -84,7 +84,7 @@ describe("Quality profile import from guides", () => {
   });
 
   it("shows own and default format counts in the picker", async () => {
-    renderApp("/quality/profiles");
+    renderApp("/releases/profiles");
     const drawer = await openImport();
     fireEvent.click(await within(drawer).findByRole("button", { name: "TRaSH profile" }, WAIT));
     const option = await screen.findByRole("option", { name: /\[SQP\] SQP-1/ }, WAIT);
@@ -92,7 +92,7 @@ describe("Quality profile import from guides", () => {
   });
 
   it("warns and permits a profile with an unreachable preferred score", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     const drawer = await openImport();
     fireEvent.click(await within(drawer).findByRole("button", { name: "TRaSH profile" }, WAIT));
     fireEvent.click(await screen.findByRole("option", { name: /Needs a perfect release/ }, WAIT));
@@ -102,7 +102,7 @@ describe("Quality profile import from guides", () => {
   });
 
   it("previews and imports a Profilarr (Dictionarry) quality profile", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     const drawer = await openImport();
     fireEvent.click(within(drawer).getByRole("radio", { name: "Profilarr (Dictionarry)" }));
 
@@ -128,7 +128,7 @@ describe("Quality profile import from guides", () => {
   });
 
   it("previews pasted profile JSON for the app its qualities name", async () => {
-    const { fake } = renderApp("/quality/profiles");
+    const { fake } = renderApp("/releases/profiles");
     const drawer = await openImport();
     fireEvent.click(within(drawer).getByRole("radio", { name: "Paste JSON" }));
     const preview = within(drawer).getByRole("button", { name: "Preview" });

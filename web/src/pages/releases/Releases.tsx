@@ -33,7 +33,7 @@ const STEP_TABS = new Set(["profiles", "rules", "check"]);
 export default function Releases() {
   const tab = useRouteTab(TABS);
   return (
-    <DomainPage title={t("Quality")} base="/quality" tabs={TABS} active={tab}>
+    <DomainPage title={t("Releases")} base="/releases" tabs={TABS} active={tab}>
       {STEP_TABS.has(tab) ? (
         <nav
           aria-label={t("How quality works")}
@@ -86,7 +86,7 @@ export default function Releases() {
                   </span>
                 ) : (
                   <Link
-                    to={`/quality/${key}`}
+                    to={`/releases/${key}`}
                     className="flex flex-1 items-center gap-3 rounded-xl border border-border bg-surface p-4"
                   >
                     {content}

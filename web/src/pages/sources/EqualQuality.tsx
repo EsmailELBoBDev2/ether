@@ -64,7 +64,7 @@ function SourceStartupNote() {
 }
 
 /**
- * Which kind of source leads, for every profile (Quality › Profiles). The
+ * Which kind of source leads, for every profile (Releases › Profiles). The
  * first three choices only decide between releases that are equal after the
  * profile's ranking ladder; the "Always" choices put that source first
  * whatever the other has (resolver.sourcePreference + sourceAlwaysFirst).

@@ -115,8 +115,9 @@ func consolePages() []consolePage {
 				section("stats", T("Stats"), T("quota price plan cost success speed plays failover")),
 			},
 		}},
-		{id: "releases", label: T("Quality"), icon: "ListFilter", order: 20, meta: extend.PageMeta{
-			Route: "/quality", NavGroup: extend.NavGroupStreaming, InNav: true,
+		{id: "releases", label: T("Releases"), icon: "ListFilter", order: 20, meta: extend.PageMeta{
+			Route: "/releases", NavGroup: extend.NavGroupStreaming, InNav: true,
+			Keywords: T("quality"),
 			Sections: []extend.PageSection{
 				section("profiles", T("Profiles"), T("quality profiles resolution 4k 1080p remote cam scoring trash custom formats rules ranking")),
 				section("devices", T("Device rules"), T("device client profile")),
@@ -138,14 +139,16 @@ func consolePages() []consolePage {
 		{id: "playback", label: T("Playback"), icon: "MonitorPlay", order: 15, meta: extend.PageMeta{
 			Route: "/playback", NavGroup: extend.NavGroupStreaming, InNav: true,
 			Sections: []extend.PageSection{
-				section("transcoding", T("Transcoding"), T("ffmpeg hardware gpu bitrate startup race health")),
+				section("audio", T("Audio"), T("audio languages original dub loudness night mode dialogue household")),
+				section("subtitles", T("Subtitles"), T("subtitles languages appearance timing sync providers opensubtitles subdl subsource")),
+				section("transcoding", T("Streams & transcoding"), T("ffmpeg hardware gpu streams at once limit rtx")),
 				section("devices", T("App compatibility"), T("compatibility codecs")),
-				section("markers", T("Skip buttons"), T("intro credits skip chapters")),
-				section("subtitles", T("Audio & subtitles"), T("audio languages subtitles timing sync opensubtitles household")),
+				section("extras", T("Extras"), T("intro credits skip chapters up next post-play")),
+				section("prerolls", T("Pre-rolls"), T("pre-roll preroll intro video before feature trailers cinema yt-dlp")),
 			},
 		}},
 		{id: "general", label: T("General"), icon: "Server", order: 10, meta: extend.PageMeta{
-			Route: "/server", NavGroup: extend.NavGroupServer, InNav: true,
+			Route: "/server", NavGroup: extend.NavGroupSystem, InNav: true,
 			Keywords: T("settings"),
 			Sections: []extend.PageSection{
 				section("server", T("Server"), T("name port listen log level stream limit")),
@@ -154,16 +157,16 @@ func consolePages() []consolePage {
 				section("extras", T("Trailers & extras"), T("cinema trailers yt-dlp resolver")),
 			},
 		}},
-		{id: "apps", label: T("Apps"), icon: "Globe", order: 20, meta: extend.PageMeta{
-			Route: "/apps", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "apps", label: T("Apps"), icon: "Globe", order: 10, meta: extend.PageMeta{
+			Route: "/apps", NavGroup: extend.NavGroupConnect, InNav: true,
 			Keywords: T("settings plex apps protocols"),
 			Sections: []extend.PageSection{
 				section("remote", T("Remote access"), T("upnp port forward public")),
 				section("secure", T("Secure connections"), T("certificate plex.direct tls")),
 			},
 		}},
-		{id: "integrations", label: T("Integrations"), icon: "Plug", order: 30, meta: extend.PageMeta{
-			Route: "/services", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "integrations", label: T("Integrations"), icon: "Plug", order: 20, meta: extend.PageMeta{
+			Route: "/services", NavGroup: extend.NavGroupConnect, InNav: true,
 			Keywords: T("settings integrations"),
 			Sections: []extend.PageSection{
 				section("overview", T("Integrations"), T("status tmdb debrid prowlarr ratings")),
@@ -176,32 +179,32 @@ func consolePages() []consolePage {
 				section("subsource", T("SubSource"), T("subtitles")),
 			},
 		}},
-		{id: "plugins", label: T("Plugins"), icon: "Puzzle", order: 40, meta: extend.PageMeta{
-			Route: "/plugins", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "plugins", label: T("Plugins"), icon: "Puzzle", order: 30, meta: extend.PageMeta{
+			Route: "/plugins", NavGroup: extend.NavGroupConnect, InNav: true,
 			Keywords: T("plugins extensions addons studio"),
 		}},
-		{id: "notifications", label: T("Notifications"), icon: "Bell", order: 50, meta: extend.PageMeta{
-			Route: "/notifications", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "notifications", label: T("Notifications"), icon: "Bell", order: 10, meta: extend.PageMeta{
+			Route: "/notifications", NavGroup: extend.NavGroupAutomate, InNav: true,
 			Sections: []extend.PageSection{
 				section("channels", T("Channels"), T("email discord webhook push alerts watchlist")),
 				section("report", T("Weekly report"), T("newsletter digest")),
 				section("deliveries", T("Delivery history"), extend.Text{}),
 			},
 		}},
-		{id: "flows", label: T("Flows"), icon: "Workflow", order: 55, meta: extend.PageMeta{
-			Route: "/flows", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "flows", label: T("Flows"), icon: "Workflow", order: 20, meta: extend.PageMeta{
+			Route: "/flows", NavGroup: extend.NavGroupAutomate, InNav: true,
 			Keywords: T("automations automation workflows triggers actions events rules alerts"),
 			Sections: []extend.PageSection{
 				section("templates", T("Templates"), T("recipes starter tautulli kill stream newsletter")),
 				section("runs", T("Runs"), T("history trace test dry run")),
 			},
 		}},
-		{id: "cluster", label: T("Cluster"), icon: "Boxes", order: 60, meta: extend.PageMeta{
-			Route: "/cluster", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "cluster", label: T("Cluster"), icon: "Boxes", order: 20, meta: extend.PageMeta{
+			Route: "/cluster", NavGroup: extend.NavGroupSystem, InNav: true,
 			Keywords: T("high availability ha nodes failover postgres postgresql join token weight leader"),
 		}},
-		{id: "maintenance", label: T("Maintenance"), icon: "LifeBuoy", order: 70, meta: extend.PageMeta{
-			Route: "/maintenance", NavGroup: extend.NavGroupServer, InNav: true,
+		{id: "maintenance", label: T("Maintenance"), icon: "LifeBuoy", order: 30, meta: extend.PageMeta{
+			Route: "/maintenance", NavGroup: extend.NavGroupSystem, InNav: true,
 			Keywords: T("server maintenance"),
 		}},
 		{id: "backups", label: T("Backups & import"), order: 71, meta: extend.PageMeta{
@@ -253,7 +256,7 @@ func consoleCommands() []extend.Descriptor {
 			Route: "/maintenance/backups", Keywords: T("backup snapshot")}},
 		// Ask Ether suggestions (WS6): the label is the suggestion text.
 		{id: "ask.releases.why-pick", label: T("Why did this title pick this release?"), order: 110, meta: extend.CommandMeta{
-			AgentSuggestion: true, RoutePatterns: []string{"/quality", "/quality/*"}}},
+			AgentSuggestion: true, RoutePatterns: []string{"/releases", "/releases/*"}}},
 		{id: "ask.livetv.failing", label: T("Which channels are failing?"), order: 120, meta: extend.CommandMeta{
 			AgentSuggestion: true, RoutePatterns: []string{"/livetv", "/livetv/*"}}},
 		{id: "ask.sources.add-stremio", label: T("Add a plugin from Stremio"), order: 130, meta: extend.CommandMeta{

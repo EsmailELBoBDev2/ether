@@ -469,7 +469,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
                   : t("No release is acceptable for this profile.")}{" "}
                 <Link
                   className="text-primary underline"
-                  to={`/quality/history?key=${encodeURIComponent(key)}&title=${encodeURIComponent(name)}`}
+                  to={`/releases/history?key=${encodeURIComponent(key)}&title=${encodeURIComponent(name)}`}
                 >
                   {t("Past decisions")}
                 </Link>

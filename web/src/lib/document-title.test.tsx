@@ -52,7 +52,7 @@ describe("resolveRouteTitle", () => {
     expect(titleFor("/calendar/week")).toBe("Calendar · Week — Home");
     expect(titleFor("/metadata/episodes")).toBe("Metadata · Episode order — Home");
     expect(titleFor("/sources/statistics")).toBe("Sources · Statistics — Home");
-    expect(titleFor("/quality/rules")).toBe("Quality · Rules — Home");
+    expect(titleFor("/releases/rules")).toBe("Releases · Rules — Home");
     expect(titleFor("/cache")).toBe("Cache — Home");
     expect(titleFor("/cache/explorer")).toBe("Cache · Explorer — Home");
     expect(titleFor("/playback/devices/seen")).toBe(

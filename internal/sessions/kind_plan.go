@@ -14,7 +14,7 @@ import (
 // KindPlayback pipeline (spec §15.1). It mirrors the catalogue tail of Plan:
 // resolve version handle, reserve, gate, prepare, validate exact version,
 // decide, store.
-func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core.Viewer) (frontend.PlayPlan, error) {
+func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core.Viewer, clientCap clientCapPolicy) (frontend.PlayPlan, error) {
 	b.stampViewerTranscoding(v, &req.Caps)
 	in, err := b.deps.KindSource(ctx, v, req.Item)
 	if err != nil || in == nil {
@@ -214,15 +214,28 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		}
 		req.Intent.Options = selected
 	}
-	dec, err := b.decideTracks(ps, &req)
+	admitKind := func(ps *core.PlaySession, r *frontend.PlanRequest) (core.Decision, error) {
+		dec, err := b.decideTracks(ps, r)
+		if err != nil {
+			return dec, err
+		}
+		if r.Channel == "" && b.videoOff(r.Caps) && decisionEncodesVideo(dec, ps.Info) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{
+				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+				Cause:         core.ErrVideoTranscodingDisabled,
+			}
+		}
+		if r.Intent.AllowTranscoding != nil && !*r.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
+			return core.Decision{}, core.ErrNotAvailable
+		}
+		if (dec.Kind == core.DecisionDirectPlay && !r.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !r.Intent.Options.DirectStream) {
+			return core.Decision{}, core.ErrNotAvailable
+		}
+		return dec, nil
+	}
+	dec, originalChoice, err := b.admitWithClientCap(ps, &req, clientCap, admitKind)
 	if err != nil {
 		return frontend.PlayPlan{}, err
-	}
-	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, core.ErrNotAvailable
-	}
-	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	ps, pinned, err = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
 	if err != nil {
@@ -239,7 +252,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		b.mu.Unlock()
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned}
+	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, clientCap: clientCap}
 	stored = true
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
@@ -249,5 +262,5 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID, OriginalOverClientCap: originalChoice}, nil
 }

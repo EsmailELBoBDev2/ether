@@ -8,11 +8,23 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
 )
 
+// clientBitrateKbps converts Vela's client.maxBitrate (bits/s, total) to kbps.
+// Values <= 0 mean unlimited; small positive values clamp to 1 kbps rather than
+// truncating to unlimited.
+func clientBitrateKbps(bps int) int {
+	if bps <= 0 {
+		return 0
+	}
+	return max(1, bps/1000)
+}
+
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
 	audioCodecs := strings.Join(c.AudioCodecs, ",")
+	maxBitrate := max(c.MaxBitrate, 0)
+	maxHeight := max(c.MaxHeight, 0)
 	profile := caps.DeviceProfile{
-		MaxStreamingBitrate: c.MaxBitrate,
+		MaxStreamingBitrate: maxBitrate,
 		DirectPlayProfiles: []caps.DirectPlayProfile{
 			{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: audioCodecs},
 		},
@@ -54,7 +66,7 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 			dv = true
 		}
 	}
-	result, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: c.Device.ID, DeviceName: c.Device.Name, HDR10: hdr, DolbyVision: dv, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, SubtitleCodecs: c.SubtitleFormats, MaxHeight: c.MaxHeight, MaxBitrateKbps: c.MaxBitrate / 1000}, Profile: profile, UserAgent: r.UserAgent()})
+	result, err := i.host.Capabilities.Build(i.identityContext(r), frontend.CapabilityRequest{Viewer: v, Device: caps.DeviceInfo{Protocol: "vela", Product: "Vela", Platform: c.Device.Platform, Version: c.Device.AppVersion, ClientID: c.Device.ID, DeviceName: c.Device.Name, HDR10: hdr, DolbyVision: dv, VideoCodecs: c.VideoCodecs, AudioCodecs: c.AudioCodecs, Containers: c.Containers, SubtitleCodecs: c.SubtitleFormats, MaxHeight: maxHeight, MaxBitrateKbps: clientBitrateKbps(c.MaxBitrate)}, Profile: profile, UserAgent: r.UserAgent()})
 	// Preserve exact declarations, after owner rules have denied any ranges.
 	for _, format := range c.HDR {
 		if ((format == "hdr10" || format == "hlg") && result.Client.HDR10) || (format == "dv" && result.Client.DolbyVision) {

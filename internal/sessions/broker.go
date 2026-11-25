@@ -132,6 +132,16 @@ type brokerPlan struct {
 	external      bool
 	budgetCapKbps int
 	baseMaxHeight int
+	clientCap     clientCapPolicy
+}
+
+// clientCapPolicy tracks Vela's own streaming cap (client.maxBitrate, together
+// with maxWidth/maxHeight) alongside owner caps so only the client's cap can
+// be lifted for an explicit original choice or last-resort fallback.
+type clientCapPolicy struct {
+	clientKbps  int
+	ownerKbps   int
+	ownerHeight int
 }
 type brokerSession struct {
 	// queued is a prefetched next item (PlayIntent.Queued) not yet observed
@@ -175,6 +185,7 @@ type brokerSession struct {
 	multiviewGroup        string
 	multiviewTile         int
 	baseMaxHeight         int
+	clientCap             clientCapPolicy
 	knownVideoHeight      int
 	sequence              uint64
 	historyEpoch          int64
@@ -536,11 +547,42 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if req.Intent.DeclaredCaps && req.Item != 0 {
 		b.rememberPlayCaps(v, req.Protocol, req.Device, req.Item, req.Caps)
 	}
+	// clientCap tracks Vela's own streaming cap (client.maxBitrate, together
+	// with maxWidth/maxHeight) alongside every owner cap so only the client's
+	// streaming cap can be lifted for an explicit original choice or fallback.
+	var clientCap clientCapPolicy
+	if req.Protocol == "vela" {
+		if req.Item != 0 {
+			clientCap.clientKbps = req.Intent.Options.MaxBitrateKbps
+			if clientCap.clientKbps > 0 {
+				if c := req.Caps.MaxBitrateKbps; c > 0 && c < clientCap.clientKbps {
+					clientCap.ownerKbps = c
+				}
+				if req.Caps.MaxHeight > 0 && req.Caps.MaxHeightSource != "" {
+					clientCap.ownerHeight = req.Caps.MaxHeight
+				}
+			}
+		}
+		// Never let an owner quality rule with a higher ceiling raise Caps
+		// above Vela's declared maxHeight or maxBitrate (including live starts,
+		// which read Caps directly).
+		if h := req.Intent.Options.MaxHeight; h > 0 && (req.Caps.MaxHeight == 0 || h < req.Caps.MaxHeight) {
+			req.Caps.MaxHeight = h
+		}
+		if k := req.Intent.Options.MaxBitrateKbps; k > 0 && (req.Caps.MaxBitrateKbps == 0 || k < req.Caps.MaxBitrateKbps) {
+			req.Caps.MaxBitrateKbps = k
+		}
+	}
 	req.Caps = b.playCaps(v, req.Protocol, req.Device, req.Caps)
 	if b.deps.BitrateLimit != nil {
-		if limit := b.deps.BitrateLimit(v); limit > 0 && (req.Intent.Options.MaxBitrateKbps == 0 || limit < req.Intent.Options.MaxBitrateKbps) {
+		limit := b.deps.BitrateLimit(v)
+		if limit > 0 && (req.Intent.Options.MaxBitrateKbps == 0 || limit < req.Intent.Options.MaxBitrateKbps) {
 			req.Intent.Options.MaxBitrateKbps = limit
 		}
+		clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, limit)
+	}
+	if req.Caps.Remote && b.deps.RemoteBitrateLimit != nil {
+		clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, b.deps.RemoteBitrateLimit())
 	}
 	budgetCapKbps := 0
 	if req.Caps.Remote && !req.Intent.Estimate && b.deps.RemoteUploadCap != nil {
@@ -552,6 +594,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, req.Intent.ClientSessionID, req.Caps.Remote, allowTC, existing, 0); fromBudget && capKbps > 0 {
 			budgetCapKbps = capKbps
+			clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, capKbps)
 			if req.Caps.MaxBitrateKbps == 0 || capKbps < req.Caps.MaxBitrateKbps {
 				req.Caps.MaxBitrateKbps = capKbps
 			}
@@ -576,7 +619,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		if req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		return b.planKind(core.WithLiveApp(ctx, string(req.Protocol)), req, v)
+		return b.planKind(core.WithLiveApp(ctx, string(req.Protocol)), req, v, clientCap)
 	}
 	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
@@ -854,39 +897,10 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		req.Intent.Options = selected
 	}
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideTracks(ps, &req)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &req, clientCap, b.admitPlanDecision)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
-	}
-	if req.Channel == "" && b.videoOff(req.Caps) && decisionEncodesVideo(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
-			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-			Cause:         core.ErrVideoTranscodingDisabled,
-		}
-	}
-	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
-	}
-	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
-	}
-	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		hlsAllowed, _ := b.hlsPlanOutput(ps, req, dec)
-		httpAllowed := false
-		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
-			httpAllowed, _ = b.httpPlanOutput(ps, req, dec)
-		}
-		if !hlsAllowed && !httpAllowed {
-			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
-			if req.Channel == "" && b.videoOff(req.Caps) {
-				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
-					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
-					outErr.Cause = core.ErrVideoTranscodingDisabled
-				}
-			}
-			return frontend.PlayPlan{}, outErr
-		}
 	}
 	ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
 	if pinErr != nil {
@@ -913,7 +927,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if detail != nil {
 		exactRelease = detail.release
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps}
+	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
 	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps != nil && ps.ID != "" {
 		constrained := ps.Info.BitrateKbps <= 0 || ps.Info.BitrateKbps > budgetCapKbps || dec.Kind == core.DecisionTranscode
 		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
@@ -927,7 +941,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if ps.Resolution != nil {
 		relID = ps.Resolution.Release.ID
 	}
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, SelectedSubtitle: sideSubtitleStream(ps, req, dec), DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoOff(req.Caps), HLS: hls, HLSContainer: hlsContainer, HTTP: httpOK, HTTPContainer: httpContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID, OriginalOverClientCap: originalChoice}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()
@@ -1109,7 +1123,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	if deliverySession == "" {
 		deliverySession = id
 	}
-	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, sourcePinned: p.pinned, sourceETag: p.etag, deliverySession: deliverySession}
+	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
 	barrier, barrierErr := b.admitSessionBarrier(ctx, v.ID, string(req.Protocol), p.request.Device.ID, p.request.Item, ps.ID, id)
 	if barrierErr != nil {
 		if errors.Is(barrierErr, errTransferCommitUnknown) {
@@ -2071,4 +2085,91 @@ func (b *Broker) Close(ctx context.Context) {
 	if firstClose && b.cluster != nil {
 		b.cluster.close()
 	}
+}
+
+// admitPlanDecision decides delivery for a resolved source and applies the
+// request's admission rules (transcoding policy, delivery modes, and Vela's
+// HLS/HTTP output check).
+func (b *Broker) admitPlanDecision(ps *core.PlaySession, req *frontend.PlanRequest) (core.Decision, error) {
+	dec, err := b.decideTracks(ps, req)
+	if err != nil {
+		return dec, err
+	}
+	if req.Channel == "" && b.videoOff(req.Caps) && decisionEncodesVideo(dec, ps.Info) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
+		}
+	}
+	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
+	}
+	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
+		return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
+	}
+	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
+		hlsAllowed, _ := b.hlsPlanOutput(ps, *req, dec)
+		httpAllowed := false
+		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+			httpAllowed, _ = b.httpPlanOutput(ps, *req, dec)
+		}
+		if !hlsAllowed && !httpAllowed {
+			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, *req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
+			if req.Channel == "" && b.videoOff(req.Caps) {
+				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
+					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
+					outErr.Cause = core.ErrVideoTranscodingDisabled
+				}
+			}
+			return core.Decision{}, outErr
+		}
+	}
+	return dec, nil
+}
+
+// admitWithClientCap runs admit under the request's caps. When Vela supplied a
+// client streaming cap (client.maxBitrate, together with maxWidth/maxHeight):
+//   - If nothing within the cap can play (or only an unconverted copy over the
+//     cap), it falls back to the original with only the client's cap lifted
+//     (owner bitrate and height caps still apply).
+//   - If the client's cap converted an otherwise direct-playable original, it
+//     returns that original decision as an unselected explicit choice without
+//     starting any work.
+func (b *Broker) admitWithClientCap(ps *core.PlaySession, req *frontend.PlanRequest, cap clientCapPolicy, admit func(*core.PlaySession, *frontend.PlanRequest) (core.Decision, error)) (core.Decision, *core.Decision, error) {
+	dec, err := admit(ps, req)
+	if cap.clientKbps > 0 && (err != nil || (dec.Kind != core.DecisionDirectPlay && !decisionEncodes(dec, ps.Info))) {
+		lifted := clientCapLifted(*req, cap.ownerKbps, cap.ownerHeight)
+		if liftedDec, liftedErr := admit(ps, &lifted); liftedErr == nil && !decisionEncodes(liftedDec, ps.Info) && (err != nil || liftedDec.Kind == core.DecisionDirectPlay) {
+			dec, err, *req = liftedDec, nil, lifted
+		}
+	}
+	if err != nil {
+		return core.Decision{}, nil, err
+	}
+	var originalChoice *core.Decision
+	if cap.clientKbps > 0 && dec.Kind != core.DecisionDirectPlay {
+		if d, e := b.decideProfile(ps, clientCapLifted(*req, cap.ownerKbps, cap.ownerHeight)); e == nil && d.Kind == core.DecisionDirectPlay {
+			originalChoice = &d
+		}
+	}
+	return dec, originalChoice, nil
+}
+
+// clientCapLifted is req without the client's own streaming cap (bitrate and
+// width/height box); ownerKbps (viewer limit, away cap, upload budget) and
+// ownerHeight (quality rule, app compatibility override) stay.
+func clientCapLifted(req frontend.PlanRequest, ownerKbps, ownerHeight int) frontend.PlanRequest {
+	req.Intent.Options.MaxBitrateKbps = ownerKbps
+	req.Caps.MaxBitrateKbps = ownerKbps
+	req.Intent.Options.MaxWidth = 0
+	req.Intent.Options.MaxHeight = ownerHeight
+	req.Caps.MaxHeight = ownerHeight
+	return req
+}
+
+func minPositiveKbps(a, b int) int {
+	if a <= 0 || (b > 0 && b < a) {
+		return b
+	}
+	return a
 }

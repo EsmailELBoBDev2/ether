@@ -1244,6 +1244,12 @@ type PlayPlan struct {
 	// to correlate the admitted source with offered VersionSlots (never
 	// exposed directly on external APIs).
 	ReleaseID string
+	// OriginalOverClientCap is the direct-play decision for this source that
+	// only the client's own streaming cap (Vela client.maxBitrate) ruled out;
+	// owner caps still admit it. Frontends offer it as an explicit, unselected
+	// choice. Nil when the original is selected, within the cap, or not
+	// playable for another reason.
+	OriginalOverClientCap *core.Decision
 }
 
 // SubtitleStream reports the subtitle stream selected for this play plan,

@@ -198,7 +198,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	options := frontend.DecideOptions{MaxWidth: b.Client.MaxWidth, MaxHeight: b.Client.MaxHeight, MaxBitrateKbps: b.Client.MaxBitrate / 1000, DirectPlay: true, DirectStream: b.Client.HLS || b.Client.MSE, AudioStream: -1, SubtitleStream: -1}
+	options := frontend.DecideOptions{MaxWidth: max(b.Client.MaxWidth, 0), MaxHeight: max(b.Client.MaxHeight, 0), MaxBitrateKbps: clientBitrateKbps(b.Client.MaxBitrate), DirectPlay: true, DirectStream: b.Client.HLS || b.Client.MSE, AudioStream: -1, SubtitleStream: -1}
 	audioSet, subtitleSet := false, false
 	if b.AudioTrackID != "" {
 		n, err := strconv.Atoi(b.AudioTrackID)
@@ -432,6 +432,11 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			fallbackKind = "remux"
 		}
 		p["paths"] = []object{path, {"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}}}
+	}
+	if b.TitleID != "" && !original {
+		if choice := originalChoicePath(plan, audioOnly, b.Client); choice != nil {
+			p["paths"] = append(p["paths"].([]object), choice)
+		}
 	}
 	dev := requestDevice(r)
 	mvGroup := ""
@@ -884,9 +889,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		}
 		paths := s.plan["paths"].([]object)
 		path := selectedPlaybackPath(s.plan, paths)
-		if path["original"] == true {
+		if path["original"] == true || path["id"] == "original" {
+			// Track changes are HLS: leave the original (a fallback or the
+			// client-cap choice) intact and move to its converted path.
 			for _, candidate := range paths {
-				if candidate["id"] == "fallback-hls" {
+				if candidate["id"] == "fallback-hls" || (candidate["id"] == "primary" && candidate["transport"] == "hls") {
 					delete(path, "url")
 					path["readiness"] = "on-demand"
 					path = candidate
@@ -1053,6 +1060,12 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 				fallbackKind = "remux"
 			}
 			paths = append(paths, object{"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}})
+		}
+		if !original {
+			audioOnly := plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
+			if choice := originalChoicePath(plan, audioOnly, s.client); choice != nil {
+				paths = append(paths, choice)
+			}
 		}
 		_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
 		canBurn := trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (s.client.HLS || s.client.MSE)
@@ -1538,6 +1551,47 @@ func offeredTrack(plan object, key, id string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// originalChoicePath is the original file the client's own streaming cap
+// (client.maxBitrate, together with maxWidth/maxHeight) kept from being
+// selected. It is offered on demand, as an explicit choice; nothing starts
+// until the client switches to it.
+func originalChoicePath(plan frontend.PlayPlan, audioOnly bool, c client) object {
+	d := plan.OriginalOverClientCap
+	if d == nil || d.Kind != frontend.DecisionDirectPlay {
+		return nil
+	}
+	mime := sourceMIME(plan.Media.Container)
+	if audioOnly {
+		mime = audioSourceMIME(plan.Media.Container, d.AudioCodec)
+	}
+	path := object{"id": "original", "kind": "direct", "transport": "file", "mimeType": mime, "readiness": "on-demand", "timelineOriginSeconds": float64(0), "qualities": []object{}, "boundaries": []object{}, "range": true, "exceedsClientCap": true, "decisionReason": d.Reason}
+	if d.Reason == "original_runtime" {
+		path["original"] = true
+		if !audioOnly {
+			if facts := originalVideo(plan.Media); facts != nil {
+				path["originalVideo"] = facts
+			}
+		}
+	}
+	if plan.Media.Size > 0 {
+		path["byteLength"] = plan.Media.Size
+	}
+	sourceKbps := plan.Media.BitrateKbps
+	if sourceKbps <= 0 && plan.Media.Size > 0 && plan.Media.Duration > 0 {
+		sourceKbps = int(float64(plan.Media.Size*8) / plan.Media.Duration.Seconds() / 1000)
+	}
+	if sourceKbps > 0 {
+		path["bitrate"] = sourceKbps * 1000
+		if capKbps := clientBitrateKbps(c.MaxBitrate); capKbps > 0 && sourceKbps > capKbps {
+			path["exceedsMaxBitrate"] = true
+		}
+	}
+	if plan.ETag != "" {
+		path["sourceId"], path["timelineId"] = plan.ETag, plan.ETag
+	}
+	return path
 }
 
 func selectedPlaybackPath(plan object, paths []object) object {

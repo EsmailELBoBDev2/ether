@@ -275,9 +275,9 @@ func (i *instance) libraryLivePlay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	options := frontend.DecideOptions{
-		MaxWidth:       b.Client.MaxWidth,
-		MaxHeight:      b.Client.MaxHeight,
-		MaxBitrateKbps: b.Client.MaxBitrate / 1000,
+		MaxWidth:       max(b.Client.MaxWidth, 0),
+		MaxHeight:      max(b.Client.MaxHeight, 0),
+		MaxBitrateKbps: clientBitrateKbps(b.Client.MaxBitrate),
 		DirectPlay:     true,
 		DirectStream:   b.Client.HLS || b.Client.MSE,
 		AudioStream:    -1,

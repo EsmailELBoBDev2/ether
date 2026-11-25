@@ -47,12 +47,11 @@ func addArchiveFlags(wire object, days int, start, end, now time.Time) {
 func (i *instance) catchUpFeature(r *http.Request, v *frontend.Viewer) object {
 	days, minutes := 0, 60
 	if i.host.HostConfig != nil {
-		cfg := i.host.HostConfig().LiveTV
-		if setting, ok := any(cfg).(interface{ EffectiveTimeshiftMinutes() int }); ok {
-			minutes = setting.EffectiveTimeshiftMinutes()
-		}
+		minutes = i.host.HostConfig().LiveTV.EffectiveTimeshiftMinutes()
 	}
-	if v != nil && i.host.LiveTV != nil && i.host.LiveTV.Enabled() {
+	if reader, ok := i.host.LiveTV.(frontend.LiveCatchUpCapability); ok && v != nil {
+		days, _ = reader.LiveCatchUpMaxDays(r.Context(), v)
+	} else if v != nil && i.host.LiveTV != nil {
 		channels, err := i.host.LiveTV.Channels(r.Context(), v)
 		if err == nil {
 			for _, ch := range channels {
@@ -277,6 +276,31 @@ func (i *instance) playbackKeepAlive(ctx context.Context, access frontend.Sessio
 	return i.host.Sessions.KeepAlive(ctx, access, id)
 }
 
+func (i *instance) seekAfterStartOver(w http.ResponseWriter, r *http.Request, s *playSession, at time.Duration) bool {
+	if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), s.id, copy) }) {
+		return false
+	}
+	start, edge, ok := liveWindowBounds(s.plan["live"])
+	if !ok {
+		if at < 0 {
+			s.seek++
+			return true
+		}
+		i.unavailable(w, r)
+		return false
+	}
+	if at < 0 {
+		at = durationFromSeconds(edge)
+	} else if at.Seconds() < start || at.Seconds() > edge {
+		send(w, 409, object{"error": object{"class": "conflict", "code": "timeshift_outside_window", "message": "Position is outside the live window.", "retry": object{"allowed": false}, "windowStartSeconds": start, "liveEdgeSeconds": edge}})
+		return false
+	}
+	s.position = at
+	s.plan["live"].(object)["behindLiveSeconds"] = max(0, edge-at.Seconds())
+	s.seek++
+	return true
+}
+
 func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, s *playSession, kind string, position *float64) {
 	host := i.host.LiveTV.(frontend.LiveCatchUp)
 	a := s.archive
@@ -314,9 +338,15 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			return
 		}
 		at, ok := seconds(*position)
-		if !ok || a.info.ChannelID == "" {
+		if !ok {
 			problem(w, 400, "request", "invalid_position")
 			return
+		}
+		if a.info.ChannelID == "" {
+			if !i.seekAfterStartOver(w, r, s, at) {
+				return
+			}
+			break
 		}
 		var next frontend.CatchUpInfo
 		if !s.port(w, func() { next, err = host.SeekCatchUp(r.Context(), v, id, at) }) {
@@ -339,6 +369,12 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			refreshStartOver(s, i.catchUpNow())
 		}
 	case "goLive":
+		if a.info.ChannelID == "" {
+			if !i.seekAfterStartOver(w, r, s, -1) {
+				return
+			}
+			break
+		}
 		if !a.info.StartOver {
 			problem(w, 400, "request", "invalid_command")
 			return
@@ -363,9 +399,8 @@ func (i *instance) catchUpCommand(w http.ResponseWriter, r *http.Request, v *fro
 			selected["url"] = archiveMediaURL(s.id, a.mediaKey, "")
 			selected["timelineOriginSeconds"] = float64(0)
 			s.source++
-			s.seek++
 			s.position = 0
-			if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), s.id, copy) }) {
+			if !i.seekAfterStartOver(w, r, s, -1) {
 				return
 			}
 		}

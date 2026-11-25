@@ -129,6 +129,17 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 	if err != nil {
 		return CatchUpInfo{}, err
 	}
+	if req.ProgrammeID == "" && (u.MaxContentRating != "" || policy.MaxRating != "") {
+		programmes, err := s.programmes(ctx, c, info.Start, info.End)
+		if err != nil {
+			return CatchUpInfo{}, err
+		}
+		for _, p := range programmes {
+			if !s.allowedProgramme(ctx, u, c, &p) {
+				return CatchUpInfo{}, core.ErrUnauthorized
+			}
+		}
+	}
 	c.Transcode = c.Transcode || policy.Transcode
 	info.ID = liveSessionID()
 	if caps.Remote && s.o.RemoteUploadCap != nil {
@@ -156,7 +167,7 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 	}
 	s.nextSubscription++
 	ss := &session{
-		archiveInput: true, ephemeral: true, streamGrant: randomID(), user: *u, caps: caps, last: now,
+		tuneStartedAt: now, archiveInput: true, ephemeral: true, streamGrant: randomID(), user: *u, caps: caps, last: now,
 		info: SessionInfo{ID: info.ID, SubscriptionID: s.nextSubscription, ActivityID: liveSessionID(),
 			ClientSessionID: clientSessionID, UserID: u.ID, Channel: c, StartedAt: now},
 		view: core.PlaySession{ID: info.ID, PlaybackGroup: info.ID, UserID: u.ID, Username: u.Username,
@@ -218,10 +229,6 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 		return CatchUpInfo{}, core.ErrNotFound
 	}
 	ss.catchUp, ss.ready = opened, true
-	ss.view.Decision = opened.info.Decision.Kind
-	ss.view.DecisionVideoCopy = opened.info.Decision.VideoCopy
-	ss.view.DecisionAudioCopy = opened.info.Decision.AudioCopy
-	ss.view.Info.Duration = info.End.Sub(info.Start)
 	ss.mu.Unlock()
 	started = true
 	if !handover {
@@ -478,8 +485,8 @@ func (s *Service) extendStartOver(ctx context.Context, ss *session, archive *cat
 		return archive
 	}
 	now := s.clockNow()
-	end := minTime(now.Truncate(time.Minute), archive.info.ProgrammeEnd)
-	if !now.Before(archive.info.ProgrammeEnd.Add(time.Minute)) {
+	end := minTime(now.Truncate(10*time.Second), archive.info.ProgrammeEnd)
+	if !now.Before(archive.info.ProgrammeEnd) {
 		end = archive.info.ProgrammeEnd
 	}
 	complete, ok := archive.hls.(interface{ ArchiveRangeComplete() bool })

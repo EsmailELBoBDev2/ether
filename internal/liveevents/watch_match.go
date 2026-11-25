@@ -1685,10 +1685,10 @@ func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, no
 		if tier == watchTierGuide && cand.ProgrammeID != "" {
 			catchUp, startOver := frontend.ArchiveFlags(cand.ArchiveDays, cand.Start, cand.End, now)
 			if catchUp || !cand.Start.After(now) && cand.End.After(now) {
-				st.target.Programme = &core.LiveEventWatchProgramme{ID: cand.ProgrammeID, Start: cand.Start.UTC(), End: cand.End.UTC(), CatchUp: catchUp, StartOver: startOver}
+				st.target.Programme = &core.LiveEventWatchProgramme{ID: cand.ProgrammeID, Start: cand.Start.UTC(), End: cand.End.UTC(), CatchUp: catchUp, StartOver: startOver, ArchiveDays: cand.ArchiveDays}
 			}
 		}
-		if cand.Unhealthy {
+		if cand.Unhealthy && (st.target.Programme == nil || !st.target.Programme.CatchUp) {
 			st.target.Available = boolPtr(false)
 		}
 		prev, exists := bestByChannel[cand.ChannelID]

@@ -1392,8 +1392,8 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 						t.manifest = bytes.Clone(cm.body)
 						g.setManifest(cm)
 						t.header = nil
-						close(t.ready)
 						t.close(nil)
+						close(t.ready)
 						return
 					}
 				}
@@ -1419,8 +1419,8 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 			g.setManifest(cm)
 		}
 		t.header = nil
-		close(t.ready)
 		t.close(nil)
+		close(t.ready)
 		return
 	}
 	// Three packets (or two sync bytes when HTTP/2 delivers one TS packet in

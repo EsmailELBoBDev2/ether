@@ -174,11 +174,12 @@ type LiveEventMatchHints struct {
 // Available is omitted when playable and set to false when the only matching
 // channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchProgramme struct {
-	ID        string    `json:"id"`
-	Start     time.Time `json:"start"`
-	End       time.Time `json:"end"`
-	CatchUp   bool      `json:"catchUp,omitempty"`
-	StartOver bool      `json:"startOver,omitempty"`
+	ArchiveDays int       `json:"-"`
+	ID          string    `json:"id"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	CatchUp     bool      `json:"catchUp,omitempty"`
+	StartOver   bool      `json:"startOver,omitempty"`
 }
 
 type LiveEventWatchTarget struct {

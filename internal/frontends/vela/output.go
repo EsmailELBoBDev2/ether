@@ -96,6 +96,7 @@ func (i *instance) refreshLiveWindow(ctx context.Context, id string, s *playSess
 		return false
 	}
 	before, _ := json.Marshal(live)
+	previousEdge := live["liveEdgeSeconds"]
 	delete(live, "anchor")
 	delete(live, "windowStartSeconds")
 	delete(live, "liveEdgeSeconds")
@@ -110,6 +111,20 @@ func (i *instance) refreshLiveWindow(ctx context.Context, id string, s *playSess
 		live["anchor"] = window.Anchor
 		live["windowStartSeconds"] = window.Anchor.WindowStartSeconds
 		live["liveEdgeSeconds"] = window.LiveEdgeSeconds
+		if s.archive != nil {
+			live["behindLiveSeconds"] = max(0, window.LiveEdgeSeconds-s.position.Seconds())
+			if previousEdge != window.LiveEdgeSeconds {
+				live["edgeAt"] = i.catchUpNow()
+			}
+			delete(live, "timeshift")
+			if reader, ok := i.host.LiveTV.(interface {
+				LiveTimeshiftMinutes(context.Context, string) int
+			}); ok {
+				if minutes := reader.LiveTimeshiftMinutes(ctx, id); minutes > 0 {
+					live["timeshift"] = object{"maxMinutes": minutes}
+				}
+			}
+		}
 	}
 	after, _ := json.Marshal(live)
 	return string(before) != string(after)

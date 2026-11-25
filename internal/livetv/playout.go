@@ -276,6 +276,12 @@ func (s *Service) observeSession(p *core.PlaySession, ended bool, problem string
 
 func (s *Service) sessionSnapshotLocked(ss *session, now time.Time) core.PlaySession {
 	p := ss.view
+	if archive := ss.catchUp; archive != nil {
+		p.Decision = archive.info.Decision.Kind
+		p.DecisionVideoCopy = archive.info.Decision.VideoCopy
+		p.DecisionAudioCopy = archive.info.Decision.AudioCopy
+		p.Info.Duration = archive.info.End.Sub(archive.info.Start)
+	}
 	if p.LiveChannel != nil {
 		ch := *p.LiveChannel
 		p.LiveChannel = &ch
@@ -331,7 +337,6 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 	ss.owned = nil
 	dash := ss.dash
 	archive := ss.catchUp
-	ss.catchUp = nil
 	httpStream := ss.http
 	ss.dash = nil
 	ss.http = nil
@@ -347,6 +352,7 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 		end = ss.last
 	}
 	snap := s.sessionSnapshotLocked(ss, end)
+	ss.catchUp = nil
 	snap.LastActive = end
 	ss.mu.Unlock()
 	if broadcast != nil {

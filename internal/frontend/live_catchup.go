@@ -53,6 +53,11 @@ type LiveCatchUp interface {
 	ServeCatchUpTS(http.ResponseWriter, *http.Request, string, *User)
 }
 
+// LiveCatchUpCapability reads the authorized archive window without building channel wire metadata.
+type LiveCatchUpCapability interface {
+	LiveCatchUpMaxDays(context.Context, *Viewer) (int, error)
+}
+
 func ArchiveFlags(days int, start, end, now time.Time) (catchUp, startOver bool) {
 	if days <= 0 || !end.After(start) || start.After(now) || start.Before(now.Add(-time.Duration(min(days, 30))*24*time.Hour)) {
 		return false, false

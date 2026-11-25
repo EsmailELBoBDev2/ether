@@ -2,6 +2,7 @@ package livetv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -42,11 +43,23 @@ func TestCatchUpSeekAndProviderRefusal(t *testing.T) {
 	}))
 	defer up.Close()
 	tc := &archiveTestTranscoder{}
-	s := testService(t, Options{Now: func() time.Time { return now }, Transcoder: tc})
-	c, err := s.SaveChannel(t.Context(), Channel{ID: "archive", Kind: "iptv", Enabled: true, Name: "Archive fixture",
-		StreamURL: up.URL + "/live.ts", Archive: &ChannelArchive{Mode: "default", Days: 2, Source: up.URL + "/archive.ts?start={utc}"},
+	s := testService(t, Options{Sealer: upgradedSealer(t), Now: func() time.Time { return now }, Transcoder: tc})
+	c, err := s.SaveChannel(t.Context(), Channel{ID: "archive", Number: "1", Kind: "iptv", Enabled: true, Name: "Archive fixture",
+		StreamURL: up.URL + "/live.ts",
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The owner channel API preserves the provider-owned archive record.
+	c.Archive = &ChannelArchive{Mode: "default", Days: 2, Source: up.URL + "/archive.ts?start={utc}"}
+	if err := s.sealArchive(&c, Channel{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.o.DB.ExecContext(t.Context(), "UPDATE livetv_channels SET data=? WHERE id=?", data, c.ID); err != nil {
 		t.Fatal(err)
 	}
 	user := &core.User{ID: 1, IsOwner: true}

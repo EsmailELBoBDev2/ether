@@ -743,3 +743,29 @@ func (s surfaceLiveTV) ServeCatchUpTS(w http.ResponseWriter, r *http.Request, id
 }
 
 var _ frontend.LiveCatchUp = surfaceLiveTV{}
+
+func (s surfaceLiveTV) LiveCatchUpMaxDays(ctx context.Context, v *frontend.Viewer) (int, error) {
+	if !s.Enabled() {
+		return 0, nil
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return 0, err
+	}
+	channels, err := s.app.livetv.AllowedChannels(s.withApp(ctx), viewer)
+	if err != nil {
+		return 0, err
+	}
+	days := 0
+	for _, ch := range channels {
+		days = max(days, ch.ArchiveDays())
+	}
+	return days, nil
+}
+
+func (s surfaceLiveTV) LiveTimeshiftMinutes(ctx context.Context, id string) int {
+	if !s.Enabled() {
+		return 0
+	}
+	return s.app.livetv.LiveTimeshiftMinutes(ctx, id)
+}

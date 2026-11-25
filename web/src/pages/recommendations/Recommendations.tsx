@@ -72,6 +72,7 @@ import {
   normalizePins,
   loadDraft,
   moveRow,
+  hasCollectionCardSelection,
   peekDraft,
   removeRow,
   replaceRow,
@@ -664,6 +665,7 @@ export default function Recommendations() {
     : undefined;
   const pendingComplete = Boolean(
     pending &&
+    hasCollectionCardSelection(pending.row) &&
     !(pendingSource?.params ?? []).some((p) => p.required && !pending.row.source.params?.[p.key]),
   );
   const pendingShown = pending && pendingComplete && !pending.onPage ? pending : null;
@@ -878,15 +880,25 @@ export default function Recommendations() {
     const index = display.findIndex((d) => d.position === drawer.at);
     const beforeId = index < 0 ? null : rowIdAtOrAfter(index);
     const keep = pending?.row;
+    const collectionCards = source.kind === "collection-cards";
     const row = rowForSource(source, params, {
       page: draft,
       position: drawer.at,
       editingFor,
-      libraries: keep?.scope.libraries,
-      perLibrary: keep?.scope.perLibrary ?? (source.split && !pageLibrary ? true : undefined),
+      libraries: collectionCards ? undefined : keep?.scope.libraries,
+      perLibrary: collectionCards
+        ? undefined
+        : (keep?.scope.perLibrary ?? (source.split && !pageLibrary ? true : undefined)),
     });
     setPending({
-      row: keep ? { ...row, id: keep.id, look: keep.look, placement: keep.placement } : row,
+      row: keep
+        ? {
+            ...row,
+            id: keep.id,
+            look: collectionCards && keep.source.kind !== source.kind ? {} : keep.look,
+            placement: keep.placement,
+          }
+        : row,
       beforeId,
       at: drawer.at,
     });

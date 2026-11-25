@@ -290,7 +290,7 @@ func (e *Engine) PreviewPageRow(ctx context.Context, viewer *core.User, key core
 	for _, r := range pp.Rows {
 		if r.RowID == row.ID {
 			out.Rows = append(out.Rows, r)
-			out.Total += len(r.Items)
+			out.Total += len(r.Items) + len(r.Hub.Collections)
 		}
 	}
 	return out, nil

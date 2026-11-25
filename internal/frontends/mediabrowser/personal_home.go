@@ -426,7 +426,7 @@ func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend
 		if row.ID == "" || seenPre[row.ID] || nowAvailableExperienceRow(row) || !personalShelfCompatible(row) || !row.Layout.Always {
 			continue
 		}
-		if len(personalTitles(row)) == 0 {
+		if len(personalTitles(row)) == 0 && personalCollectionCount(row) == 0 {
 			continue
 		}
 		seenPre[row.ID] = true
@@ -447,7 +447,8 @@ func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend
 			continue
 		}
 		titles := personalTitles(row)
-		if len(titles) == 0 {
+		collectionCount := personalCollectionCount(row)
+		if len(titles) == 0 && collectionCount == 0 {
 			continue
 		}
 		seen[row.ID] = true
@@ -461,6 +462,12 @@ func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend
 			continue
 		}
 		shelf := personalShelf{number: number, wireID: wire, name: personalLibraryName(row), kind: personalCollectionType(titles), count: len(titles), placement: placement, viewID: viewID, row: row, titles: titles}
+		if collectionCount > 0 {
+			shelf.count = collectionCount
+			if row.Layout.Present.Card == "landscape" {
+				shelf.kind = "mixed"
+			}
+		}
 		if available {
 			copy := shelf
 			pinned = &copy
@@ -494,6 +501,16 @@ func personalShelfCompatible(row frontend.Row) bool {
 		return false
 	}
 	return row.Layout.Present.Surface == nil
+}
+
+func personalCollectionCount(row frontend.Row) int {
+	count := 0
+	for _, entry := range row.Entries {
+		if entry.Kind == frontend.RowEntryCollection && entry.Collection != nil {
+			count++
+		}
+	}
+	return count
 }
 
 func personalTitles(row frontend.Row) []frontend.Title {
@@ -986,6 +1003,10 @@ func (i *instance) writePersonalItems(w http.ResponseWriter, r *http.Request, v 
 		http.Error(w, "Invalid navigation anchor", http.StatusBadRequest)
 		return
 	}
+	if personalCollectionCount(shelf.row) > 0 {
+		i.writePersonalCollections(w, r, shelf, q, false)
+		return
+	}
 	page, total, err := i.personalTitlePage(r, v, shelf, q, false)
 	if err != nil {
 		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
@@ -1020,6 +1041,14 @@ func (i *instance) writePersonalActivity(w http.ResponseWriter, r *http.Request,
 				q.Types = []frontend.MediaType{"movie", "episode"}
 			}
 		}
+	}
+	if personalCollectionCount(shelf.row) > 0 {
+		if latest {
+			i.writePersonalCollections(w, r, shelf, q, true)
+		} else {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, offset))
+		}
+		return
 	}
 	page, total, err := i.personalTitlePage(r, v, shelf, q, latest)
 	if err != nil {

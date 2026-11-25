@@ -803,7 +803,7 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	}
 	colByID := map[string]object{}
 	if len(cols) > 0 {
-		convertedCols, err := i.collectionsWire(r, v, token, cols)
+		convertedCols, err := i.collectionsWire(r.WithContext(frontend.WithCollectionCardArtwork(r.Context())), v, token, cols)
 		if err != nil {
 			return nil, err
 		}

@@ -197,7 +197,23 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, FavoriteShowsFor: a.favorites.HasTitles, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error) {
-			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
+			exclusions := newLibraryPageExclusionsFor(a, nil)
+			cardFilter := collections.WithCollectionCardFilter(func(ctx context.Context, u *core.User, typ core.MediaType) (core.Filter, bool, error) {
+				if !u.IsOwner && len(u.AllowedLibraries) != 0 {
+					allowed := false
+					for id, sectionType := range librarySections(ctx) {
+						if sectionType == typ && u.AllowsLibrary(core.LibraryID(id)) {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						return core.Filter{}, false, nil
+					}
+				}
+				return experience.CollectionCardFilter(u, exclusions(ctx, u, typ), typ)
+			})
+			opts := append(a.collectionOptions(cfg), cardFilter, collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))
 			var err error
 			a.collections, err = collections.New(a.db, a.catalog, log.With("component", "collections"), opts...)
 			if err != nil {

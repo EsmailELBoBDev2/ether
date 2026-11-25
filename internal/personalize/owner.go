@@ -56,6 +56,9 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		limit = 12
 	}
 	if section == "" {
+		for _, hub := range e.CollectionCardHubs(wctx, user, hc, limit) {
+			p.Rows = append(p.Rows, core.HomeRow{HubID: hub.ID, Title: hub.Title, Kind: SourceCollectionCards, Source: core.RowSourceOwner, Hub: hub})
+		}
 		// The front end puts Continue Watching first when the engine did
 		// not place it, and appends Recent Playlists.
 		hasCW := false

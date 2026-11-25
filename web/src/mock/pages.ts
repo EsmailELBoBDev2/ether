@@ -3,6 +3,7 @@
 // Curated and Personalized arrangement, one-row-per-library fan-out (≤6),
 // audience, devices, schedules, viewer variants and a kid viewer with an age
 // limit, so every designer screen renders without a server.
+import { t } from "../i18n";
 import type { TitleCard } from "../lib/contract";
 import type {
   PageDoc,
@@ -282,6 +283,19 @@ function builtinSources(): Omit<PageSource, "available" | "used" | "libraries">[
       look: {},
     },
     {
+      kind: "collection-cards",
+      title: t("Collections"),
+      description: t("Show collections as clickable cards."),
+      group: "collections",
+      personal: false,
+      homeOnly: true,
+      params: [
+        { key: "collections", label: t("Collections"), type: "collectionList", max: 50 },
+        { key: "match", label: t("Collection name starts with"), type: "text", max: 100 },
+      ],
+      look: { card: "poster" },
+    },
+    {
       kind: "surface:sports:tonight",
       title: "Tonight",
       description: "Live and upcoming games",
@@ -559,14 +573,18 @@ export function createPagesMock(deps: Deps) {
       const refs =
         s.kind === "collection"
           ? deps.collections().map((c, i) => ({ value: String(c.id ?? i + 1), label: c.name }))
-          : s.kind === "shelf"
-            ? [
-                { value: "new", label: "New releases" },
-                { value: "charts", label: "Charts" },
-                { value: "playlists", label: "Playlists" },
-                { value: "top-songs", label: "Top songs this week" },
-              ]
-            : undefined;
+          : s.kind === "collection-cards"
+            ? deps
+                .collections()
+                .map((c, i) => ({ value: String(5_000_000_000_000_000 + i + 1), label: c.name }))
+            : s.kind === "shelf"
+              ? [
+                  { value: "new", label: "New releases" },
+                  { value: "charts", label: "Charts" },
+                  { value: "playlists", label: "Playlists" },
+                  { value: "top-songs", label: "Top songs this week" },
+                ]
+              : undefined;
       return {
         ...s,
         available,
@@ -624,6 +642,25 @@ export function createPagesMock(deps: Deps) {
       const c = deps.card(t);
       return kid ? { ...c, contentRating: ["G", "PG", "TV-Y7", "TV-PG"][hash(c.key) % 4] } : c;
     });
+  }
+
+  function collectionCards(row: PageRow, count: number): TitleCard[] {
+    const prefix = row.source.params?.match?.trim().toLowerCase();
+    const refs = deps.collections().map((collection, index) => ({
+      ...collection,
+      key: String(5_000_000_000_000_000 + index + 1),
+      art: deps.catalog[index],
+    }));
+    const chosen = prefix
+      ? refs
+          .filter((c) => c.name.toLowerCase().startsWith(prefix))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : (row.source.params?.collections ?? "")
+          .split(",")
+          .flatMap((id) => refs.filter((c) => c.key === id));
+    return chosen
+      .slice(0, count)
+      .flatMap((c) => (c.art ? [{ ...deps.card(c.art), key: c.key, title: c.name }] : []));
   }
 
   function preview(
@@ -769,12 +806,14 @@ export function createPagesMock(deps: Deps) {
           kind: r.source.kind,
           items: surface
             ? []
-            : items(
-                `${r.id}${r.source.kind}${JSON.stringify(r.source.params)}${l?.id ?? ""}`,
-                l ?? pageLib,
-                kid,
-                perRow,
-              ),
+            : r.source.kind === "collection-cards"
+              ? collectionCards(r, perRow)
+              : items(
+                  `${r.id}${r.source.kind}${JSON.stringify(r.source.params)}${l?.id ?? ""}`,
+                  l ?? pageLib,
+                  kid,
+                  perRow,
+                ),
         };
       });
       if (mode === "curated") {

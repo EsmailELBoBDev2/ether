@@ -146,7 +146,7 @@ export interface ParamOption {
 export interface RowParam {
   key: string;
   label: string;
-  type: "choice" | "count" | "facetValue" | "ref";
+  type: "choice" | "count" | "facetValue" | "ref" | "collectionList" | "text";
   choices?: ParamOption[];
   facet?: string;
   default?: string;
@@ -536,6 +536,13 @@ export function removeRow(page: RowPage, rowId: string): RowPage {
       ?.map((v) => ({ ...v, rows: v.rows.filter((o) => o.row !== rowId) }))
       .filter((v) => v.rows.length > 0 || v.mode || v.length),
   };
+}
+
+export function hasCollectionCardSelection(row: PageRow): boolean {
+  return (
+    row.source.kind !== "collection-cards" ||
+    Boolean(row.source.params?.collections || row.source.params?.match?.trim())
+  );
 }
 
 /** A fresh row for a source, placed for the page's mode. */

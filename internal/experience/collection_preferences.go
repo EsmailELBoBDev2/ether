@@ -1189,6 +1189,20 @@ func (s *Service) PageArtworkSmartCollections(ctx context.Context, viewer *core.
 	if err != nil {
 		return nil, err
 	}
+	if frontend.CollectionCardArtwork(ctx) {
+		checker, ok := s.d.Collections.(collectionCardHeaders)
+		if !ok {
+			return nil, core.ErrNotAvailable
+		}
+		cards, err := checker.CollectionCardHeaders(ctx, v, keys)
+		out := make(map[core.RatingKey]core.Collection, len(cards))
+		for key, card := range cards {
+			if s.d.Visibility.CollectionAllowed(v, card) {
+				out[key] = *card
+			}
+		}
+		return out, err
+	}
 	var headers map[core.RatingKey]*core.Collection
 	if checker, ok := s.d.Collections.(RowViewCollectionBatchChecker); ok {
 		headers, _, err = checker.CheckMembersBatch(ctx, v, keys, nil, 0)

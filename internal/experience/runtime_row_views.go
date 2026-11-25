@@ -99,6 +99,8 @@ type rowRevisionProof struct {
 	revision string
 }
 
+type rowCardHeadersKey struct{}
+
 type rowCollectionBatchKey struct{}
 type rowCollectionBatchProof struct {
 	viewer  *core.User
@@ -326,7 +328,16 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 				if err != nil || d.Collections == nil {
 					return frontend.RowEntry{}, core.ErrNotFound
 				}
-				c, err := d.Collections.Get(ctx, u, key)
+				var c *core.Collection
+				if checker, ok := d.Collections.(collectionCardHeaders); ok {
+					if cards, ok := ctx.Value(rowCardHeadersKey{}).(map[core.RatingKey]*core.Collection); ok {
+						c = cards[key]
+					} else {
+						c = readCollectionCard(ctx, checker, u, key)
+					}
+				} else {
+					c, err = d.Collections.Get(ctx, u, key)
+				}
 				if err != nil || c == nil || c.Key != key || !visibility.CollectionAllowed(u, c) {
 					return frontend.RowEntry{}, core.ErrNotFound
 				}
@@ -372,6 +383,23 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	options.ResolveEntries = func(ctx context.Context, u *core.User, device core.Device, p core.Protocol, refs []core.NeutralEntryRef) ([]frontend.RowEntry, error) {
 		if p != protocol {
 			return nil, core.ErrNotFound
+		}
+		if checker, ok := d.Collections.(collectionCardHeaders); ok {
+			var keys []core.RatingKey
+			for _, ref := range refs {
+				if ref.Kind == string(frontend.RowEntryCollection) {
+					if key, err := core.ParseRatingKey(ref.ID); err == nil {
+						keys = append(keys, key)
+					}
+				}
+			}
+			if len(keys) > 0 {
+				cards, err := checker.CollectionCardHeaders(ctx, u, keys)
+				if err != nil {
+					return nil, err
+				}
+				ctx = context.WithValue(ctx, rowCardHeadersKey{}, cards)
+			}
 		}
 		resolutionVisibility := cacheVisibility
 		preflight, current := ctx.Value(rowViewPolicyPreflightKey{}).(*rowViewPolicyPreflight)

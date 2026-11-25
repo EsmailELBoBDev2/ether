@@ -11,9 +11,10 @@ import (
 // (Continue Watching on a library page, Recently Added, Live), owner
 // collections, plugin shelves, and chart rows built only for a page.
 const (
-	SourceCollection = "collection" // params: collection (public id)
-	SourceShelf      = "shelf"      // params: shelf (a plugin library's declared shelf key)
-	SourceSurface    = "surface"    // params: surface ("<pluginID>:<surfaceID>"); a stub Vela draws
+	SourceCollectionCards = "collection-cards"
+	SourceCollection      = "collection" // params: collection (public id)
+	SourceShelf           = "shelf"      // params: shelf (a plugin library's declared shelf key)
+	SourceSurface         = "surface"    // params: surface ("<pluginID>:<surfaceID>"); a stub Vela draws
 	// KindLibraryPlaylists is a library's own playlists: the items of its
 	// playlist level (listen libraries).
 	KindLibraryPlaylists = "library-playlists"
@@ -109,6 +110,13 @@ func builtinSources() []core.RowSourceInfo {
 		{Kind: SourceCollection, Title: "Collection", Description: "One of your collections.",
 			Group: groupYourCollections, Needs: []string{core.CapCatalogue}, Split: true,
 			Params: []core.RowParam{{Key: "collection", Label: "Collection", Type: core.ParamRef, Required: true}}},
+		{Kind: SourceCollectionCards, Title: "Collections", Description: "Show collections as clickable cards.",
+			Group: groupYourCollections, HomeOnly: true, Purpose: core.RowPurpose("collection"),
+			Look: core.RowLook{Card: "poster"},
+			Params: []core.RowParam{
+				{Key: "collections", Label: "Collections", Type: core.ParamCollectionList, Max: core.MaxCollectionCards},
+				{Key: "match", Label: "Collection name starts with", Type: core.ParamText, Max: 100},
+			}},
 		{Kind: SourceSurface, Title: "Plugin Row", Description: "A row a plugin draws in Vela (Sports Tonight). Only in Vela.",
 			Group: groupPlugins, HomeOnly: true, Apps: []string{"vela"},
 			Params: []core.RowParam{{Key: "surface", Label: "Row", Type: core.ParamRef, Required: true}}},

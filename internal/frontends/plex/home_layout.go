@@ -160,6 +160,13 @@ func presentHub(h model.Hub, row frontend.NeutralHomeRow) model.Hub {
 	h.RankedTop10 = p.Numbered
 	h.Library = int64(p.Library)
 	h.Layout = p.Layout
+	if h.Type == "collection" && p.Card == "landscape" {
+		for n := range h.Directory {
+			if h.Directory[n].Art != "" {
+				h.Directory[n].Thumb = h.Directory[n].Art
+			}
+		}
+	}
 	switch h.Layout {
 	case "":
 	case frontend.RowStyleHero:

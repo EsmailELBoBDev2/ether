@@ -1663,6 +1663,17 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		}
 		return nil
 	}
+	if key.Kind() == core.KindSmart && frontend.CollectionCardArtwork(ctx) {
+		checker, ok := s.d.Collections.(collectionCardHeaders)
+		if !ok {
+			return core.ErrNotFound
+		}
+		card := readCollectionCard(ctx, checker, v, key)
+		if card == nil || !s.d.Visibility.CollectionAllowed(v, card) {
+			return core.ErrNotFound
+		}
+		return nil
+	}
 	if key.Kind() == core.KindSmart && s.d.Collections != nil {
 		// Artwork needs only a visible collection with one visible member;
 		// loading every member (a genre collection holds thousands) per

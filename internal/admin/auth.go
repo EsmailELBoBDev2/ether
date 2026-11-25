@@ -31,19 +31,31 @@ func tokenFromRequest(r *http.Request) string {
 }
 
 func (h *Handler) isOwner(r *http.Request, token string) bool {
+	owner, _ := h.ownerAccess(r, token)
+	return owner
+}
+
+func (h *Handler) ownerAccess(r *http.Request, token string) (bool, int64) {
 	if token == "" {
-		return false
+		return false, 0
 	}
 	if h.deps.IdentityGrants != nil {
 		u, err := h.deps.IdentityGrants.Resolve(r.Context(), "owner", token)
 		if err == nil {
-			return u.IsOwner
+			return u.IsOwner, u.ID
 		}
 	}
 	if core.IsGrantCredential(token) {
-		return false
+		return false, 0
 	}
-	return h.deps.IsOwnerToken != nil && h.deps.IsOwnerToken(r.Context(), token)
+	if h.deps.ResolveOwnerToken != nil {
+		u, err := h.deps.ResolveOwnerToken(r.Context(), token)
+		if err != nil || u == nil {
+			return false, 0
+		}
+		return u.IsOwner, u.ID
+	}
+	return h.deps.IsOwnerToken != nil && h.deps.IsOwnerToken(r.Context(), token), 0
 }
 
 // isLocalOrLAN classifies the real client behind a trusted proxy.
@@ -111,8 +123,8 @@ func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		token := tokenFromRequest(r)
 		setupComplete := h.deps.Config.Get().SetupComplete
-		if h.isOwner(r, token) {
-			next.ServeHTTP(w, withAccess(r, Access{Owner: true, SetupComplete: setupComplete}))
+		if owner, id := h.ownerAccess(r, token); owner {
+			next.ServeHTTP(w, withAccess(r, Access{Owner: true, OwnerID: id, SetupComplete: setupComplete}))
 			return
 		}
 		if !h.setupClosed(r) {
@@ -136,6 +148,7 @@ func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // token, or (Owner false) through tokenless local-network setup access.
 type Access struct {
 	Owner         bool
+	OwnerID       int64
 	SetupComplete bool
 	// SetupPlayback is narrower than setup-page access; it excludes DNS suffixes.
 	SetupPlayback bool

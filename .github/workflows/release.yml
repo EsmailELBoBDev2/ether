@@ -570,6 +570,7 @@ jobs:
           fi
           go run ./cmd/ether-release-sign manifest \
             -version "$VERSION" -channel "$CHANNEL" -notes "$notes" \
+            -notes-file "release-notes/v$VERSION.md" \
             "${rollout[@]}" "${args[@]}" -out "$CHANNEL.json"
           go run ./cmd/ether-release-sign sign -in "$CHANNEL.json" -detached
           go run ./cmd/ether-release-sign verify -in "$CHANNEL.json" -sig "$CHANNEL.json.sig"

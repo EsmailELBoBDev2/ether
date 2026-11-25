@@ -199,6 +199,8 @@ type Deps struct {
 	// IsOwnerToken reports whether a bearer token (an owner credential or
 	// a console session) belongs to the owner.
 	IsOwnerToken func(ctx context.Context, token string) bool
+	// ResolveOwnerToken is the identity-aware form used by the console.
+	ResolveOwnerToken func(ctx context.Context, token string) (*core.User, error)
 
 	// Sessions backs console sign-in and sign-out.
 	Sessions Sessions

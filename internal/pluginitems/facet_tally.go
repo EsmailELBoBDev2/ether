@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -39,6 +40,15 @@ func pgTextMD5(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func pgAllStrictlyShorterThanPrefix(vals []string) bool {
+	for _, v := range vals {
+		if !utf8.ValidString(v) || utf8.RuneCountInString(v) >= pgIndexPrefixRunes {
+			return false
+		}
+	}
+	return true
+}
+
 func appendPGPrefixIn(where *strings.Builder, args *[]any, col string, vals []string) {
 	seen := make(map[string]struct{}, len(vals))
 	prefixes := make([]string, 0, len(vals))
@@ -48,6 +58,25 @@ func appendPGPrefixIn(where *strings.Builder, args *[]any, col string, vals []st
 			seen[p] = struct{}{}
 			prefixes = append(prefixes, p)
 		}
+	}
+	if pgAllStrictlyShorterThanPrefix(vals) {
+		// Every requested value is valid UTF-8 with strictly fewer than 256
+		// runes: any stored string of >= 256 runes has a 256-rune prefix and
+		// cannot equal a < 256-rune target, while any < 256-rune stored string
+		// satisfies left(col, 256) = col. Omitting the redundant `col IN (...)`
+		// avoids double-counted planner selectivity and per-row filter work.
+		if len(prefixes) == 1 {
+			*args = append(*args, prefixes[0])
+			where.WriteString(` AND left(` + col + `, 256) = ?`)
+			return
+		}
+		pPh := make([]string, len(prefixes))
+		for i, p := range prefixes {
+			pPh[i] = "?"
+			*args = append(*args, p)
+		}
+		where.WriteString(` AND left(` + col + `, 256) IN (` + strings.Join(pPh, ", ") + `)`)
+		return
 	}
 	pPh := make([]string, len(prefixes))
 	for i, p := range prefixes {

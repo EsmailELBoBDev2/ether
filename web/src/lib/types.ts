@@ -1227,10 +1227,11 @@ export interface QualityClient {
  * opaque server strings; a rule stores the id and the name shown when picked.
  */
 export interface QualityDevices {
-  /** Kinds of device: "tv", "mobile", "computer". */
-  groups: { id: string; name: string }[] | null;
-  types: { id: string; name: string; group: string }[] | null;
-  apps: { id: string; name: string; protocol?: string }[] | null;
+  /** Kinds of device: "tv", "mobile", "computer". `aliases` are extra search words ("iPad", "Shield"). */
+  groups: { id: string; name: string; aliases?: string[] }[] | null;
+  types: { id: string; name: string; group: string; aliases?: string[] }[] | null;
+  /** `aliases`: the devices an app runs on and their other names. */
+  apps: { id: string; name: string; protocol?: string; aliases?: string[] }[] | null;
   /** Devices the server has seen. */
   clients:
     | {

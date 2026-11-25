@@ -1,6 +1,7 @@
 // Package clientreg is the data-driven client capability engine.
 // One ordered registry matches every client. Roles share that matcher:
-// policy (Dolby Vision profiles, subtitles, family), playback (codecs and
+// class (the device kind quality rules group by, for apps that span kinds
+// or report no platform; it never changes capabilities), policy (Dolby Vision profiles, subtitles, family), playback (codecs and
 // limits for clients that send no profile), patch (narrow hardware facts),
 // quirk (a named flag, including a wire-protocol quirk) and segmented-audio
 // (audio codecs a client's segmented player must not receive copied, even
@@ -109,6 +110,8 @@ func Apps() []App {
 type Device struct {
 	Name     string   `json:"name"`
 	Identity Identity `json:"identity"`
+	// Aliases are other names owners search for ("iPad" for iOS).
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Devices returns the registry's catalogue identities in display order.

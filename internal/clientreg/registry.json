@@ -319,22 +319,22 @@
     }
   ],
   "devices": [
-    {"name": "Apple TV", "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"}},
-    {"name": "iOS", "identity": {"product": "Plex for iOS", "platform": "iOS", "device": "iPhone"}},
-    {"name": "Android", "identity": {"product": "Plex for Android (Mobile)", "platform": "Android"}},
-    {"name": "Android TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Android TV"}},
-    {"name": "Google TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Google TV"}},
-    {"name": "NVIDIA Shield", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "SHIELD Android TV"}},
-    {"name": "Roku", "identity": {"product": "Roku"}},
-    {"name": "Fire TV", "identity": {"product": "Fire TV"}},
-    {"name": "LG webOS", "identity": {"product": "LG webOS"}},
-    {"name": "Samsung Tizen", "identity": {"product": "Samsung Tizen"}},
-    {"name": "Xbox", "identity": {"product": "Xbox"}},
-    {"name": "PlayStation", "identity": {"product": "PlayStation"}},
-    {"name": "Home theater PC", "identity": {"product": "HTPC"}},
-    {"name": "Kodi", "identity": {"product": "Kodi"}},
-    {"name": "Mac", "identity": {"product": "Plex for Mac", "platform": "macOS"}},
-    {"name": "Browser", "identity": {"product": "Plex Web"}}
+    {"name": "Apple TV", "identity": {"product": "Plex for Apple TV", "platform": "tvOS", "device": "Apple TV"}, "aliases": ["tvOS", "Apple TV 4K"]},
+    {"name": "iOS", "identity": {"product": "Plex for iOS", "platform": "iOS", "device": "iPhone"}, "aliases": ["iPhone", "iPad", "iPadOS"]},
+    {"name": "Android", "identity": {"product": "Plex for Android (Mobile)", "platform": "Android"}, "aliases": ["Android phone", "Android tablet", "Pixel", "Galaxy"]},
+    {"name": "Android TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Android TV"}, "aliases": ["Android TV box"]},
+    {"name": "Google TV", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "Google TV"}, "aliases": ["Chromecast", "Chromecast with Google TV"]},
+    {"name": "NVIDIA Shield", "identity": {"product": "Plex for Android (TV)", "platform": "Android", "device": "SHIELD Android TV"}, "aliases": ["Shield", "Shield TV"]},
+    {"name": "Roku", "identity": {"product": "Roku"}, "aliases": ["Roku TV", "Roku stick"]},
+    {"name": "Fire TV", "identity": {"product": "Fire TV"}, "aliases": ["Fire Stick", "Fire TV Stick", "Amazon"]},
+    {"name": "LG webOS", "identity": {"product": "LG webOS"}, "aliases": ["LG", "webOS"]},
+    {"name": "Samsung Tizen", "identity": {"product": "Samsung Tizen"}, "aliases": ["Samsung", "Tizen"]},
+    {"name": "Xbox", "identity": {"product": "Xbox"}, "aliases": ["Microsoft"]},
+    {"name": "PlayStation", "identity": {"product": "PlayStation"}, "aliases": ["PS5", "PS4", "Sony"]},
+    {"name": "Home theater PC", "identity": {"product": "HTPC"}, "aliases": ["HTPC", "Windows", "Linux", "PC"]},
+    {"name": "Kodi", "identity": {"product": "Kodi"}, "aliases": ["XBMC", "CoreELEC", "LibreELEC"]},
+    {"name": "Mac", "identity": {"product": "Plex for Mac", "platform": "macOS"}, "aliases": ["macOS", "MacBook", "iMac"]},
+    {"name": "Browser", "identity": {"product": "Plex Web"}, "aliases": ["Web", "Chrome", "Safari", "Firefox", "Edge"]}
   ],
   "presets": {
     "text": {
@@ -426,6 +426,75 @@
     }
   },
   "definitions": [
+    {
+      "id": "class-media-apps-tv",
+      "role": "class",
+      "class": "tv",
+      "notes": "Cross-device Jellyfin apps on a TV box: Swiftfin tvOS, Infuse on Apple TV, Findroid or Streamyfin on Android TV and Shield.",
+      "match": {"all": [
+        {"any": [{"field": "product", "op": "contains", "value": "swiftfin"}, {"field": "product", "op": "contains", "value": "infuse"}, {"field": "product", "op": "contains", "value": "findroid"}, {"field": "product", "op": "contains", "value": "streamyfin"}]},
+        {"any": [{"field": "identity", "op": "contains", "value": "tvos"}, {"field": "identity", "op": "contains", "value": "apple tv"}, {"field": "identity", "op": "contains", "value": "appletv"}, {"field": "identity", "op": "contains", "value": "android tv"}, {"field": "identity", "op": "contains", "value": "google tv"}, {"field": "identity", "op": "contains", "value": "shield"}]}
+      ]}
+    },
+    {
+      "id": "class-apple-apps-mobile",
+      "role": "class",
+      "class": "mobile",
+      "notes": "Swiftfin and Infuse on an iPhone or iPad.",
+      "match": {"all": [
+        {"any": [{"field": "product", "op": "contains", "value": "swiftfin"}, {"field": "product", "op": "contains", "value": "infuse"}]},
+        {"any": [{"field": "identity", "op": "contains", "value": "ios"}, {"field": "identity", "op": "contains", "value": "ipados"}, {"field": "identity", "op": "contains", "value": "iphone"}, {"field": "identity", "op": "contains", "value": "ipad"}]}
+      ]}
+    },
+    {
+      "id": "class-infuse-mac",
+      "role": "class",
+      "class": "computer",
+      "notes": "Infuse on a Mac.",
+      "match": {"all": [
+        {"field": "product", "op": "contains", "value": "infuse"},
+        {"any": [{"field": "identity", "op": "contains", "value": "macos"}, {"field": "identity", "op": "contains", "value": "mac os"}]}
+      ]}
+    },
+    {
+      "id": "class-jellyfin-mobile",
+      "role": "class",
+      "class": "mobile",
+      "notes": "Jellyfin phone apps that report no platform: Findroid and Streamyfin. The official Jellyfin Android and iOS apps are placed by the playback records.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "findroid"},
+        {"field": "product", "op": "contains", "value": "streamyfin"}
+      ]}
+    },
+    {
+      "id": "class-kodi",
+      "role": "class",
+      "class": "computer",
+      "notes": "Kodi add-ons (Plex for Kodi, JellyCon) group with Kodi and home theater PCs.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "pm4k"},
+        {"field": "product", "op": "contains", "value": "plex for kodi"},
+        {"field": "product", "op": "contains", "value": "jellycon"},
+        {"field": "product", "op": "contains", "value": "kodi"}
+      ]}
+    },
+    {
+      "id": "class-emby-tv",
+      "role": "class",
+      "class": "tv",
+      "notes": "Emby's TV apps.",
+      "match": {"any": [
+        {"field": "product", "op": "contains", "value": "emby for tv"},
+        {"field": "product", "op": "contains", "value": "emby for android tv"}
+      ]}
+    },
+    {
+      "id": "class-emby-web",
+      "role": "class",
+      "class": "computer",
+      "notes": "Emby in a browser.",
+      "match": {"field": "product", "op": "contains", "value": "emby web"}
+    },
     {
       "id": "stremio-native-desktop",
       "role": "policy",

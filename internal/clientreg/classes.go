@@ -1,6 +1,7 @@
 package clientreg
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -14,25 +15,31 @@ const (
 	ClassComputer = "computer"
 )
 
-// ClassInfo names one device class.
+// ClassInfo names one device class. Aliases are other words an owner may
+// search for (the device picker matches them).
 type ClassInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Classes lists the device classes in display order.
 func Classes() []ClassInfo {
 	return []ClassInfo{
-		{ID: ClassTV, Name: "TVs & streaming boxes"},
-		{ID: ClassMobile, Name: "Phones & tablets"},
-		{ID: ClassComputer, Name: "Computers & browsers"},
+		{ID: ClassTV, Name: "TVs & streaming boxes", Aliases: []string{"TV", "Streaming box", "Smart TV", "Apple TV", "Android TV", "Google TV", "Shield", "Fire TV", "Roku", "Chromecast", "Console"}},
+		{ID: ClassMobile, Name: "Phones & tablets", Aliases: []string{"Phone", "Tablet", "Mobile", "iPhone", "iPad", "Android phone", "Android tablet", "Findroid", "Swiftfin", "Streamyfin"}},
+		{ID: ClassComputer, Name: "Computers & browsers", Aliases: []string{"Computer", "Browser", "Desktop", "Laptop", "Mac", "Windows", "Linux", "HTPC", "Kodi", "Web"}},
 	}
 }
 
-// Class is the device class of a client: the playback record's class,
-// else one read from the platform, else the policy record's; "" when the
-// client cannot be placed.
+// Class is the device class of a client: the registry's class record (apps
+// that span device kinds, or report no platform), else the playback
+// record's class, else one read from the platform, else the policy
+// record's; "" when the client cannot be placed.
 func Class(id Identity) string {
+	if c := first("class", id).Class; c != "" {
+		return c
+	}
 	if c := first("playback", id).Class; c != "" {
 		return c
 	}
@@ -52,19 +59,28 @@ func Class(id Identity) string {
 
 // DeviceTypeInfo is one registry device type a rule can name.
 type DeviceTypeInfo struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Group string `json:"group"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Group   string   `json:"group"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 type deviceSignature struct {
 	name, policy, class string
+	aliases             []string
+	// words name the device type in a client's identity ("playstation"),
+	// so types sharing a policy record ("console") can be told apart.
+	words []string
 }
 
 var deviceSignatures = sync.OnceValue(func() []deviceSignature {
 	out := make([]deviceSignature, 0, len(loaded.Devices))
 	for _, d := range loaded.Devices {
-		out = append(out, deviceSignature{name: d.Name, policy: first("policy", d.Identity).ID, class: Class(d.Identity)})
+		words := []string{strings.ToLower(d.Name)}
+		for _, a := range d.Aliases {
+			words = append(words, strings.ToLower(a))
+		}
+		out = append(out, deviceSignature{name: d.Name, policy: first("policy", d.Identity).ID, class: Class(d.Identity), aliases: d.Aliases, words: words})
 	}
 	return out
 })
@@ -75,9 +91,20 @@ func DeviceTypes() []DeviceTypeInfo {
 	sigs := deviceSignatures()
 	out := make([]DeviceTypeInfo, 0, len(sigs))
 	for _, s := range sigs {
-		out = append(out, DeviceTypeInfo{ID: s.name, Name: s.name, Group: s.class})
+		out = append(out, DeviceTypeInfo{ID: s.name, Name: s.name, Group: s.class, Aliases: slices.Clone(s.aliases)})
 	}
 	return out
+}
+
+// DeviceAliases are the search words for a registry device type ("iPad"
+// for iOS); nil when the type has none.
+func DeviceAliases(name string) []string {
+	for _, s := range deviceSignatures() {
+		if s.name == name {
+			return slices.Clone(s.aliases)
+		}
+	}
+	return nil
 }
 
 // DeviceType is the registry device type a client is, by its policy
@@ -88,15 +115,23 @@ func DeviceType(id Identity) string {
 		return "Fire TV"
 	}
 	policy, class := first("policy", id).ID, Class(id)
-	if policy == "generic" {
-		return ""
-	}
+	// Several types can share a policy record (Xbox and PlayStation are
+	// both "console"): prefer the one the identity names. A type with the
+	// generic record (Mac) is only ever recognised by name.
+	identity := strings.ToLower(id.Product + " " + id.Platform + " " + id.Device)
+	found := ""
 	for _, s := range deviceSignatures() {
-		if s.policy == policy && (class == "" || s.class == "" || s.class == class) {
+		if s.policy != policy || (class != "" && s.class != "" && s.class != class) {
+			continue
+		}
+		if slices.ContainsFunc(s.words, func(w string) bool { return strings.Contains(identity, w) }) {
 			return s.name
 		}
+		if found == "" && policy != "generic" {
+			found = s.name
+		}
 	}
-	return ""
+	return found
 }
 
 // AppID is the opaque id a quality rule uses for a registry app:

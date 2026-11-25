@@ -142,7 +142,12 @@ function deviceOptions(devices: QualityDevices | null, picked: DeviceMatch[]): M
   const out: MultiSelectOption[] = [];
   const kinds = t("Kinds");
   for (const g of devices?.groups ?? []) {
-    out.push({ value: `group:${g.id}`, label: GROUP_NAMES[g.id] ?? g.name, group: kinds });
+    out.push({
+      value: `group:${g.id}`,
+      label: GROUP_NAMES[g.id] ?? g.name,
+      description: g.aliases?.join(", "),
+      group: kinds,
+    });
   }
   const apps = devices?.apps ?? [];
   const types = devices?.types ?? [];
@@ -166,11 +171,20 @@ function deviceOptions(devices: QualityDevices | null, picked: DeviceMatch[]): M
     out.push({
       value: `app:${a.id}`,
       label: repeated.has(a.name) && protocol ? `${a.name} (${protocol})` : a.name,
+      // The devices it runs on, which the search also matches ("iPad").
+      description: a.aliases?.join(", "),
       group: appsGroup,
     });
   }
   const typesGroup = t("Device types");
-  for (const d of types) out.push({ value: `type:${d.id}`, label: d.name, group: typesGroup });
+  for (const d of types) {
+    out.push({
+      value: `type:${d.id}`,
+      label: d.name,
+      description: d.aliases?.join(", "),
+      group: typesGroup,
+    });
+  }
   // Matches the lists above don't offer (a "name contains" match from an
   // older rule, a device no longer seen) stay shown so they can be removed.
   const other = t("Already in this rule");

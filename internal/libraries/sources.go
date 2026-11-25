@@ -98,3 +98,24 @@ func (s *Service) SetCollection(ctx context.Context, id core.LibraryID, collecti
 	}
 	return err
 }
+
+// CreateOption sets an optional property on a newly created catalogue library.
+type CreateOption func(*core.Library)
+
+// WithMetadataSource persists the selected source as part of library creation.
+func WithMetadataSource(source string) CreateOption {
+	return func(lib *core.Library) { lib.MetadataSource = source }
+}
+
+// SetMetadataSource saves a validated source. Plugin kinds own their metadata.
+func (s *Service) SetMetadataSource(ctx context.Context, id core.LibraryID, source string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE libraries SET metadata_source=?, updated_at=? WHERE id=? AND deleted=0 AND source<>'plugin'`, source, s.now().Unix(), int64(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return core.ErrNotFound
+	}
+	s.gen.Add(1)
+	return nil
+}

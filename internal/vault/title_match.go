@@ -10,6 +10,10 @@ import (
 
 // RekeyTitle changes the owner match for vault releases in the caller’s transaction.
 func RekeyTitle(ctx context.Context, tx *sql.Tx, old, next *core.Title) error {
+	// Vault records without a TMDB ID have no stored provider identity.
+	if old.IDs.TMDB <= 0 {
+		return nil
+	}
 	// Vault content keys and pack offsets are independent of title identity.
 	// Movie and TV TMDB IDs overlap, so constrain by the vault's numbering.
 	const episodic = "(season<>0 OR episode<>0 OR EXISTS (SELECT 1 FROM vault_members m WHERE m.key=vault_releases.key AND m.episode>0))"

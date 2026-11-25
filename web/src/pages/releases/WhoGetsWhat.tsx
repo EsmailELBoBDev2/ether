@@ -15,13 +15,14 @@ import { Segmented } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { useViewers, viewerName } from "../../components/pickers";
 import { t } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
+import { fallbackOfRuleId, fallbackTitle, type RuleRef } from "../../lib/qualityRules";
 import type {
   QualityAnswer,
-  QualityClient,
   QualityLayer,
   QualitySummaryException,
   QualitySummaryRow,
@@ -31,10 +32,11 @@ import {
   SummaryCellView,
   buildSummaryDeviceOptions,
   createRuleResolver,
-  ruleHref,
   summaryKindLabel,
+  type OpenRule,
   type RuleResolver,
 } from "./qualitySummaryUi";
+import { RuleDrawer } from "./RuleDrawer";
 import { TitlePicker } from "./Search";
 
 type Where = "home" | "away";
@@ -52,6 +54,17 @@ function explainKindLabel(kind: string | undefined): string {
   if (kind === "movie") return t("Movies");
   if (kind === "episode" || kind === "tv") return t("Episodes");
   return "";
+}
+
+/**
+ * The device to check one play with, from the Device filter. A kind of device
+ * ("Phones & tablets") covers several, so it has no single answer: null.
+ */
+function explainClientId(device: string): string | null {
+  if (!device) return "any";
+  if (device.startsWith("group:")) return null;
+  if (device.startsWith("client:")) return device.slice("client:".length);
+  return device;
 }
 
 /** The big line: "1080p · HDR off", plus bitrate/stereo caps when set. */
@@ -74,12 +87,9 @@ export function layerText(l: QualityLayer, _viewer: string, resolveRule?: RuleRe
           ? t("Rule {n} · {profile}", { n, profile: l.profile ?? "" })
           : t("Rule · {profile}", { profile: l.profile ?? "" });
       }
-      if (l.source === "defaultAway") {
-        return l.profile
-          ? t("Default away · {profile}", { profile: l.profile })
-          : t("Default away");
-      }
-      return l.profile ? t("Default · {profile}", { profile: l.profile }) : t("Default at home");
+      return [fallbackTitle(l.source === "defaultAway" ? "away" : "home"), l.profile]
+        .filter(Boolean)
+        .join(" · ");
     case "device":
       if (!l.decisive) return t("No limit");
       return (
@@ -100,6 +110,8 @@ export function layerText(l: QualityLayer, _viewer: string, resolveRule?: RuleRe
         .filter(Boolean)
         .join(" · ");
       if (!limits) return t("No limit");
+      const row = fallbackOfRuleId(l.ruleId);
+      if (row) return `${fallbackTitle(row)} · ${limits}`;
       return n > 0 ? t("Rule {n} · {limits}", { n, limits }) : limits;
     }
     case "remote-blocked":
@@ -109,23 +121,27 @@ export function layerText(l: QualityLayer, _viewer: string, resolveRule?: RuleRe
   }
 }
 
-function layerEditHref(l: QualityLayer): string {
-  if (l.kind === "device") return "/playback/devices/apps";
-  if (l.kind === "remote-blocked") return "/viewers";
-  if (l.kind === "profile" && l.source === "defaultAway") return "/releases/rules?default=away";
-  if (l.kind === "profile" && l.source !== "rule") return "/releases/rules?default=home";
-  if (l.ruleId) return ruleHref(l.ruleId);
-  return "/releases/rules";
+/** The rule or fallback row behind a layer, to open in the rule drawer; null for other layers. */
+function layerRule(l: QualityLayer): RuleRef | null {
+  if (l.kind === "device" || l.kind === "remote-blocked") return null;
+  const row = fallbackOfRuleId(l.ruleId);
+  if (row) return { fallback: row };
+  if (l.kind === "profile" && l.source !== "rule") {
+    return { fallback: l.source === "defaultAway" ? "away" : "home" };
+  }
+  return l.ruleId ? { rule: l.ruleId } : null;
 }
 
 function Answer({
   answer,
   viewer,
   resolveRule,
+  onOpenRule,
 }: {
   answer: QualityAnswer;
   viewer: string;
   resolveRule: RuleResolver;
+  onOpenRule: OpenRule;
 }) {
   const labels: Record<string, string> = {
     profile: t("Profile"),
@@ -218,9 +234,29 @@ function Answer({
               )}
               {l.edited ? <Badge variant="secondary">{t("Edited")}</Badge> : null}
               <div>
-                <Link className="text-sm text-primary underline" to={layerEditHref(l)}>
-                  {l.decisive ? t("Edit") : t("Set limit")}
-                </Link>
+                {(() => {
+                  const label = l.decisive ? t("Edit") : t("Set limit");
+                  const ref = layerRule(l);
+                  if (ref) {
+                    return (
+                      <button
+                        type="button"
+                        className="text-sm text-primary underline"
+                        onClick={() => onOpenRule(ref)}
+                      >
+                        {label}
+                      </button>
+                    );
+                  }
+                  return (
+                    <Link
+                      className="text-sm text-primary underline"
+                      to={l.kind === "remote-blocked" ? "/viewers" : "/playback/devices/apps"}
+                    >
+                      {label}
+                    </Link>
+                  );
+                })()}
               </div>
             </li>
           );
@@ -231,12 +267,6 @@ function Answer({
       </p>
     </div>
   );
-}
-
-interface ExplainChoice {
-  value: string;
-  label: string;
-  clientId: string;
 }
 
 function partitionExceptions(
@@ -275,17 +305,18 @@ function partitionExceptions(
 }
 
 /**
- * "Who gets what": per-library summary across At home and Away with Viewer and
- * Device filters, followed by "Check one play" for tracing a single play's layers.
+ * "Who gets what": pick a viewer and a device once, then read what they get in
+ * every library at home and away, and check one play layer by layer. Every
+ * rule and fallback row named here opens in the rule drawer, in place.
  */
 export function WhoGetsWhat() {
+  const { locale } = useLocale();
   const { viewers, error: viewersError } = useViewers();
   const config = useAsync(() => api.getConfig(), []);
   const quality = config.data?.quality ?? null;
   const devices = useAsync((signal) => api.qualityDevices(signal), []);
-  const clients = useAsync<QualityClient[]>(() => api.qualityClients(), []);
 
-  // Summary filters ("Anyone", "Any device").
+  // The one question: who, on what. "" is Anyone / Any device.
   const [filterViewer, setFilterViewer] = useState("");
   const [filterDevice, setFilterDevice] = useState("");
   const summary = useAsync(
@@ -307,7 +338,7 @@ export function WhoGetsWhat() {
         rows: summary.data?.rows,
         viewers,
       }),
-    [quality?.rules, summary.data?.rows, viewers],
+    [quality?.rules, summary.data?.rows, viewers, locale],
   );
 
   const unfiltered = !filterViewer && !filterDevice;
@@ -316,70 +347,54 @@ export function WhoGetsWhat() {
     [summary.data?.rows, unfiltered, resolveRule],
   );
 
-  // "Check one play" state.
-  const [pickedViewer, setPickedViewer] = useState(0);
-  const [pickedClient, setPickedClient] = useState("");
+  // "Check one play": the same viewer and device, plus where and what.
   const [where, setWhere] = useState<Where>("home");
   const [title, setTitle] = useState<{ key: string; name: string } | null>(null);
   const [libraryId, setLibraryId] = useState(0);
-  const [kind, setKind] = useState<"" | "movie" | "episode">("");
 
-  const explainOptions = useMemo<ExplainChoice[]>(() => {
-    if (!clients.data || !devices.data) return [];
-    const out: ExplainChoice[] = [];
-    const seenIds = new Set<string>();
-    for (const c of clients.data) {
-      seenIds.add(c.id);
-      out.push({ value: c.id, label: c.name, clientId: c.id });
-    }
-    for (const seen of devices.data.clients ?? []) {
-      if (seenIds.has(seen.id)) continue;
-      out.push({ value: seen.id, label: seen.name, clientId: seen.id });
-    }
-    out.push({ value: "any", label: t("Any app"), clientId: "any" });
-    return out;
-  }, [clients.data, devices.data]);
-
-  const viewerId = pickedViewer || viewers?.find((v) => v.isOwner)?.id || viewers?.[0]?.id || 0;
-  const activeExplain = useMemo(() => {
-    if (explainOptions.length === 0) return null;
-    return explainOptions.find((o) => o.value === pickedClient) ?? explainOptions[0]!;
-  }, [explainOptions, pickedClient]);
-
+  const viewerId = Number(filterViewer) || 0;
+  const clientId = explainClientId(filterDevice);
   const remote = where === "away";
   const answer = useAsync<QualityAnswer | null>(
     (signal) =>
-      viewerId > 0 && activeExplain
+      clientId
         ? api.explainQuality(
             {
-              userId: viewerId,
-              clientId: activeExplain.clientId,
+              ...(viewerId ? { userId: viewerId } : {}),
+              clientId,
               ...(title ? { titleKey: title.key } : {}),
               ...(!title && libraryId ? { libraryId } : {}),
-              ...(!title && kind ? { kind } : {}),
               remote,
             },
             signal,
           )
         : Promise.resolve(null),
-    [viewerId, activeExplain, remote, title?.key, libraryId, kind],
+    [viewerId, clientId, remote, title?.key, libraryId],
   );
   const viewer = viewers?.find((v) => v.id === viewerId);
 
+  // The rule drawer loads the rule list itself, so it mounts on first use.
+  const [rule, setRuleRef] = useState<RuleRef | null>(null);
+  const [drawerUsed, setDrawerUsed] = useState(false);
+  const setRule = (ref: RuleRef) => {
+    setDrawerUsed(true);
+    setRuleRef(ref);
+  };
+
   const summaryError = summary.error ?? devices.error ?? viewersError;
-  const checkerError = viewersError ?? clients.error ?? devices.error;
 
   const summaryDeviceOptions = useMemo(
     () => buildSummaryDeviceOptions(devices.data),
-    [devices.data],
+    [devices.data, locale],
   );
+  const deviceName = summaryDeviceOptions.find((o) => o.value === filterDevice)?.label ?? "";
 
   const summaryViewerOptions = useMemo(
     () => [
       { value: "", label: t("Anyone") },
       ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerName(v) })),
     ],
-    [viewers],
+    [viewers, locale],
   );
 
   const libraryOptions = useMemo(
@@ -390,7 +405,7 @@ export function WhoGetsWhat() {
         label: r.library,
       })),
     ],
-    [summary.data?.rows],
+    [summary.data?.rows, locale],
   );
 
   return (
@@ -399,7 +414,7 @@ export function WhoGetsWhat() {
         <Section
           title={t("Who gets what")}
           description={t(
-            "The profile and limits each library plays with. Change them under Rules.",
+            "Choose a viewer and a device to see what they get in each library, at home and away.",
           )}
           bodyClassName="p-0"
           actions={
@@ -453,7 +468,12 @@ export function WhoGetsWhat() {
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {globalExceptions.map((ex) => (
-                      <ExceptionPill key={ex.ruleId} exception={ex} resolveRule={resolveRule} />
+                      <ExceptionPill
+                        key={ex.ruleId}
+                        exception={ex}
+                        resolveRule={resolveRule}
+                        onOpenRule={setRule}
+                      />
                     ))}
                   </div>
                 </div>
@@ -517,15 +537,19 @@ export function WhoGetsWhat() {
                               <td className="px-5 py-3.5">
                                 <SummaryCellView
                                   cell={pair.home}
+                                  where="home"
                                   chosenByPlugin={row.chosenByPlugin}
                                   resolveRule={resolveRule}
+                                  onOpenRule={setRule}
                                 />
                               </td>
                               <td className="px-5 py-3.5">
                                 <SummaryCellView
                                   cell={pair.away}
+                                  where="away"
                                   chosenByPlugin={row.chosenByPlugin}
                                   resolveRule={resolveRule}
+                                  onOpenRule={setRule}
                                 />
                               </td>
                             </tr>
@@ -540,6 +564,7 @@ export function WhoGetsWhat() {
                                       key={ex.ruleId}
                                       exception={ex}
                                       resolveRule={resolveRule}
+                                      onOpenRule={setRule}
                                     />
                                   ))}
                                 </div>
@@ -584,16 +609,20 @@ export function WhoGetsWhat() {
                             <p className="text-xs text-fg-muted">{t("At home")}</p>
                             <SummaryCellView
                               cell={pair.home}
+                              where="home"
                               chosenByPlugin={row.chosenByPlugin}
                               resolveRule={resolveRule}
+                              onOpenRule={setRule}
                             />
                           </div>
                           <div className="space-y-1">
                             <p className="text-xs text-fg-muted">{t("Away")}</p>
                             <SummaryCellView
                               cell={pair.away}
+                              where="away"
                               chosenByPlugin={row.chosenByPlugin}
                               resolveRule={resolveRule}
+                              onOpenRule={setRule}
                             />
                           </div>
                         </div>
@@ -605,6 +634,7 @@ export function WhoGetsWhat() {
                               key={ex.ruleId}
                               exception={ex}
                               resolveRule={resolveRule}
+                              onOpenRule={setRule}
                             />
                           ))}
                         </div>
@@ -620,46 +650,32 @@ export function WhoGetsWhat() {
 
       <SettingsSection
         title={t("Check one play")}
-        description={t("See the quality a viewer gets on an app, and why.")}
+        description={
+          clientId
+            ? t("What {viewer} gets on {device}, and what decided it.", {
+                viewer: viewer ? viewerName(viewer) : t("anyone"),
+                device: deviceName && filterDevice ? deviceName : t("any device"),
+              })
+            : undefined
+        }
       >
-        {checkerError ? (
-          <ErrorPanel
-            error={checkerError}
-            onRetry={() => {
-              void clients.reload();
-              void devices.reload();
-            }}
-          />
-        ) : !viewers || !activeExplain ? (
+        {viewersError || devices.error ? (
+          <ErrorPanel error={viewersError ?? devices.error} onRetry={() => void devices.reload()} />
+        ) : !viewers || !devices.data ? (
           <LoadingRows rows={3} />
+        ) : !clientId ? (
+          <p className="px-5 py-4 text-sm text-fg-muted">
+            {t("{device} covers several devices. Choose one device or app above to check a play.", {
+              device: deviceName,
+            })}
+          </p>
         ) : (
           <>
-            <div data-setting="check-quality" className="grid gap-4 px-5 py-4 sm:grid-cols-3">
-              <div className="min-w-0 space-y-2">
-                <p className="text-xs font-medium text-fg-muted">{t("Viewer")}</p>
-                <div className="w-full">
-                  <SearchSelect
-                    {...searchSelectLabels()}
-                    value={String(viewerId)}
-                    onChange={(v) => setPickedViewer(Number(v))}
-                    options={viewers.map((v) => ({ value: String(v.id), label: viewerName(v) }))}
-                    ariaLabel={t("Viewer")}
-                  />
-                </div>
-              </div>
-              <div className="min-w-0 space-y-2">
-                <p className="text-xs font-medium text-fg-muted">{t("App")}</p>
-                <div className="w-full">
-                  <SearchSelect
-                    {...searchSelectLabels()}
-                    value={activeExplain.value}
-                    onChange={setPickedClient}
-                    options={explainOptions.map((o) => ({ value: o.value, label: o.label }))}
-                    ariaLabel={t("App")}
-                  />
-                </div>
-              </div>
-              <div className="min-w-0 space-y-2">
+            <div
+              data-setting="check-quality"
+              className="flex flex-wrap items-end gap-x-6 gap-y-4 px-5 py-4"
+            >
+              <div className="space-y-2">
                 <p className="text-xs font-medium text-fg-muted">{t("Where")}</p>
                 <Segmented
                   ariaLabel={t("Where")}
@@ -672,14 +688,12 @@ export function WhoGetsWhat() {
                   ]}
                 />
               </div>
-            </div>
-            <div className="space-y-3 px-5 pb-4">
-              <div className="space-y-2">
+              <div className="min-w-0 flex-1 basis-64 space-y-2">
                 <p className="text-xs font-medium text-fg-muted">
                   {t("Movie or episode (optional)")}
                 </p>
                 {title ? (
-                  <div className="flex items-center gap-2 text-sm">
+                  <div className="flex h-9 items-center gap-2 text-sm">
                     <span>{title.name}</span>
                     <button
                       type="button"
@@ -693,44 +707,18 @@ export function WhoGetsWhat() {
                   <TitlePicker onPick={(key, name) => setTitle({ key, name })} />
                 )}
               </div>
-              {!title ? (
-                <div className="flex flex-wrap items-center gap-4 pt-1">
-                  {libraryOptions.length > 1 ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-fg-muted">{t("Library")}</span>
-                      <div className="w-48">
-                        <SearchSelect
-                          {...searchSelectLabels()}
-                          value={String(libraryId)}
-                          onChange={(v) => setLibraryId(Number(v))}
-                          options={libraryOptions}
-                          ariaLabel={t("Library")}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-fg-muted">{t("What")}</span>
-                    <Segmented
-                      ariaLabel={t("What")}
-                      size="sm"
-                      value={kind}
-                      onChange={setKind}
-                      options={[
-                        { value: "", label: t("Movies and episodes") },
-                        { value: "movie", label: t("Movies") },
-                        { value: "episode", label: t("Episodes") },
-                      ]}
-                    />
-                  </div>
+              {!title && libraryOptions.length > 1 ? (
+                <div className="w-48 max-w-full space-y-2">
+                  <p className="text-xs font-medium text-fg-muted">{t("Library")}</p>
+                  <SearchSelect
+                    {...searchSelectLabels()}
+                    value={String(libraryId)}
+                    onChange={(v) => setLibraryId(Number(v))}
+                    options={libraryOptions}
+                    ariaLabel={t("Library")}
+                  />
                 </div>
-              ) : (
-                <p className="text-xs text-fg-muted">
-                  {t(
-                    "Minimum score and preferred qualities guide ranking. If none match, Ether uses the best available release. Hard limits still apply.",
-                  )}
-                </p>
-              )}
+              ) : null}
             </div>
             {answer.error ? (
               <ErrorPanel error={answer.error} onRetry={() => void answer.reload()} />
@@ -739,6 +727,7 @@ export function WhoGetsWhat() {
                 answer={answer.data}
                 viewer={viewer ? viewerName(viewer) : t("This viewer")}
                 resolveRule={resolveRule}
+                onOpenRule={setRule}
               />
             ) : (
               <LoadingRows rows={2} />
@@ -746,6 +735,20 @@ export function WhoGetsWhat() {
           </>
         )}
       </SettingsSection>
+
+      {drawerUsed ? (
+        <RuleDrawer
+          open={rule !== null}
+          ruleId={rule && "rule" in rule ? rule.rule : undefined}
+          fallback={rule && "fallback" in rule ? rule.fallback : undefined}
+          onClose={() => setRuleRef(null)}
+          onSaved={() => {
+            void config.reload();
+            void summary.reload();
+            void answer.reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

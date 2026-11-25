@@ -1,6 +1,3 @@
-import { Fragment } from "react";
-import { Link } from "react-router-dom";
-import { Layers, ListFilter, MonitorCheck, ArrowRight } from "lucide-react";
 import { WhoGetsWhat } from "./WhoGetsWhat";
 import { localized, t } from "../../i18n";
 import { ConfigSection } from "../../components/ConfigSection";
@@ -26,77 +23,11 @@ const TABS = localized(
     ] as const,
 );
 
-/** Tabs that show the Profiles → Rules → Who gets what step bar. */
-const STEP_TABS = new Set(["profiles", "rules", "check"]);
-
 /** Which release Ether picks for each play, and why. */
 export default function Releases() {
   const tab = useRouteTab(TABS);
   return (
     <DomainPage title={t("Releases")} base="/releases" tabs={TABS} active={tab}>
-      {STEP_TABS.has(tab) ? (
-        <nav
-          aria-label={t("How quality works")}
-          className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center"
-        >
-          {[
-            {
-              key: "profiles",
-              title: t("Profiles"),
-              detail: t("How releases are ranked"),
-              Icon: Layers,
-            },
-            {
-              key: "rules",
-              title: t("Rules"),
-              detail: t("Who gets which profile"),
-              Icon: ListFilter,
-            },
-            {
-              key: "check",
-              title: t("Who gets what"),
-              detail: t("See what a viewer gets"),
-              Icon: MonitorCheck,
-            },
-          ].map(({ key, title, detail, Icon }, i) => {
-            const content = (
-              <>
-                <Icon size={20} className="text-primary" />
-                <span>
-                  <span className="block text-sm font-medium">{title}</span>
-                  <span className="text-xs text-fg-muted">{detail}</span>
-                </span>
-              </>
-            );
-            return (
-              <Fragment key={key}>
-                {i > 0 ? (
-                  <ArrowRight
-                    aria-hidden
-                    size={18}
-                    className="shrink-0 rotate-90 self-center text-fg-muted sm:rotate-0"
-                  />
-                ) : null}
-                {tab === key ? (
-                  <span
-                    aria-current="step"
-                    className="flex flex-1 items-center gap-3 rounded-xl border border-primary/40 bg-primary/5 p-4"
-                  >
-                    {content}
-                  </span>
-                ) : (
-                  <Link
-                    to={`/releases/${key}`}
-                    className="flex flex-1 items-center gap-3 rounded-xl border border-border bg-surface p-4"
-                  >
-                    {content}
-                  </Link>
-                )}
-              </Fragment>
-            );
-          })}
-        </nav>
-      ) : null}
       {tab === "check" ? <WhoGetsWhat /> : null}
       {tab === "profiles" ? <QualityTab /> : null}
       {tab === "rules" ? <RulesTab /> : null}

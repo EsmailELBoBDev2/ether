@@ -145,13 +145,25 @@ describe("profile rules and custom formats", () => {
     }, WAIT);
   });
 
-  it("shows read-only Used by links in the profile drawer without Default for buttons", async () => {
+  it("opens a rule from Used by over the profile drawer and returns to it", async () => {
     renderApp("/releases/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
     expect(within(drawer).queryByRole("group", { name: "Default for" })).not.toBeInTheDocument();
-    const link = within(drawer).getByRole("link", { name: "Living room Apple TV" });
-    expect(link).toHaveAttribute("href", "/releases/rules?rule=r_appletv1");
+    // An unsaved edit to the profile survives the trip into the rule.
+    fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "UHD" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Rule 1: Living room Apple TV" }));
+    const rule = await screen.findByRole("dialog", { name: "Living room Apple TV" }, WAIT);
+    fireEvent.click(within(rule).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Living room Apple TV" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Name")).toHaveValue("UHD");
+    expect(
+      screen.getByRole("button", { name: "Use this profile in a new rule" }),
+    ).toBeInTheDocument();
   });
 
   it("merges a custom format added by a concurrent import", async () => {

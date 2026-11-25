@@ -66,7 +66,6 @@ import type {
   LLMProvider,
   LogEntry,
   QualityAnswer,
-  QualityClient,
   QualityDevices,
   QualityQuestion,
   QualitySummary,
@@ -400,8 +399,6 @@ export const api = {
     put<{ section: string; value: unknown }>(`/config/${section}`, value),
 
   // ---- Quality: who gets what -------------------------------------------------
-  qualityClients: async () =>
-    (await apiFetch<{ clients: QualityClient[] }>("/quality/clients")).clients,
   /** Device kinds, device types, apps and seen devices a rule can match. */
   qualityDevices: (signal?: AbortSignal) =>
     apiFetch<QualityDevices>("/quality/devices", { signal }),

@@ -11,9 +11,8 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { NumberInput } from "../../components/fields";
 import { Section, SubtabNav } from "../../components/layout";
@@ -24,7 +23,7 @@ import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { ApiError, api } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
 import { itemName } from "../../lib/qualityRanking";
-import { profileUses, withProfileRenamed } from "../../lib/qualityRules";
+import { profileUses, tidyLimits, withProfileRenamed, type RuleRef } from "../../lib/qualityRules";
 import { releaseConsole, type QualitySyncReport } from "../../lib/releases";
 import type { CustomFormatDefinition, QualityProfile } from "../../lib/types";
 import { parseDuration } from "../settings/duration";
@@ -49,7 +48,7 @@ import {
   type ResolverPolicy,
 } from "./resolverDraft";
 import { TrashImport } from "./TrashImport";
-import { localizedRule, useRuleNames } from "./RuleDrawer";
+import { RuleEditor, localizedRule, ruleTarget, useRuleNames, type RuleTarget } from "./RuleDrawer";
 import { useQuality, type Quality } from "./useQuality";
 const RESOLUTIONS = localized(() => [
   { value: "0", label: t("Any") },
@@ -329,6 +328,21 @@ function ProfileList({
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [drawerTab, setDrawerTab] = useState<ProfileDrawerTab>("tiers");
+  /** A rule opened from "Used by": over the profile drawer when one is open. */
+  const [rule, setRule] = useState<RuleTarget | null>(null);
+  const openRule = (ref: RuleRef) => setRule(ruleTarget(quality, ref));
+  const ruleEditor = (
+    <RuleEditor
+      quality={quality}
+      commit={commit}
+      target={rule}
+      onClose={() => setRule(null)}
+      onOpenRule={(index) => {
+        const id = (quality.rules ?? [])[index]?.id;
+        if (id) openRule({ rule: id });
+      }}
+    />
+  );
 
   const open = (index: number, draft: QualityProfile) => {
     setErrors({});
@@ -442,8 +456,15 @@ function ProfileList({
     let next: Quality = { ...quality, profiles: rest };
     if (switchTo) {
       next = withProfileRenamed(next, name, switchTo);
-      // Away on the same profile as at home is "Same as at home".
-      if (next.defaultAway === next.default) next.defaultAway = "";
+      // Away on the same profile and limits as at home is "Same as at home".
+      if (
+        next.defaultAway === next.default &&
+        JSON.stringify(tidyLimits(next.defaultAwayLimits)) ===
+          JSON.stringify(tidyLimits(next.defaultLimits))
+      ) {
+        next.defaultAway = "";
+        next.defaultAwayLimits = {};
+      }
     }
     setSaving(true);
     setError(null);
@@ -469,7 +490,7 @@ function ProfileList({
       <Section
         title={t("Profiles")}
         description={t(
-          "How releases are ranked: resolution, HDR, release type and language. A profile does nothing until a rule or a default uses it.",
+          "A profile says which releases to prefer: resolution, HDR, release type and language. Rules decide who gets which profile.",
         )}
         actions={
           <Button size="sm" onClick={() => setImporting(true)}>
@@ -501,13 +522,19 @@ function ProfileList({
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span className="text-xs text-fg-muted">{t("Used by")}</span>
                           {uses.map((u) => (
-                            <Badge key={u.key} variant="info">
-                              {u.label}
-                            </Badge>
+                            <button
+                              key={u.key}
+                              type="button"
+                              className="rounded-full"
+                              aria-label={t("Open {name}", { name: u.label })}
+                              onClick={() => openRule(u.open)}
+                            >
+                              <Badge variant="info">{u.label}</Badge>
+                            </button>
                           ))}
                         </span>
                       ) : (
-                        <Badge variant="secondary">{t("Unused")}</Badge>
+                        <Badge variant="secondary">{t("Not used by any rule")}</Badge>
                       )}
                     </>
                   }
@@ -521,6 +548,9 @@ function ProfileList({
       </Section>
 
       <TrashImport open={importing} onClose={() => setImporting(false)} onImported={refresh} />
+
+      {/* From the list the rule drawer opens on its own. */}
+      {editing === null ? ruleEditor : null}
 
       <RecordDrawer
         open={editing !== null}
@@ -606,31 +636,48 @@ function ProfileList({
                     control={<Badge variant="outline">{importSource(draft)}</Badge>}
                   />
                 ) : null}
-                {isNew ? null : (
-                  <SettingsRow
-                    title={t("Used by")}
-                    description={t("Rules decide who gets this profile.")}
-                    control={
-                      draftUses.length ? (
-                        <span className="flex flex-wrap items-center justify-end gap-1.5">
-                          {draftUses.map((u) => (
-                            <Link key={u.key} to={u.to}>
-                              <Badge variant="info">{u.label}</Badge>
-                            </Link>
-                          ))}
-                        </span>
-                      ) : (
-                        <Link
-                          className="text-sm text-primary underline"
-                          to={`/releases/rules?new=1&profile=${encodeURIComponent(editedName)}`}
-                        >
-                          {t("Unused. Use it in a rule")}
-                        </Link>
-                      )
-                    }
-                  />
-                )}
               </SettingsSection>
+
+              {isNew ? null : (
+                <SettingsSection
+                  title={t("Used by")}
+                  description={
+                    draftUses.length
+                      ? t("Plays that match one of these get this profile.")
+                      : t("No rule uses this profile, so nothing plays with it yet.")
+                  }
+                >
+                  {draftUses.length ? (
+                    <ul className="divide-y divide-border">
+                      {draftUses.map((u) => (
+                        <li key={u.key}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left text-sm font-medium text-fg hover:bg-bg-subtle/60"
+                            onClick={() => openRule(u.open)}
+                          >
+                            <span className="min-w-0">{u.label}</span>
+                            <ChevronRight
+                              aria-hidden
+                              size={16}
+                              className="shrink-0 text-fg-muted"
+                            />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <div className="px-5 py-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openRule({ create: { profile: editedName } })}
+                    >
+                      <Plus size={14} /> {t("Use this profile in a new rule")}
+                    </Button>
+                  </div>
+                </SettingsSection>
+              )}
 
               <QualityOrderSection draft={draft} patch={patch} />
 
@@ -773,6 +820,8 @@ function ProfileList({
             />
           )
         ) : null}
+        {/* Inside the profile drawer, so the rule drawer stacks over it and returns here. */}
+        {editing !== null ? ruleEditor : null}
       </RecordDrawer>
     </>
   );

@@ -487,13 +487,20 @@ export interface EtherConfig {
     rules: QualityRule[] | null;
     /** The profile when no rule picks one. */
     default: string;
-    /** The profile away from home when no rule picks one; "" is the same as at home. */
+    /** Limits for plays that reach the at-home fallback row. */
+    defaultLimits?: QualityLimits | null;
+    /**
+     * The profile away from home when no rule picks one. "" is "Same as at
+     * home": the at-home profile and its limits.
+     */
     defaultAway?: string;
+    /** Limits for plays that reach the away fallback row (only with defaultAway set). */
+    defaultAwayLimits?: QualityLimits | null;
     databases?: ProfileDatabase[] | null;
     sync?: QualitySync;
     migratedRules?: number;
-    /** Shown once on the Rules page after the one-time move into rules. */
-    rulesMigrationNote?: boolean;
+    /** Set by the one-time move of 0.3.20 settings into rules; shown on Rules until dismissed. */
+    migrationNote?: { at: string; dismissed: boolean } | null;
   };
   transcode: {
     videoTranscoding?: "on" | "off";
@@ -729,6 +736,20 @@ export interface DeviceMatch {
  * means any, and its except flag inverts the list. The first matching rule
  * with a profile picks the profile; every matching rule's limits apply.
  */
+/** The limits a rule or a fallback row sets. They only ever lower quality. */
+export interface QualityLimits {
+  maxHeight?: number;
+  maxBitrateKbps?: number;
+  stereoAudio?: boolean;
+}
+
+/** Which 0.3.20 setting a migrated rule came from. Set by the server only. */
+export interface QualityRuleOrigin {
+  kind: "awayLimit" | "viewerLimit" | "rule" | "awayProfile" | "library" | "tvDefault";
+  /** The library's, viewer's or old rule's name, when there is one. */
+  name?: string;
+}
+
 export interface QualityRule {
   /** Assigned by the server; "" on a rule not saved yet. */
   id: string;
@@ -746,6 +767,8 @@ export interface QualityRule {
   maxHeight?: number;
   maxBitrateKbps?: number;
   stereoAudio?: boolean;
+  /** Where the upgrade from 0.3.20 took this rule from. Read-only: never sent back. */
+  from?: QualityRuleOrigin;
 }
 
 interface SetupStep {
@@ -1265,7 +1288,8 @@ export interface QualitySummary {
 
 /** One viewer on one device or app, at home or away (POST /quality/explain). */
 export interface QualityQuestion {
-  userId: number;
+  /** Left out for "anyone": rules for particular viewers don't apply. */
+  userId?: number;
   clientId?: string;
   libraryId?: number;
   titleKey?: string;

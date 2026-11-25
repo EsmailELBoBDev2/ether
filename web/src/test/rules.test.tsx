@@ -29,9 +29,11 @@ describe("qualityRules helpers", () => {
   });
 
   it("formats limits and tidies empty conditions", () => {
-    expect(
-      ruleLimits({ id: "r_1", maxHeight: 1080, maxBitrateKbps: 8000, stereoAudio: true }),
-    ).toEqual(["≤ 1080p", "≤ 8 Mbps", "Stereo"]);
+    expect(ruleLimits({ maxHeight: 1080, maxBitrateKbps: 8000, stereoAudio: true })).toEqual([
+      "≤ 1080p",
+      "≤ 8 Mbps",
+      "Stereo",
+    ]);
     expect(
       tidyRule({
         id: "r_1",
@@ -78,8 +80,11 @@ describe("qualityRules helpers", () => {
     };
     const names = { library: (id: number) => `Lib ${id}`, viewer: (id: number) => `User ${id}` };
     expect(profileUses(quality, "4K", names)).toEqual([
-      { key: "default", label: "Default", to: "/releases/rules?default=home" },
-      { key: "r_1", label: "TVs", to: "/releases/rules?rule=r_1" },
+      { key: "r_1", label: "Rule 1: TVs", open: { rule: "r_1" } },
+      { key: "default", label: "Everyone else, at home", open: { fallback: "home" } },
+    ]);
+    expect(profileUses(quality, "1080p", names)).toEqual([
+      { key: "away", label: "Everyone else, away", open: { fallback: "away" } },
     ]);
     const renamed = withProfileRenamed(quality, "4K", "UHD");
     expect(renamed.default).toBe("UHD");
@@ -89,7 +94,7 @@ describe("qualityRules helpers", () => {
 });
 
 describe("Releases › Rules", () => {
-  it("lists rules in order with fixed At home and Away default rows", async () => {
+  it("lists rules in order with the two fallback rows fixed at the bottom", async () => {
     renderApp("/releases/rules");
     expect(await screen.findByText("Living room Apple TV", {}, WAIT)).toBeInTheDocument();
     expect(
@@ -97,8 +102,8 @@ describe("Releases › Rules", () => {
         "Checked from the top. The first rule with a profile picks it; every matching limit applies.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Everything else · At home/)).toBeInTheDocument();
-    expect(screen.getByText(/Everything else · Away/)).toBeInTheDocument();
+    expect(screen.getByText("Everyone else, at home")).toBeInTheDocument();
+    expect(screen.getByText("Everyone else, away")).toBeInTheDocument();
     expect(screen.getByText("Same as at home")).toBeInTheDocument();
   });
 
@@ -172,15 +177,43 @@ describe("Releases › Rules", () => {
     expect(body.rules?.map((r) => r.id)).toEqual(["r_second", "r_first"]);
   });
 
-  it("edits the fixed At home and Away default rows", async () => {
+  it("edits a fallback row in the rule drawer: profile, limits and Same as at home", async () => {
     const { fake } = renderApp("/releases/rules");
-    fireEvent.click(await screen.findByRole("button", { name: "Edit the away default" }, WAIT));
-    const drawer = await screen.findByRole("dialog", { name: "Everything else, away" });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Everyone else, away" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "Everyone else, away" });
+    // Its condition is spelled out, not editable; away starts as Same as at home.
+    expect(
+      within(drawer).getByText("Applies to everything no rule above caught, away from home."),
+    ).toBeInTheDocument();
+    expect(within(drawer).queryByRole("radiogroup", { name: "Library" })).not.toBeInTheDocument();
+    expect(within(drawer).queryByRole("button", { name: "Profile" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("radio", { name: "Its own profile and limits" }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Profile" }));
-    fireEvent.click(await screen.findByRole("option", { name: "1080p" }));
-    fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    fireEvent.click(await screen.findByRole("option", { name: "4K" }));
+    fireEvent.click(
+      within(within(drawer).getByRole("radiogroup", { name: "Max resolution" })).getByRole(
+        "radio",
+        { name: "1080p" },
+      ),
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save rule" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
-    expect(fake.state.config.quality.defaultAway).toBe("1080p");
+    expect(fake.state.config.quality).toMatchObject({
+      default: "1080p",
+      defaultAway: "4K",
+      defaultAwayLimits: { maxHeight: 1080 },
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText("≤ 1080p")).toBeInTheDocument();
+
+    // Back to Same as at home clears the away profile and its limits.
+    fireEvent.click(screen.getByRole("button", { name: "Edit Everyone else, away" }));
+    const again = await screen.findByRole("dialog", { name: "Everyone else, away" });
+    fireEvent.click(within(again).getByRole("radio", { name: "Same as at home" }));
+    fireEvent.click(within(again).getByRole("button", { name: "Save rule" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(2));
+    expect(fake.state.config.quality).toMatchObject({ defaultAway: "", defaultAwayLimits: {} });
   });
 
   it("flags shadowed rules in the list and offers a jump link in the drawer", async () => {
@@ -216,23 +249,28 @@ describe("Releases › Rules", () => {
     ).toBeInTheDocument();
   });
 
-  it("removes a rule after confirmation and shows a dismissible migration note", async () => {
+  it("removes a rule after confirmation and shows a dismissible upgrade note", async () => {
+    const note =
+      "Your quality settings from 0.3.20 were moved into these rules. Nothing plays differently.";
     const { fake } = renderApp("/releases/rules", {}, (f) => {
       f.state.config.quality.migratedRules = 1;
-      f.state.config.quality.rulesMigrationNote = true;
+      f.state.config.quality.migrationNote = { at: "2026-11-24T15:04:05Z", dismissed: false };
+      f.state.config.quality.rules![0]!.from = { kind: "rule", name: "Apple TV" };
     });
-    expect(
-      await screen.findByText(
-        "Your quality settings were moved into rules. Nothing plays differently.",
-        {},
-        WAIT,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(note, {}, WAIT)).toBeInTheDocument();
+    // Each migrated rule says which 0.3.20 setting it came from.
+    expect(screen.getByText("From the “Apple TV” rule")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(
-      screen.queryByText("Your quality settings were moved into rules. Nothing plays differently."),
-    ).not.toBeInTheDocument();
-    await waitFor(() => expect(fake.state.config.quality.rulesMigrationNote).toBe(false));
+    expect(screen.queryByText(note)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(fake.state.config.quality.migrationNote).toEqual({
+        at: "2026-11-24T15:04:05Z",
+        dismissed: true,
+      }),
+    );
+    expect(calls(fake, "PUT", "/config/quality")[0]!.body).toEqual({
+      migrationNote: { at: "2026-11-24T15:04:05Z", dismissed: true },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit rule 1" }));
     const drawer = await screen.findByRole("dialog", { name: "Living room Apple TV" });

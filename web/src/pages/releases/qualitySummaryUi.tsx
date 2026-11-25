@@ -1,10 +1,18 @@
 import { Badge } from "@braedonsaunders/appkit-ui";
 import { Fragment } from "react";
-import { Link } from "react-router-dom";
 import { viewerName } from "../../components/pickers";
 import { t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
-import { mbps, resolutionName, ruleTitle, type RuleNames } from "../../lib/qualityRules";
+import {
+  fallbackOfRuleId,
+  fallbackTitle,
+  mbps,
+  resolutionName,
+  ruleTitle,
+  type FallbackRow,
+  type RuleNames,
+  type RuleRef,
+} from "../../lib/qualityRules";
 import type {
   QualityDevices,
   QualityRule,
@@ -21,6 +29,16 @@ export interface ResolvedRuleRef {
   /** Human-readable rule name or condition summary; never a raw rule ID. */
   summary: string;
   rule?: QualityRule;
+  /** Set when the id names a fallback row ("default" / "defaultAway"), not a rule. */
+  fallback?: FallbackRow;
+}
+
+/** Opens a rule or a fallback row in the rule drawer, in place. */
+export type OpenRule = (ref: RuleRef) => void;
+
+function refOf(ruleId: string): RuleRef {
+  const fallback = fallbackOfRuleId(ruleId);
+  return fallback ? { fallback } : { rule: ruleId };
 }
 
 export type RuleResolver = (ruleId: string | undefined) => ResolvedRuleRef;
@@ -69,6 +87,8 @@ export function createRuleResolver(opts: {
 
   return (ruleId) => {
     if (!ruleId) return { id: "", number: 0, summary: t("Rule") };
+    const fallback = fallbackOfRuleId(ruleId);
+    if (fallback) return { id: ruleId, number: 0, summary: fallbackTitle(fallback), fallback };
     const directIdx = list.findIndex((r) => r.id === ruleId);
     if (directIdx >= 0) {
       const rule = list[directIdx]!;
@@ -103,37 +123,31 @@ export function createRuleResolver(opts: {
 }
 
 export function ruleBadgeLabel(ref: ResolvedRuleRef): string {
+  if (ref.fallback) return fallbackTitle(ref.fallback);
   return ref.number > 0 ? t("Rule {n}", { n: ref.number }) : t("Rule");
-}
-
-export function ruleHref(ruleId: string): string {
-  return `/releases/rules?rule=${encodeURIComponent(ruleId)}`;
 }
 
 function RuleTrigger({
   ruleId,
   label,
-  onSelectRule,
+  summary,
+  onOpenRule,
 }: {
   ruleId: string;
   label: string;
-  onSelectRule?: (ruleId: string) => void;
+  /** What the rule covers, shown on hover: "Phones & tablets · Away". */
+  summary?: string;
+  onOpenRule: OpenRule;
 }) {
-  if (onSelectRule) {
-    return (
-      <button
-        type="button"
-        onClick={() => onSelectRule(ruleId)}
-        className="text-primary hover:underline"
-      >
-        {label}
-      </button>
-    );
-  }
   return (
-    <Link to={ruleHref(ruleId)} className="text-primary hover:underline">
+    <button
+      type="button"
+      title={summary && summary !== label ? summary : undefined}
+      onClick={() => onOpenRule(refOf(ruleId))}
+      className="text-left text-primary hover:underline"
+    >
       {label}
-    </Link>
+    </button>
   );
 }
 
@@ -161,31 +175,34 @@ export function LimitBadges({
 export function ExceptionPill({
   exception,
   resolveRule,
+  onOpenRule,
 }: {
   exception: QualitySummaryException;
   resolveRule: RuleResolver;
+  onOpenRule: OpenRule;
 }) {
   const ref = resolveRule(exception.ruleId);
   const effect = formatExceptionEffect(exception);
   return (
-    <Link
-      to={ruleHref(exception.ruleId)}
-      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-subtle px-2.5 py-1 text-xs transition-colors hover:border-primary/40 hover:bg-primary/5"
+    <button
+      type="button"
+      onClick={() => onOpenRule(refOf(exception.ruleId))}
+      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-subtle px-2.5 py-1 text-left text-xs transition-colors hover:border-primary/40 hover:bg-primary/5"
     >
       <span className="text-fg-muted">{ruleBadgeLabel(ref)}</span>
       <span className="text-fg">{effect ? `${ref.summary} → ${effect}` : ref.summary}</span>
-    </Link>
+    </button>
   );
 }
 
 function LimitRuleLinks({
   ruleIds,
   resolveRule,
-  onSelectRule,
+  onOpenRule,
 }: {
   ruleIds: string[];
   resolveRule: RuleResolver;
-  onSelectRule?: (ruleId: string) => void;
+  onOpenRule: OpenRule;
 }) {
   if (ruleIds.length === 0) return null;
   return (
@@ -197,7 +214,8 @@ function LimitRuleLinks({
           <RuleTrigger
             ruleId={rid}
             label={ruleBadgeLabel(resolveRule(rid))}
-            onSelectRule={onSelectRule}
+            summary={resolveRule(rid).summary}
+            onOpenRule={onOpenRule}
           />
         </Fragment>
       ))}
@@ -207,14 +225,17 @@ function LimitRuleLinks({
 
 export function SummaryCellView({
   cell,
+  where,
   chosenByPlugin,
   resolveRule,
-  onSelectRule,
+  onOpenRule,
 }: {
   cell: QualitySummaryCell;
+  /** The column the cell is in: names the fallback row when no rule picked the profile. */
+  where: FallbackRow;
   chosenByPlugin: boolean;
   resolveRule: RuleResolver;
-  onSelectRule?: (ruleId: string) => void;
+  onOpenRule: OpenRule;
 }) {
   const hasLimits = Boolean(cell.maxHeight || cell.maxBitrateKbps || cell.stereo);
 
@@ -236,7 +257,7 @@ export function SummaryCellView({
             <LimitRuleLinks
               ruleIds={cell.limitRuleIds}
               resolveRule={resolveRule}
-              onSelectRule={onSelectRule}
+              onOpenRule={onOpenRule}
             />
           </div>
         ) : null}
@@ -244,7 +265,10 @@ export function SummaryCellView({
     );
   }
 
-  const extraLimitIds = cell.limitRuleIds.filter((rid) => rid !== cell.profileRuleId);
+  // Limits from the row that also picked the profile are already on its line.
+  const extraLimitIds = cell.limitRuleIds.filter(
+    (rid) => rid !== cell.profileRuleId && !(cell.source !== "rule" && fallbackOfRuleId(rid)),
+  );
 
   return (
     <div className="space-y-1">
@@ -261,22 +285,19 @@ export function SummaryCellView({
           <RuleTrigger
             ruleId={cell.profileRuleId}
             label={ruleBadgeLabel(resolveRule(cell.profileRuleId))}
-            onSelectRule={onSelectRule}
+            summary={resolveRule(cell.profileRuleId).summary}
+            onOpenRule={onOpenRule}
           />
-        ) : cell.source === "defaultAway" ? (
-          <Link
-            to="/releases/rules?default=away"
-            className="text-fg-muted hover:text-fg hover:underline"
-          >
-            {t("Default away")}
-          </Link>
         ) : (
-          <Link
-            to="/releases/rules?default=home"
-            className="text-fg-muted hover:text-fg hover:underline"
+          <button
+            type="button"
+            onClick={() => onOpenRule({ fallback: where })}
+            className="text-left text-fg-muted hover:text-fg hover:underline"
           >
-            {t("Default")}
-          </Link>
+            {where === "away" && cell.source !== "defaultAway"
+              ? t("Everyone else, away: same as at home")
+              : fallbackTitle(where)}
+          </button>
         )}
         {extraLimitIds.length > 0 ? (
           <>
@@ -284,7 +305,7 @@ export function SummaryCellView({
             <LimitRuleLinks
               ruleIds={extraLimitIds}
               resolveRule={resolveRule}
-              onSelectRule={onSelectRule}
+              onOpenRule={onOpenRule}
             />
           </>
         ) : null}
@@ -298,7 +319,8 @@ export function SummaryCellView({
               <RuleTrigger
                 ruleId={rid}
                 label={ruleBadgeLabel(resolveRule(rid))}
-                onSelectRule={onSelectRule}
+                summary={resolveRule(rid).summary}
+                onOpenRule={onOpenRule}
               />
             </Fragment>
           ))}

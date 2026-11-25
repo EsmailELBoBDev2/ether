@@ -1,0 +1,413 @@
+import { t } from "../i18n";
+import type { DeviceMatch, EtherConfig, QualityDevices, QualityRule } from "./types";
+
+type Quality = EtherConfig["quality"];
+
+/** The names a rule's conditions are shown with. */
+export interface RuleNames {
+  library: (id: number) => string;
+  viewer: (id: number) => string;
+}
+
+const DEVICE_FIELDS = ["group", "type", "app", "client", "contains"] as const;
+type DeviceField = (typeof DEVICE_FIELDS)[number];
+
+/** "<field>:<id>" for the one field a device match sets. */
+export function deviceKey(m: DeviceMatch): string {
+  for (const f of DEVICE_FIELDS) if (m[f]) return `${f}:${m[f]}`;
+  return "";
+}
+
+/** The device match a picker value ("<field>:<id>") stands for. */
+export function deviceFromKey(key: string, label: string): DeviceMatch {
+  const at = key.indexOf(":");
+  const field = key.slice(0, at) as DeviceField;
+  return { [field]: key.slice(at + 1), label };
+}
+
+export function deviceLabel(m: DeviceMatch): string {
+  if (m.label) return m.label;
+  if (m.contains) return t("Name contains “{text}”", { text: m.contains });
+  return m.group || m.type || m.app || m.client || "";
+}
+
+export const resolutionName = (height: number) => (height >= 2160 ? "4K" : `${height}p`);
+
+/** Kbps as Mbps with at most one decimal. */
+export const mbps = (kbps: number) => Math.round(kbps / 100) / 10;
+
+export function ruleHasLimits(r: QualityRule): boolean {
+  return Boolean(r.maxHeight || r.maxBitrateKbps || r.stereoAudio);
+}
+
+/** The limits a rule sets, as short chips: "≤ 1080p", "≤ 8 Mbps", "Stereo". */
+export function ruleLimits(r: QualityRule): string[] {
+  return [
+    r.maxHeight ? `≤ ${resolutionName(r.maxHeight)}` : "",
+    r.maxBitrateKbps ? t("≤ {n} Mbps", { n: mbps(r.maxBitrateKbps) }) : "",
+    r.stereoAudio ? t("Stereo") : "",
+  ].filter(Boolean);
+}
+
+export type ConditionKind = "library" | "viewer" | "device" | "where" | "kind";
+
+export interface RuleCondition {
+  kind: ConditionKind;
+  label: string;
+}
+
+/** A rule's conditions in plain words, one per kind it sets. */
+export function ruleConditions(r: QualityRule, names: RuleNames): RuleCondition[] {
+  const out: RuleCondition[] = [];
+  const list = (labels: string[]) => labels.join(", ");
+  if (r.libraries?.length) {
+    const label = list(r.libraries.map(names.library));
+    out.push({
+      kind: "library",
+      label: r.exceptLibraries ? t("All except {names}", { names: label }) : label,
+    });
+  }
+  if (r.viewers?.length) {
+    const label = list(r.viewers.map(names.viewer));
+    out.push({
+      kind: "viewer",
+      label: r.exceptViewers ? t("Everyone except {names}", { names: label }) : label,
+    });
+  }
+  if (r.devices?.length) {
+    const label = list(r.devices.map(deviceLabel));
+    out.push({
+      kind: "device",
+      label: r.exceptDevices ? t("Any except {names}", { names: label }) : label,
+    });
+  }
+  if (r.where === "home") out.push({ kind: "where", label: t("At home") });
+  if (r.where === "away") out.push({ kind: "where", label: t("Away") });
+  if (r.kind === "movie") out.push({ kind: "kind", label: t("Movies") });
+  if (r.kind === "episode") out.push({ kind: "kind", label: t("Episodes") });
+  return out;
+}
+
+/** The rule's own name, or its conditions joined: "Anime · Phones & tablets · Away". */
+export function ruleTitle(r: QualityRule, names: RuleNames): string {
+  if (r.name?.trim()) return r.name.trim();
+  const parts = ruleConditions(r, names).map((c) => c.label);
+  return parts.length ? parts.join(" · ") : t("Everything");
+}
+
+/** Compact one-line summary for the rule drawer header: "Anime · anyone · any device · anywhere". */
+export function matchesSummary(r: QualityRule, names: RuleNames): string {
+  const list = (labels: string[]) => labels.join(", ");
+  const parts: string[] = [];
+  if (r.libraries?.length) {
+    const label = list(r.libraries.map(names.library));
+    parts.push(r.exceptLibraries ? t("all except {names}", { names: label }) : label);
+  } else {
+    parts.push(t("every library"));
+  }
+  if (r.viewers?.length) {
+    const label = list(r.viewers.map(names.viewer));
+    parts.push(r.exceptViewers ? t("everyone except {names}", { names: label }) : label);
+  } else {
+    parts.push(t("anyone"));
+  }
+  if (r.devices?.length) {
+    const label = list(r.devices.map(deviceLabel));
+    parts.push(
+      r.exceptDevices
+        ? t("any device except {names}", { names: label })
+        : t("on {names}", { names: label }),
+    );
+  } else {
+    parts.push(t("any device"));
+  }
+  if (r.where === "home") parts.push(t("at home"));
+  else if (r.where === "away") parts.push(t("away"));
+  else parts.push(t("anywhere"));
+  if (r.kind === "movie") parts.push(t("movies"));
+  else if (r.kind === "episode") parts.push(t("episodes"));
+  return parts.join(" · ");
+}
+
+/** The device icon class for a rule's device condition. */
+export function deviceIconGroup(
+  matches: DeviceMatch[] | null | undefined,
+  devices: QualityDevices | null,
+): "tv" | "mobile" | "computer" | "any" {
+  if (!matches?.length) return "any";
+  const groups = new Set<string>();
+  for (const m of matches) {
+    if (m.group) {
+      groups.add(m.group);
+    } else if (m.type) {
+      const g = devices?.types?.find((x) => x.id === m.type)?.group;
+      if (g) groups.add(g);
+      else return "any";
+    } else if (m.client) {
+      const g = devices?.clients?.find((x) => x.id === m.client)?.group;
+      if (g) groups.add(g);
+      else return "any";
+    } else {
+      return "any";
+    }
+  }
+  if (groups.size === 1) {
+    const only = [...groups][0];
+    if (only === "tv" || only === "mobile" || only === "computer") return only;
+  }
+  return "any";
+}
+
+/**
+ * Whether list condition a matches everything list condition b matches. An
+ * empty list is "any". exclusive is true when a play has exactly one value
+ * (one viewer), false when it can have several (a title in many libraries).
+ */
+function listCovers(
+  a: string[],
+  aExcept: boolean,
+  b: string[],
+  bExcept: boolean,
+  covered: (value: string) => boolean,
+  exclusive: boolean,
+): boolean {
+  if (!a.length) return true;
+  if (!b.length) return false;
+  if (!aExcept && !bExcept) return b.every(covered);
+  if (aExcept && bExcept) return a.every((v) => b.includes(v));
+  if (aExcept && !bExcept) return exclusive && !b.some((v) => a.includes(v));
+  return false;
+}
+
+/** Whether device key `inner` is covered by device key `outer`. */
+function deviceKeyWithin(outer: string, inner: string, devices: QualityDevices | null): boolean {
+  if (outer === inner) return true;
+  const at = inner.indexOf(":");
+  const field = inner.slice(0, at);
+  const id = inner.slice(at + 1);
+  if (field === "type") {
+    const type = devices?.types?.find((x) => x.id === id);
+    return Boolean(type && outer === `group:${type.group}`);
+  }
+  if (field === "client") {
+    const client = devices?.clients?.find((x) => x.id === id);
+    return Boolean(
+      client &&
+      ((client.group && outer === `group:${client.group}`) ||
+        (client.type && outer === `type:${client.type}`) ||
+        (client.app && outer === `app:${client.app}`)),
+    );
+  }
+  return false;
+}
+
+/** Whether rule a matches every play rule b matches. Unsure counts as no. */
+function covers(a: QualityRule, b: QualityRule, devices: QualityDevices | null): boolean {
+  if (a.where && a.where !== b.where) return false;
+  if (a.kind && a.kind !== b.kind) return false;
+  const ids = (list: number[] | null | undefined) => (list ?? []).map(String);
+  const aLibraries = ids(a.libraries);
+  const aViewers = ids(a.viewers);
+  if (
+    !listCovers(
+      aLibraries,
+      Boolean(a.exceptLibraries),
+      ids(b.libraries),
+      Boolean(b.exceptLibraries),
+      (v) => aLibraries.includes(v),
+      false,
+    ) ||
+    !listCovers(
+      aViewers,
+      Boolean(a.exceptViewers),
+      ids(b.viewers),
+      Boolean(b.exceptViewers),
+      (v) => aViewers.includes(v),
+      true,
+    )
+  ) {
+    return false;
+  }
+  const aDevices = (a.devices ?? []).map(deviceKey);
+  const bDevices = (b.devices ?? []).map(deviceKey);
+  const within = (key: string) => aDevices.some((outer) => deviceKeyWithin(outer, key, devices));
+  const exactOnly = [...aDevices, ...bDevices].every((k) => k.startsWith("client:"));
+  return listCovers(
+    aDevices,
+    Boolean(a.exceptDevices),
+    bDevices,
+    Boolean(b.exceptDevices),
+    within,
+    exactOnly,
+  );
+}
+
+function listOverlaps(a: string[], aExcept: boolean, b: string[], bExcept: boolean): boolean {
+  if (!a.length || !b.length) return true;
+  if (!aExcept && !bExcept) return a.some((v) => b.includes(v));
+  if (aExcept && bExcept) return true;
+  if (aExcept && !bExcept) return b.some((v) => !a.includes(v));
+  return a.some((v) => !b.includes(v));
+}
+
+function deviceKeyOverlaps(a: string, b: string, devices: QualityDevices | null): boolean {
+  if (deviceKeyWithin(a, b, devices) || deviceKeyWithin(b, a, devices)) return true;
+  const [af, aid] = [a.slice(0, a.indexOf(":")), a.slice(a.indexOf(":") + 1)];
+  const [bf, bid] = [b.slice(0, b.indexOf(":")), b.slice(b.indexOf(":") + 1)];
+  if (af === "contains" || bf === "contains") return true;
+  // Two distinct groups, types, or exact clients don't overlap; an app can run on many device types/groups.
+  if (af === "app" || bf === "app") {
+    if (af === "app" && bf === "app") return aid === bid;
+    return true;
+  }
+  return false;
+}
+
+function devicesOverlap(
+  a: string[],
+  aExcept: boolean,
+  b: string[],
+  bExcept: boolean,
+  devices: QualityDevices | null,
+): boolean {
+  if (!a.length || !b.length) return true;
+  if (!aExcept && !bExcept) {
+    return a.some((ak) => b.some((bk) => deviceKeyOverlaps(ak, bk, devices)));
+  }
+  if (aExcept && bExcept) return true;
+  if (aExcept && !bExcept) {
+    return b.some((bk) => !a.some((ak) => deviceKeyWithin(ak, bk, devices)));
+  }
+  return a.some((ak) => !b.some((bk) => deviceKeyWithin(bk, ak, devices)));
+}
+
+/** Whether rules a and b can match the same play. */
+function overlaps(a: QualityRule, b: QualityRule, devices: QualityDevices | null): boolean {
+  if (a.where && b.where && a.where !== b.where) return false;
+  if (a.kind && b.kind && a.kind !== b.kind) return false;
+  const ids = (list: number[] | null | undefined) => (list ?? []).map(String);
+  if (
+    !listOverlaps(
+      ids(a.libraries),
+      Boolean(a.exceptLibraries),
+      ids(b.libraries),
+      Boolean(b.exceptLibraries),
+    ) ||
+    !listOverlaps(
+      ids(a.viewers),
+      Boolean(a.exceptViewers),
+      ids(b.viewers),
+      Boolean(b.exceptViewers),
+    )
+  ) {
+    return false;
+  }
+  return devicesOverlap(
+    (a.devices ?? []).map(deviceKey),
+    Boolean(a.exceptDevices),
+    (b.devices ?? []).map(deviceKey),
+    Boolean(b.exceptDevices),
+    devices,
+  );
+}
+
+/**
+ * The 0-based position of an earlier rule whose profile always wins over
+ * this rule's, or -1. Such a rule never picks a profile; its limits still apply.
+ */
+export function shadowedBy(
+  rules: QualityRule[],
+  index: number,
+  devices: QualityDevices | null,
+  draft?: QualityRule,
+): number {
+  const rule = draft ?? rules[index];
+  if (!rule?.profile) return -1;
+  for (let i = 0; i < Math.min(index, rules.length); i++) {
+    const earlier = rules[i]!;
+    if (earlier.profile && covers(earlier, rule, devices)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Earlier rules with a profile that overlap this rule (so they decide first
+ * for some or all plays this rule matches).
+ */
+export function overlappingRules(
+  rules: QualityRule[],
+  index: number,
+  devices: QualityDevices | null,
+  draft?: QualityRule,
+): { index: number; rule: QualityRule; coversAll: boolean }[] {
+  const rule = draft ?? rules[index];
+  if (!rule?.profile) return [];
+  const out: { index: number; rule: QualityRule; coversAll: boolean }[] = [];
+  for (let i = 0; i < Math.min(index, rules.length); i++) {
+    const earlier = rules[i]!;
+    if (!earlier.profile) continue;
+    if (overlaps(earlier, rule, devices)) {
+      out.push({ index: i, rule: earlier, coversAll: covers(earlier, rule, devices) });
+    }
+  }
+  return out;
+}
+
+/** Where a profile is used: the default rows and the rules that pick it. */
+export function profileUses(
+  quality: Quality,
+  name: string,
+  names: RuleNames,
+): { key: string; label: string; to: string }[] {
+  const out: { key: string; label: string; to: string }[] = [];
+  if (quality.default === name) {
+    out.push({ key: "default", label: t("Default"), to: "/releases/rules?default=home" });
+  }
+  if (quality.defaultAway === name) {
+    out.push({ key: "away", label: t("Default away"), to: "/releases/rules?default=away" });
+  }
+  (quality.rules ?? []).forEach((r, i) => {
+    if (r.profile !== name) return;
+    out.push({
+      key: r.id || `rule-${i}`,
+      label: ruleTitle(r, names),
+      to: `/releases/rules?rule=${encodeURIComponent(r.id)}`,
+    });
+  });
+  return out;
+}
+
+/** quality with every reference to profile from pointing at to. */
+export function withProfileRenamed(quality: Quality, from: string, to: string): Quality {
+  return {
+    ...quality,
+    default: quality.default === from ? to : quality.default,
+    defaultAway: quality.defaultAway === from ? to : quality.defaultAway,
+    rules: (quality.rules ?? []).map((r) => (r.profile === from ? { ...r, profile: to } : r)),
+  };
+}
+
+/** A rule with empty conditions dropped, as the server stores it. */
+export function tidyRule(r: QualityRule): QualityRule {
+  const out: QualityRule = { id: r.id };
+  if (r.name?.trim()) out.name = r.name.trim();
+  if (r.libraries?.length) {
+    out.libraries = r.libraries;
+    if (r.exceptLibraries) out.exceptLibraries = true;
+  }
+  if (r.viewers?.length) {
+    out.viewers = r.viewers;
+    if (r.exceptViewers) out.exceptViewers = true;
+  }
+  if (r.devices?.length) {
+    out.devices = r.devices;
+    if (r.exceptDevices) out.exceptDevices = true;
+  }
+  if (r.where) out.where = r.where;
+  if (r.kind) out.kind = r.kind;
+  if (r.profile) out.profile = r.profile;
+  if (r.maxHeight) out.maxHeight = r.maxHeight;
+  if (r.maxBitrateKbps) out.maxBitrateKbps = r.maxBitrateKbps;
+  if (r.stereoAudio) out.stereoAudio = true;
+  return out;
+}

@@ -237,7 +237,7 @@ const PAGES = localized<PageDef[]>(() => [
       },
       {
         key: "check",
-        title: t("Check quality"),
+        title: t("Who gets what"),
         keywords: searchTerms(msg("who gets what viewer app device resolution hdr bitrate")),
       },
       {

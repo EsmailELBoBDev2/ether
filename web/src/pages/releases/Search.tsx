@@ -18,7 +18,7 @@ import { Field } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { TitleSearch } from "../../components/pickers";
 import { t, tn, tx } from "../../i18n";
-import { api, errorMessage } from "../../lib/api";
+import { errorMessage } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
 import { formatBytes, formatNanos, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
@@ -28,7 +28,6 @@ import {
   PROFILE_DOWNLOAD,
   PROFILE_NONE,
   ageDays,
-  mediaLabel,
   qualityLabel,
   rangeLabel,
   releaseConsole,
@@ -240,18 +239,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
   const media = kind === MEDIA_MOVIE || kind === MEDIA_TV ? kind : "";
   const [profile, setProfile] = useState("");
   const profiles = useAsync(() => releaseConsole.profiles(media || undefined), [media]);
-  const config = useAsync(() => api.getConfig(), []);
-  // The server lists each name once, for the title's media when known. A
-  // movie and a TV profile may share a name.
   const listed = profiles.data?.profiles ?? [];
-  const nameMedia = (name: string) => {
-    const scopes = new Set(
-      (config.data?.quality.profiles ?? [])
-        .filter((p) => p.name === name)
-        .map((p) => p.mediaType ?? ""),
-    );
-    return scopes.size === 1 ? [...scopes][0] : "";
-  };
   const result = useAsync<ConsoleSearch | null>(
     (signal) => (key ? releaseConsole.search(key, { profile }, signal) : Promise.resolve(null)),
     [key, profile],
@@ -392,7 +380,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
               </option>
               {listed.map((p) => (
                 <option key={p} value={p}>
-                  {media ? p : `${p} · ${mediaLabel(nameMedia(p))}`}
+                  {p}
                 </option>
               ))}
               <option value={PROFILE_NONE}>{t("No profile limits")}</option>

@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Günü düzenlemek için bir gün bölümü veya program bloğu ekleyin.",
   "m_03a83b35a93323": "İntro ve jenerik zamanları IntroDB'den.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Canlı TV ayarları",
   "m_03ab9b48aadc12": "Katalogları içe aktar…",
   "m_03abba36eab8f5": "Görülen cihazlar",
   "m_03abee25fafc93": "Bir diziyi DVD, mutlak veya hikâye sırasında gösterin. Oynatma özgün bölüm numaralarını korur.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Sunucu belirtecini reddetti. Sunucuyu düzenleyip yeni bir belirteç yapıştırın.",
   "m_0b6e0cfd55b64c": "Videoyu değiştir",
   "m_0b6e7f08fa07b8": "Seçilen kimliğin üzerine üstbilgi ekleyin, değiştirin veya kaldırın. Hassas üstbilgi değerleri saklanırken şifrelenir ve önizlemelerde maskelenir.",
+  "m_0b6eda483b2023": "Geri sarma sınırındaki değişiklikleriniz kaydedilmedi.",
   "m_0b7040c707f838": "Popüler: Bilim kurgu",
   "m_0b7138711862cd": "Ortalama bit hızı",
   "m_0b725108f96a25": "Yüklü",
@@ -6288,6 +6290,10 @@
   "m_128f6f3393a985": "Özel ad korunuyor: “{name}”",
   "m_128fa41a415266": "Yeniden bağlanmak gerekiyor",
   "m_129060a2bccbd9": "Ether {time} içinde kendiliğinden yeniden deneyecek.",
+  "m_129192ef5ea47c": {
+    "one": "Geriye dönük izleme: {count} gün",
+    "other": "Geriye dönük izleme: {count} gün"
+  },
   "m_129228a903b15e": "Son tarama mevcut {total} öğeden {missing} tanesini döndürmedi. Bu durum arama veya değişen liste API’lerinde ya da geçici hatalarda yaşanabilir. Ether varsayılan olarak mevcut öğelerinizi korudu.",
   "m_1293156b01c1d8": "Tüm bölgeler",
   "m_1293ff9d406225": "Bağlantıdan ekle",
@@ -8888,6 +8894,10 @@
   "m_1a38e94dd3c401": "Uygulamalarda gizli",
   "m_1a398cdd93409b": "Kanal numaraları",
   "m_1a3a3f14648f50": "Uç nokta URL'si",
+  "m_1a3c3bd0b44186": {
+    "one": "Canlı TV’yi en fazla {count} dakika geri sar",
+    "other": "Canlı TV’yi en fazla {count} dakika geri sar"
+  },
   "m_1a3c710193f62d": "{name} (kopya)",
   "m_1a3c8e2a4a33fe": "Dışarıda bırakılan film ve diziler",
   "m_1a3d943e9f94d1": "İzin verilen",
@@ -9841,6 +9851,7 @@
   "m_1d2163f63c76f8": "Bunları at",
   "m_1d218ad59632e4": "Dakika",
   "m_1d2244e7ae66fa": "Kanallar güncellenemedi",
+  "m_1d23714a591982": "6–8 Mbps'de izleyici başına saatte yaklaşık 3 GB disk alanı kullanır. Yalnızca canlı oynatma için 0 olarak ayarlayın.",
   "m_1d240c1034bd02": "Sonraki adımlar",
   "m_1d2516f81747b0": "Offcloud üzerinde zaten bulunan torrentleri akışa alır.",
   "m_1d259ef5a21bf3": "Eşleşen canlı yayın yok",

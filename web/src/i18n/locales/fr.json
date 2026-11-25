@@ -1274,6 +1274,7 @@
   "m_03a78e28ac4a93": "Ajoutez une tranche horaire ou un bloc de programmes pour organiser la journée.",
   "m_03a83b35a93323": "Temps d'intro et de générique depuis IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Paramètres de la TV en direct",
   "m_03ab9b48aadc12": "Importer des catalogues…",
   "m_03abba36eab8f5": "Appareils détectés",
   "m_03abee25fafc93": "Présentez une série en ordre DVD, absolu ou narratif. La lecture garde les numéros d’épisodes d’origine.",
@@ -3945,6 +3946,7 @@
   "m_0b6d39c093a15c": "Le serveur a refusé son jeton. Modifiez le serveur et collez un nouveau jeton.",
   "m_0b6e0cfd55b64c": "Remplacer la vidéo",
   "m_0b6e7f08fa07b8": "Ajoutez, remplacez ou supprimez des en-têtes en plus de l’identité sélectionnée. Les valeurs sensibles sont chiffrées au repos et masquées dans les aperçus.",
+  "m_0b6eda483b2023": "Vos modifications de la limite de retour en arrière n'ont pas été enregistrées.",
   "m_0b7040c707f838": "Populaires: Science-fiction",
   "m_0b7138711862cd": "Débit moyen",
   "m_0b725108f96a25": "Installée",
@@ -6458,6 +6460,11 @@
   "m_128f6f3393a985": "Nom personnalisé conservé : « {name} »",
   "m_128fa41a415266": "Reconnexion requise",
   "m_129060a2bccbd9": "Ether réessaiera tout seul dans {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Rattrapage : {count} jour",
+    "many": "Rattrapage : {count} jours",
+    "other": "Rattrapage : {count} jours"
+  },
   "m_129228a903b15e": "Le dernier parcours n’a pas renvoyé {missing} éléments existants sur {total}. Cela peut arriver si un plugin utilise une API de recherche ou rotative, ou rencontre une erreur temporaire. Ether a conservé vos éléments par défaut.",
   "m_1293156b01c1d8": "Toutes les régions",
   "m_1293ff9d406225": "Ajouter depuis un lien",
@@ -9123,6 +9130,11 @@
   "m_1a38e94dd3c401": "Masquée des applis",
   "m_1a398cdd93409b": "Numéros de chaîne",
   "m_1a3a3f14648f50": "URL du point de terminaison",
+  "m_1a3c3bd0b44186": {
+    "one": "Revenir en arrière jusqu’à {count} minute",
+    "many": "Revenir en arrière jusqu’à {count} minutes",
+    "other": "Revenir en arrière jusqu’à {count} minutes"
+  },
   "m_1a3c710193f62d": "{name} (copie)",
   "m_1a3c8e2a4a33fe": "Films et séries exclus",
   "m_1a3d943e9f94d1": "Autorisées",
@@ -10091,6 +10103,7 @@
   "m_1d2163f63c76f8": "Les abandonner",
   "m_1d218ad59632e4": "Minutes",
   "m_1d2244e7ae66fa": "Impossible de mettre à jour les chaînes",
+  "m_1d23714a591982": "Utilise environ 3 Go d’espace disque par heure et par spectateur à 6–8 Mbit/s. Réglez sur 0 pour la lecture en direct uniquement.",
   "m_1d240c1034bd02": "Prochaines étapes",
   "m_1d2516f81747b0": "Diffuse les torrents que Offcloud possède déjà.",
   "m_1d259ef5a21bf3": "Aucun flux en direct correspondant",

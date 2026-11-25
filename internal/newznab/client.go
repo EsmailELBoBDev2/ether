@@ -285,8 +285,9 @@ func (c *Client) emitGrab(ctx context.Context, name string, started time.Time, r
 		return
 	}
 	localBudget := !reserved && errors.Is(err, core.ErrBudgetExhausted)
+	err = logredact.SourceError(err)
 	if err != nil && logWarn && !localBudget {
-		c.log.Warn("indexer NZB fetch failed", "indexer", c.Name(), "release", name, "err", err)
+		c.log.Warn("indexer NZB fetch failed", "indexer", c.Name(), "release", logredact.Source(name), "err", err)
 	}
 	var dur time.Duration
 	if !localBudget {
@@ -698,13 +699,19 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 		return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
 	}
 	c.noteAPILimit(hctx, body)
-	// Newznab quota errors can arrive with HTTP 200, including NZB grabs.
-	// Detect these here so caps, searches and downloads share the same backoff.
-	if bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error")) {
+	// Error documents can arrive with HTTP 200 or with a failure status.
+	// A release-specific refusal takes precedence over account quota backoff.
+	hasErrorDocument := bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error"))
+	if resp.StatusCode != http.StatusOK || hasErrorDocument {
 		if _, perr := parseFeed(body, c.Name()); perr != nil {
 			var ae *APIError
 			if errors.As(perr, &ae) {
-				if ae.Budget {
+				now := c.now()
+				if refusal := ClassifyGrabRefusal(ae, now); refusal != nil {
+					refusal.setRetryAfter(resp.Header.Get("Retry-After"), now)
+					return nil, refusal
+				}
+				if ae.Budget && hasErrorDocument {
 					return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), perr)
 				}
 				return nil, perr
@@ -712,13 +719,6 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Indexers often still return a Newznab error document.
-		if _, perr := parseFeed(body, c.Name()); perr != nil {
-			var ae *APIError
-			if errors.As(perr, &ae) {
-				return nil, perr
-			}
-		}
 		return nil, apiError(resp.StatusCode, resp.Status)
 	}
 	return body, nil

@@ -1274,6 +1274,7 @@
   "m_03a78e28ac4a93": "Añade una franja horaria o un bloque de programación para organizar el día.",
   "m_03a83b35a93323": "Tiempos de intro y créditos de IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Ajustes de TV en directo",
   "m_03ab9b48aadc12": "Importar catálogos…",
   "m_03abba36eab8f5": "Dispositivos detectados",
   "m_03abee25fafc93": "Presenta una serie en orden DVD, absoluto o de historia. La reproducción conserva los números originales.",
@@ -3945,6 +3946,7 @@
   "m_0b6d39c093a15c": "El servidor rechazó su token. Edita el servidor y pega un token nuevo.",
   "m_0b6e0cfd55b64c": "Cambiar vídeo",
   "m_0b6e7f08fa07b8": "Añade, reemplaza o elimina cabeceras además de la identidad seleccionada. Los valores sensibles se cifran en reposo y se ocultan en las vistas previas.",
+  "m_0b6eda483b2023": "Tus cambios en el límite de retroceso no se han guardado.",
   "m_0b7040c707f838": "Populares: Ciencia ficción",
   "m_0b7138711862cd": "Tasa de bits media",
   "m_0b725108f96a25": "Instalada",
@@ -6458,6 +6460,11 @@
   "m_128f6f3393a985": "Conservando nombre personalizado «{name}»",
   "m_128fa41a415266": "Es necesario volver a conectar",
   "m_129060a2bccbd9": "Ether lo volverá a intentar solo dentro de {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Ver más tarde: {count} día",
+    "many": "Ver más tarde: {count} días",
+    "other": "Ver más tarde: {count} días"
+  },
   "m_129228a903b15e": "El último recorrido no devolvió {missing} de {total} elementos existentes. Esto ocurre cuando un plugin usa una API de búsqueda o rotativa, o sufre un error temporal. Ether conservó tus elementos por defecto.",
   "m_1293156b01c1d8": "Todas las regiones",
   "m_1293ff9d406225": "Añadir desde un enlace",
@@ -9123,6 +9130,11 @@
   "m_1a38e94dd3c401": "Oculta de las aplicaciones",
   "m_1a398cdd93409b": "Números de canal",
   "m_1a3a3f14648f50": "URL del endpoint",
+  "m_1a3c3bd0b44186": {
+    "one": "Retroceder la TV en directo hasta {count} minuto",
+    "many": "Retroceder la TV en directo hasta {count} minutos",
+    "other": "Retroceder la TV en directo hasta {count} minutos"
+  },
   "m_1a3c710193f62d": "{name} (copia)",
   "m_1a3c8e2a4a33fe": "Películas y series omitidas",
   "m_1a3d943e9f94d1": "Permitido",
@@ -10091,6 +10103,7 @@
   "m_1d2163f63c76f8": "Descartarlos",
   "m_1d218ad59632e4": "Minutos",
   "m_1d2244e7ae66fa": "No se pudieron actualizar los canales",
+  "m_1d23714a591982": "Usa unos 3 GB de disco por hora de espectador a 6–8 Mbps. Pon 0 para solo reproducción en directo.",
   "m_1d240c1034bd02": "Próximos pasos",
   "m_1d2516f81747b0": "Reproduce los torrents que Offcloud ya tiene.",
   "m_1d259ef5a21bf3": "No hay transmisiones en vivo coincidentes",

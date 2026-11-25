@@ -1274,6 +1274,7 @@
   "m_03a78e28ac4a93": "Aggiungi una fascia oraria o un blocco di programmi per organizzare la giornata.",
   "m_03a83b35a93323": "Tempi di intro e titoli di coda da IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Impostazioni TV in diretta",
   "m_03ab9b48aadc12": "Importa cataloghi…",
   "m_03abba36eab8f5": "Dispositivi rilevati",
   "m_03abee25fafc93": "Mostra una serie in ordine DVD, assoluto o narrativo. La riproduzione tiene i numeri originali.",
@@ -3945,6 +3946,7 @@
   "m_0b6d39c093a15c": "Il server ha rifiutato il suo token. Modifica il server e incolla un nuovo token.",
   "m_0b6e0cfd55b64c": "Sostituisci video",
   "m_0b6e7f08fa07b8": "Aggiungi, sostituisci o rimuovi intestazioni oltre all’identità selezionata. I valori sensibili sono cifrati a riposo e mascherati nelle anteprime.",
+  "m_0b6eda483b2023": "Le modifiche al limite di riavvolgimento non sono state salvate.",
   "m_0b7040c707f838": "Popolari: Fantascienza",
   "m_0b7138711862cd": "Bitrate medio",
   "m_0b725108f96a25": "Installato",
@@ -6458,6 +6460,11 @@
   "m_128f6f3393a985": "Nome personalizzato mantenuto: «{name}»",
   "m_128fa41a415266": "Riconnessione necessaria",
   "m_129060a2bccbd9": "Ether riprova da solo tra {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} giorno",
+    "many": "Catch-up: {count} giorni",
+    "other": "Catch-up: {count} giorni"
+  },
   "m_129228a903b15e": "L’ultima scansione non ha restituito {missing} elementi esistenti su {total}. Può succedere con API di ricerca o a rotazione, o per un errore temporaneo. Ether li ha mantenuti per impostazione predefinita.",
   "m_1293156b01c1d8": "Tutte le regioni",
   "m_1293ff9d406225": "Aggiungi da link",
@@ -9127,6 +9134,11 @@
   "m_1a38e94dd3c401": "Nascosta dalle app",
   "m_1a398cdd93409b": "Numeri dei canali",
   "m_1a3a3f14648f50": "URL dell'endpoint",
+  "m_1a3c3bd0b44186": {
+    "one": "Riavvolgi la TV in diretta fino a {count} minuto",
+    "many": "Riavvolgi la TV in diretta fino a {count} minuti",
+    "other": "Riavvolgi la TV in diretta fino a {count} minuti"
+  },
   "m_1a3c710193f62d": "{name} (copia)",
   "m_1a3c8e2a4a33fe": "Film e serie esclusi",
   "m_1a3d943e9f94d1": "Consentito",
@@ -10095,6 +10107,7 @@
   "m_1d2163f63c76f8": "Scartale",
   "m_1d218ad59632e4": "Minuti",
   "m_1d2244e7ae66fa": "Impossibile aggiornare i canali",
+  "m_1d23714a591982": "Usa circa 3 GB di spazio su disco per ora di visione a 6–8 Mbps. Imposta 0 per la sola riproduzione in diretta.",
   "m_1d240c1034bd02": "Prossimi passi",
   "m_1d2516f81747b0": "Riproduce in streaming i torrent che Offcloud ha già.",
   "m_1d259ef5a21bf3": "Nessuna diretta corrispondente",

@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Lisää vuorokaudenaika tai ohjelmalohko päivän järjestämiseksi.",
   "m_03a83b35a93323": "Intron ja lopputekstien ajat IntroDB:stä.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Suoran TV:n asetukset",
   "m_03ab9b48aadc12": "Tuo luetteloita…",
   "m_03abba36eab8f5": "Havaitut laitteet",
   "m_03abee25fafc93": "Näytä sarja DVD-, absoluuttisessa tai tarinajärjestyksessä. Toisto säilyttää alkuperäiset jaksot.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Palvelin hylkäsi tokeninsa. Muokkaa palvelinta ja liitä uusi token.",
   "m_0b6e0cfd55b64c": "Vaihda video",
   "m_0b6e7f08fa07b8": "Lisää, korvaa tai poista otsakkeita valitun identiteetin lisäksi. Arkaluontoiset arvot salataan levossa ja peitetään esikatseluissa.",
+  "m_0b6eda483b2023": "Taaksepäinkelauksen rajan muutoksia ei ole tallennettu.",
   "m_0b7040c707f838": "Suositut: Tieteiselokuva",
   "m_0b7138711862cd": "Keskimääräinen bittinopeus",
   "m_0b725108f96a25": "Asennettu",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Säilytetään oma nimi ”{name}”",
   "m_128fa41a415266": "Uudelleenyhdistäminen vaaditaan",
   "m_129060a2bccbd9": "Ether yrittää itse uudelleen {time} kuluttua.",
+  "m_129192ef5ea47c": {
+    "one": "Jälkikatselu: {count} päivä",
+    "other": "Jälkikatselu: {count} päivää"
+  },
   "m_129228a903b15e": "Viimeisin läpikäynti ei palauttanut {missing}/{total} nykyisestä kohteesta. Näin voi käydä haku- tai kiertävän rajapinnan tai tilapäisen virheen vuoksi. Ether säilytti kohteesi oletuksena.",
   "m_1293156b01c1d8": "Kaikki alueet",
   "m_1293ff9d406225": "Lisää linkistä",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "Piilotettu sovelluksista",
   "m_1a398cdd93409b": "Kanavanumerot",
   "m_1a3a3f14648f50": "Päätepisteen URL-osoite",
+  "m_1a3c3bd0b44186": {
+    "one": "Kelaa suoraa TV:tä taaksepäin enintään {count} minuutti",
+    "other": "Kelaa suoraa TV:tä taaksepäin enintään {count} minuuttia"
+  },
   "m_1a3c710193f62d": "{name} (kopio)",
   "m_1a3c8e2a4a33fe": "Pois jätetyt elokuvat ja sarjat",
   "m_1a3d943e9f94d1": "Sallittu",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Hylkää ne",
   "m_1d218ad59632e4": "Minuuttia",
   "m_1d2244e7ae66fa": "Kanavien päivittäminen epäonnistui",
+  "m_1d23714a591982": "Vie noin 3 Gt levytilaa katsojatuntia kohden nopeudella 6–8 Mbit/s. Aseta 0, jos haluat vain suoran toiston.",
   "m_1d240c1034bd02": "Seuraavat vaiheet",
   "m_1d2516f81747b0": "Toistaa torrentit, jotka Offcloud jo sisältää.",
   "m_1d259ef5a21bf3": "Ei vastaavia suoria lähetyksiä",

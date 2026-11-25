@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/plugins/adapters"
 )
 
@@ -115,6 +117,10 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 					media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)
 				} else {
 					media, err = resolver.OpenKindSource(octx, viewer, key, in.PreferSourceID, kindAccept)
+					var refusal *newznab.GrabRefusal
+					if !in.Exact && errors.As(err, &refusal) {
+						media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, append(slices.Clone(exclude), in.PreferSourceID))
+					}
 				}
 			} else {
 				media, err = resolver.OpenKindExcluding(octx, viewer, key, kindAccept, exclude)

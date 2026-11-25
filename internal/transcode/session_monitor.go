@@ -152,6 +152,9 @@ func (s *Session) watch(r *run) {
 	for {
 		select {
 		case <-done:
+			if r.releaseArchiveInput != nil {
+				r.releaseArchiveInput()
+			}
 			collect(true)
 			s.finish(r)
 			s.mu.Lock()

@@ -18,6 +18,7 @@ import (
 type runSpec struct {
 	ArchiveInput   bool
 	ArchiveTrim    time.Duration
+	ArchiveRetuned bool
 	waitDecode     bool // only argv construction may spend the bounded admission budget
 	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
@@ -619,7 +620,11 @@ func buildCodecArgs(s runSpec) []string {
 	}
 
 	if s.ArchiveInput {
-		if trim := s.ArchiveTrim + s.Start; trim > 0 {
+		trim := s.ArchiveTrim
+		if !s.ArchiveRetuned {
+			trim += s.Start
+		}
+		if trim > 0 {
 			args = append(args, "-ss", secs(trim))
 		}
 		if remain := s.Info.Duration - s.Start; remain > 0 {
@@ -858,6 +863,11 @@ func buildCodecArgs(s runSpec) []string {
 		args = appendVideoClockBSF(args, "setts=pts=PTS:dts=DTS-"+strconv.FormatFloat(fastLead.Seconds(), 'f', 9, 64)+"/TB")
 	}
 	lead = max(lead, hlsEncodedClockLead(s))
+	if s.ArchiveRetuned {
+		// Each fetched range starts a fresh input clock. Publish it at the
+		// original segment position on the VOD timeline.
+		lead += s.Start
+	}
 	if lead > 0 {
 		args = append(args, "-output_ts_offset", strconv.FormatFloat(lead.Seconds(), 'f', 9, 64))
 	}

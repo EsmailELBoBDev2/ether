@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -32,9 +33,12 @@ func (archiveTestOutput) HasBufferedPosition(pos time.Duration) bool { return po
 func TestCatchUpSeekAndProviderRefusal(t *testing.T) {
 	now := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
 	var requests atomic.Int32
+	var startEpoch atomic.Int64
 	var refuse atomic.Bool
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		start, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		startEpoch.Store(start)
 		if refuse.Load() {
 			w.WriteHeader(http.StatusForbidden)
 			return
@@ -77,14 +81,28 @@ func TestCatchUpSeekAndProviderRefusal(t *testing.T) {
 	if err != nil || buffered.MediaGeneration != info.MediaGeneration || requests.Load() != 1 {
 		t.Fatal("buffered seek reopened the provider")
 	}
+	open := tc.requests[0].OpenArchiveRange
+	if open == nil {
+		t.Fatal("archive encoder cannot reopen a sought range")
+	}
+	initial, err := open(t.Context(), 0)
+	if err != nil || requests.Load() != 1 {
+		t.Fatal("the initial encoder did not share the staged upstream connection")
+	}
+	initial.Release()
+	reopened, err := open(t.Context(), 5*time.Second)
+	if err != nil || requests.Load() != 2 || startEpoch.Load() != req.Start.Add(5*time.Second).Unix() {
+		t.Fatal("encoder seek did not request programme start plus the segment offset")
+	}
+	reopened.Release()
 	sought, err := s.SeekCatchUp(t.Context(), user, info.ID, 10*time.Second)
-	if err != nil || sought.Origin != 10*time.Second || sought.MediaGeneration == info.MediaGeneration || requests.Load() != 2 {
+	if err != nil || sought.Origin != 10*time.Second || sought.MediaGeneration == info.MediaGeneration || requests.Load() != 3 {
 		t.Fatal("unbuffered seek did not open a new range")
 	}
 	refuse.Store(true)
 	_, err = s.SeekCatchUp(t.Context(), user, info.ID, 20*time.Second)
 	var unavailable *CatchUpError
-	if !errors.As(err, &unavailable) || unavailable.Code != "catchup_unavailable" || requests.Load() != 3 {
+	if !errors.As(err, &unavailable) || unavailable.Code != "catchup_unavailable" || requests.Load() != 4 {
 		t.Fatal("archive refusal was not mapped")
 	}
 }

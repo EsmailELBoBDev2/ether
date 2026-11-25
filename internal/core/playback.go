@@ -25,6 +25,16 @@ type HLSRamp struct {
 	Duration time.Duration
 }
 
+// ArchiveRangeOpener opens the sequential loopback input at a session-relative
+// offset. Release closes its upstream connection once the encoder is done.
+type ArchiveRangeOpener func(context.Context, time.Duration) (ArchiveRangeInput, error)
+
+type ArchiveRangeInput struct {
+	URL     string
+	Trim    time.Duration
+	Release func()
+}
+
 type HLSRequest struct {
 	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
 	PMSDASH bool
@@ -86,8 +96,9 @@ type HLSRequest struct {
 	LiveInput bool
 	// ArchiveInput reads a finite provider range from a sequential HTTP
 	// response. ArchiveTrim discards the provider's rounded leading time.
-	ArchiveInput bool          `json:"-"`
-	ArchiveTrim  time.Duration `json:"-"`
+	ArchiveInput     bool               `json:"-"`
+	ArchiveTrim      time.Duration      `json:"-"`
+	OpenArchiveRange ArchiveRangeOpener `json:"-"`
 	// NoVideoTranscode enforces the owner's per-viewer "no video transcoding"
 	// policy on this session (never re-encode video; LiveInput is unaffected).
 	NoVideoTranscode bool `json:",omitempty"`

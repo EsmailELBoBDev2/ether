@@ -26,8 +26,9 @@ import (
 // track per representation (video, audio); ffmpeg's dash muxer writes short
 // chunks that the session regroups into numbered segments by timestamp.
 type Session struct {
-	archiveInput bool
-	archiveTrim  time.Duration
+	archiveInput     bool
+	openArchiveRange core.ArchiveRangeOpener
+	archiveTrim      time.Duration
 	// Explicit quality sessions retire the old run before starting a rung.
 	serialRungs             bool
 	copyOrigin              bool // continuous copy uses a measured presentation origin
@@ -263,7 +264,8 @@ type mkvDelivery struct {
 
 // run is one ffmpeg process producing segments from startSeg on.
 type run struct {
-	textSubtitles map[int]*textSubtitleRead
+	textSubtitles       map[int]*textSubtitleRead
+	releaseArchiveInput func()
 
 	rtx          bool
 	rtxConfirmed atomic.Bool

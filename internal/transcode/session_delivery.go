@@ -76,7 +76,7 @@ func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int)
 	// A long wait keeps bytes flowing to the player (segment_padding.go).
 	var pw *paddedSegmentWriter
 	var padC <-chan time.Time
-	if unit := segmentPadding(s.container); unit != nil && !s.isDASH() && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
+	if unit := segmentPadding(s.container); unit != nil && !s.archiveInput && !s.isDASH() && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
 		pw = &paddedSegmentWriter{ResponseWriter: w, unit: unit}
 		w = pw
 		defer pw.finish()

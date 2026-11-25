@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -24,12 +25,14 @@ var ErrInvalidCatchUpRange = frontend.ErrInvalidCatchUpRange
 func archiveUnavailable() error { return &CatchUpError{Code: "catchup_unavailable"} }
 
 type catchUpSession struct {
-	previous        []*catchUpSession
-	retryAt         time.Time
-	releaseProvider func()
-	info            CatchUpInfo
-	hls             core.HLSSession
-	input           *session
+	previous     []*catchUpSession
+	retryAt      time.Time
+	inputMu      sync.Mutex
+	input        *catchUpInput
+	inputClaimed bool
+	inputClosed  bool
+	info         CatchUpInfo
+	hls          core.HLSSession
 }
 
 func (s *Service) catchUpSelection(ctx context.Context, u *core.User, c Channel, req CatchUpRequest, now time.Time) (CatchUpInfo, error) {
@@ -243,18 +246,31 @@ func (s *Service) StartCatchUp(ctx context.Context, u *core.User, req CatchUpReq
 	return opened.info, nil
 }
 
-func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo) (*catchUpSession, error) {
+type catchUpInput struct {
+	stage           *session
+	url             string
+	trim            time.Duration
+	releaseProvider func()
+}
+
+func (input *catchUpInput) release(s *Service) {
+	s.revokeInput(input.stage)
+	if input.releaseProvider != nil {
+		input.releaseProvider()
+	}
+}
+
+// openCatchUpInput prepares a single range for the probe and the encoder to
+// share. The requested start includes zero additional pre-roll. Minute-based
+// URLs still round down, with the encoder trimming the fractional minute.
+func (s *Service) openCatchUpInput(ctx context.Context, ss *session, info CatchUpInfo, offset time.Duration) (*catchUpInput, error) {
 	ctx, cancel := ss.bindContext(ctx)
 	defer cancel()
 	ctx, timeout := context.WithTimeout(ctx, 20*time.Second+s.stabilityReserve(ss.info.Channel))
 	defer timeout()
-	tc := s.transcoder()
-	if tc == nil {
-		return nil, core.ErrNotAvailable
-	}
 	c := ss.info.Channel
-	duration := info.End.Sub(info.Start) - info.Origin
-	start := info.Start.Add(info.Origin)
+	duration := info.End.Sub(info.Start) - info.Origin - offset
+	start := info.Start.Add(info.Origin + offset)
 	raw, err := s.ArchiveURL(ctx, c, start, duration)
 	var trim time.Duration
 	if err == nil && (c.Archive.Mode == "xtream" || c.Archive.Mode == "xc") && strings.Contains(raw, "/timeshift/") {
@@ -275,11 +291,11 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 		return nil, archiveUnavailable()
 	}
 	stage := &session{archiveInput: true, info: ss.info, caps: ss.caps, ctx: ss.ctx, inputSource: src, inputURL: raw, inputHeaders: headers}
-	opened := &catchUpSession{info: info, input: stage}
+	opened := &catchUpInput{stage: stage, trim: trim}
 	ready := false
 	defer func() {
 		if !ready {
-			opened.close(s)
+			opened.release(s)
 		}
 	}()
 	if err := s.grantDirectInput(stage, src, headers); err != nil {
@@ -300,16 +316,17 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 			}
 		}
 	}
-	input, err := s.relayInput(stage)
+	opened.url, err = s.relayInput(stage)
 	if err != nil {
 		return nil, s.catchUpSourceError(ctx, c.SourceID, err)
 	}
-	probe, err := s.probeSessionInput(ctx, stage)
-	if err != nil || probe == nil || !probe.HasPlayableMedia() {
-		return nil, s.catchUpSourceError(ctx, c.SourceID, err)
-	}
+	ready = true
+	return opened, nil
+}
+
+func (s *Service) enableCatchUpPlayback(input *catchUpInput) {
 	s.inputRelay.mu.Lock()
-	grant := s.inputRelay.bySess[stage]
+	grant := s.inputRelay.bySess[input.stage]
 	s.inputRelay.mu.Unlock()
 	if grant != nil {
 		grant.mu.Lock()
@@ -322,9 +339,36 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 			tap.mu.Unlock()
 		}
 	}
-	probe.Duration = duration
+}
+
+func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo) (*catchUpSession, error) {
+	tc := s.transcoder()
+	if tc == nil {
+		return nil, core.ErrNotAvailable
+	}
+	ctx, cancel := ss.bindContext(ctx)
+	defer cancel()
+	ctx, timeout := context.WithTimeout(ctx, 20*time.Second+s.stabilityReserve(ss.info.Channel))
+	defer timeout()
+	input, err := s.openCatchUpInput(ctx, ss, info, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened := &catchUpSession{info: info, input: input}
+	ready := false
+	defer func() {
+		if !ready {
+			opened.close(s)
+		}
+	}()
+	probe, err := s.probeSessionInput(ctx, input.stage)
+	if err != nil || probe == nil || !probe.HasPlayableMedia() {
+		return nil, s.catchUpSourceError(ctx, ss.info.Channel.SourceID, err)
+	}
+	s.enableCatchUpPlayback(input)
+	probe.Duration = info.End.Sub(info.Start) - info.Origin
 	probe.Keyframes = nil
-	dec, cut, _ := s.relayPlan(stage, *probe)
+	dec, cut, _ := s.relayPlan(input.stage, *probe)
 	info.MediaGeneration = randomID()
 	info.Decision = dec
 	opened.info = info
@@ -335,8 +379,8 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 		opened.info.Decision = dec
 	}
 	opened.hls, err = tc.StartHLS(ss.ctx, core.HLSRequest{
-		SessionID: info.ID + "-" + info.MediaGeneration, MediaGeneration: info.MediaGeneration, InputURL: input,
-		Info: *probe, Decision: dec, SegmentDuration: cut, Protocol: protocol, ArchiveInput: true, ArchiveTrim: trim, NoVideoTranscode: ss.caps.NoVideoTranscode,
+		SessionID: info.ID + "-" + info.MediaGeneration, MediaGeneration: info.MediaGeneration, InputURL: input.url,
+		Info: *probe, Decision: dec, SegmentDuration: cut, Protocol: protocol, ArchiveInput: true, OpenArchiveRange: opened.openRange(s, ss), NoVideoTranscode: ss.caps.NoVideoTranscode,
 	})
 	if err != nil {
 		if errors.Is(err, frontend.ErrTooManyTranscodes) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
@@ -346,6 +390,41 @@ func (s *Service) openCatchUp(ctx context.Context, ss *session, info CatchUpInfo
 	}
 	ready = true
 	return opened, nil
+}
+
+// openRange lets an HLS segment seek re-tune without changing the playlist
+// or its media generation. Each run owns exactly one relay grant.
+func (c *catchUpSession) openRange(s *Service, ss *session) core.ArchiveRangeOpener {
+	return func(ctx context.Context, offset time.Duration) (core.ArchiveRangeInput, error) {
+		c.inputMu.Lock()
+		defer c.inputMu.Unlock()
+		if c.inputClosed || ctx.Err() != nil {
+			return core.ArchiveRangeInput{}, core.ErrNotAvailable
+		}
+		input := c.input
+		if c.inputClaimed || offset != 0 {
+			if input != nil {
+				input.release(s)
+				c.input = nil
+			}
+			var err error
+			input, err = s.openCatchUpInput(ctx, ss, c.info, offset)
+			if err != nil {
+				return core.ArchiveRangeInput{}, err
+			}
+			s.enableCatchUpPlayback(input)
+			c.input = input
+		}
+		c.inputClaimed = true
+		return core.ArchiveRangeInput{URL: input.url, Trim: input.trim, Release: func() {
+			c.inputMu.Lock()
+			defer c.inputMu.Unlock()
+			if c.input == input {
+				input.release(s)
+				c.input = nil
+			}
+		}}, nil
+	}
 }
 
 func (s *Service) catchUpSourceError(ctx context.Context, source string, err error) error {
@@ -369,9 +448,12 @@ func (c *catchUpSession) close(s *Service) {
 }
 
 func (c *catchUpSession) releaseInput(s *Service) {
-	s.revokeInput(c.input)
-	if c.releaseProvider != nil {
-		c.releaseProvider()
+	c.inputMu.Lock()
+	defer c.inputMu.Unlock()
+	c.inputClosed = true
+	if c.input != nil {
+		c.input.release(s)
+		c.input = nil
 	}
 }
 
@@ -537,11 +619,18 @@ func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request,
 	}
 	var content strings.Builder
 	target := 1
+	complete := false
 	chunks := append(append([]*catchUpSession(nil), archive.previous...), archive)
 	for n, chunk := range chunks {
 		chunk.touchOutput()
 		playlist := httptest.NewRecorder()
-		chunk.hls.ServePlaylist(playlist, r)
+		if growing, ok := chunk.hls.(interface {
+			ServeArchiveEventPlaylist(http.ResponseWriter, *http.Request)
+		}); ok {
+			growing.ServeArchiveEventPlaylist(playlist, r)
+		} else {
+			chunk.hls.ServePlaylist(playlist, r)
+		}
 		if playlist.Code != http.StatusOK {
 			http.Error(w, "Archive output unavailable", http.StatusBadGateway)
 			return
@@ -549,6 +638,7 @@ func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request,
 		if n > 0 {
 			content.WriteString("#EXT-X-DISCONTINUITY\n")
 		}
+		complete = strings.HasSuffix(playlist.Body.String(), "#EXT-X-ENDLIST\n")
 		for _, line := range strings.Split(playlist.Body.String(), "\n") {
 			if value, ok := strings.CutPrefix(line, "#EXT-X-TARGETDURATION:"); ok {
 				duration, _ := strconv.Atoi(value)
@@ -561,7 +651,7 @@ func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request,
 	}
 	fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", target)
 	_, _ = w.Write([]byte(content.String()))
-	if !archive.info.End.Before(archive.info.ProgrammeEnd) {
+	if complete && !archive.info.End.Before(archive.info.ProgrammeEnd) {
 		_, _ = w.Write([]byte("#EXT-X-ENDLIST\n"))
 	}
 }

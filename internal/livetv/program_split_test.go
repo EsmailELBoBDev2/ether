@@ -39,6 +39,12 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 	if testing.Short() {
 		t.Skip("integration test (-short)")
 	}
+	if raceEnabled {
+		// The splice is a real-time race between the relay's cut and ffmpeg's
+		// live reload; the race detector slows the relay past the cut, so a
+		// -race run cannot prove it. Non-race runs (macOS CI, local) do.
+		t.Skip("real-time splice is not measurable under -race")
+	}
 	ffmpegPath, err1 := exec.LookPath("ffmpeg")
 	ffprobePath, err2 := exec.LookPath("ffprobe")
 	if err1 != nil || err2 != nil {

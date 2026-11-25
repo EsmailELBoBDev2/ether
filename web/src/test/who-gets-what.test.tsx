@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { AppProvider } from "../app-context";
 import type { QualityAnswer } from "../lib/types";
 import { createFakeServer } from "../mock/server";
-import { createRuleResolver } from "../pages/releases/qualitySummaryUi";
+import {
+  alsoInEffects,
+  cellLimitSources,
+  createRuleResolver,
+} from "../pages/releases/qualitySummaryUi";
 import { answerHeadline, layerText, WhoGetsWhat } from "../pages/releases/WhoGetsWhat";
 import { calls, settleUi } from "./harness";
 
@@ -43,10 +47,20 @@ describe("who gets what", () => {
     const fake = await renderWhoGetsWhat();
     await settleUi(() => expect(headline()).toBe("1080pSDR"));
     expect(calls(fake, "POST", "/quality/explain")).toHaveLength(1);
+    // Any library doesn't say whether the play is a movie or an episode, so the check asks.
     expect(calls(fake, "POST", "/quality/explain")[0]?.body).toEqual({
       clientId: "any",
+      kind: "movie",
       remote: false,
     });
+    fireEvent.click(screen.getByRole("radio", { name: "Episode" }));
+    await settleUi(() =>
+      expect(calls(fake, "POST", "/quality/explain").at(-1)?.body).toEqual({
+        clientId: "any",
+        kind: "episode",
+        remote: false,
+      }),
+    );
     // The server refuses a question with no device or app at all.
     const rawMissing = await fake.fetch("/ether/api/quality/explain", {
       method: "POST",
@@ -121,8 +135,22 @@ describe("who gets what", () => {
     // Mixed library splits into Movies and Episodes rows with distinct profiles.
     expect(screen.getAllByText("Anime Movies").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Anime Episodes").length).toBeGreaterThan(0);
-    // Movies library (id 1) shows partialRuleIds ("Some titles: Rule 2") because Rule 2 names Anime (id 4).
-    expect(screen.getAllByText("Rule 2").length).toBeGreaterThan(0);
+    // Rule 2 names library 4 (Weekend movies) and sits above the fallback that
+    // decides for Movies (id 1), so a title in both libraries gets Rule 2's profile.
+    expect(
+      screen
+        .getAllByTestId("cell-also-in")
+        .some(
+          (el) =>
+            el.textContent ===
+            "A title that is also in Weekend movies: Rule 2 wins, so it gets Anime Movies.",
+        ),
+    ).toBe(true);
+    // The result comes first, then the profile and where it came from.
+    expect(screen.getAllByTestId("cell-result")[0]).toHaveTextContent("Up to 1080p");
+    expect(screen.getAllByTestId("cell-profile")[0]).toHaveTextContent(
+      "Profile:1080p·Everyone else, at home",
+    );
 
     // Plugin library row shows "Releases chosen by Demo books" and limits when away.
     expect(screen.getAllByText("Releases chosen by Demo books")[0]).toBeInTheDocument();
@@ -138,7 +166,12 @@ describe("who gets what", () => {
     );
     await settleUi(() => {
       expect(screen.queryByTestId("global-exceptions")).not.toBeInTheDocument();
-      expect(screen.getAllByText("≤ 1080p").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Up to 1080p").length).toBeGreaterThan(0);
+      expect(
+        screen
+          .getAllByTestId("cell-limits")
+          .some((el) => el.textContent === "Limit fromRule 4, 1080p"),
+      ).toBe(true);
     });
     // A kind of device has no single play to check.
     expect(
@@ -176,6 +209,7 @@ describe("who gets what", () => {
     expect(calls(fake, "POST", "/quality/explain").at(-1)?.body).toEqual({
       userId: 2,
       clientId: "client-pixel-8",
+      kind: "movie",
       remote: true,
     });
 
@@ -191,6 +225,55 @@ describe("who gets what", () => {
       }),
     );
     await settleUi(() => expect(screen.getByTestId("quality-media")).toHaveTextContent("Episodes"));
+  });
+
+  it("names another library's rule only when it changes what a shared title gets", () => {
+    const resolveRule = createRuleResolver({
+      rules: [
+        { id: "r_cap", where: "away", maxBitrateKbps: 8000 },
+        { id: "r_mika", viewers: [2], profile: "Dub" },
+        { id: "r_anime", libraries: [4], profile: "Anime" },
+        { id: "r_drama", libraries: [5], profile: "Drama", maxBitrateKbps: 10000 },
+        { id: "r_kids", libraries: [5], maxHeight: 720 },
+      ],
+      libraryName: (id) => (id === 4 ? "Anime" : "J-Drama"),
+    });
+    const cell = {
+      profile: "Anime",
+      source: "rule" as const,
+      profileRuleId: "r_anime",
+      maxHeight: 0,
+      maxBitrateKbps: 8000,
+      stereo: false,
+      limitRuleIds: ["r_cap"],
+      partialRuleIds: ["r_drama", "r_kids"],
+    };
+    // Anime's own rule sits above the J-Drama rule, whose looser cap changes
+    // nothing either. Only the stricter resolution limit is worth a line.
+    expect(alsoInEffects(cell, false, 1080, resolveRule)).toEqual([
+      { ruleId: "r_kids", libraries: ["J-Drama"], profile: "", limits: ["≤ 720p"] },
+    ]);
+    // A viewer's rule above both decides first for that viewer.
+    expect(
+      alsoInEffects({ ...cell, profile: "Dub", profileRuleId: "r_mika" }, false, 1080, resolveRule),
+    ).toEqual([{ ruleId: "r_kids", libraries: ["J-Drama"], profile: "", limits: ["≤ 720p"] }]);
+    // From J-Drama's side the Anime rule above does win.
+    expect(
+      alsoInEffects(
+        { ...cell, profile: "Drama", profileRuleId: "r_drama", partialRuleIds: ["r_anime"] },
+        false,
+        1080,
+        resolveRule,
+      ),
+    ).toEqual([{ ruleId: "r_anime", libraries: ["Anime"], profile: "Anime", limits: [] }]);
+    // Which limit binds: the strictest bitrate is the away cap, not the J-Drama rule's.
+    expect(
+      cellLimitSources({ ...cell, limitRuleIds: ["r_cap", "r_drama"] }, 1080, resolveRule, null),
+    ).toEqual({
+      binding: [{ ruleId: "r_cap", sets: ["8 Mbps"] }],
+      looser: ["r_drama"],
+      known: true,
+    });
   });
 
   it("words every v1.3 layer the server can send", () => {

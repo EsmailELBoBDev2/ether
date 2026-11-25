@@ -235,7 +235,8 @@ function Answer({
               {l.edited ? <Badge variant="secondary">{t("Edited")}</Badge> : null}
               <div>
                 {(() => {
-                  const label = l.decisive ? t("Edit") : t("Set limit");
+                  // A rule's limit row already sets one, binding or not: it is edited.
+                  const label = l.decisive || l.kind === "rule-limit" ? t("Edit") : t("Set limit");
                   const ref = layerRule(l);
                   if (ref) {
                     return (
@@ -351,10 +352,20 @@ export function WhoGetsWhat() {
   const [where, setWhere] = useState<Where>("home");
   const [title, setTitle] = useState<{ key: string; name: string } | null>(null);
   const [libraryId, setLibraryId] = useState(0);
+  const [kind, setKind] = useState<"movie" | "episode">("movie");
 
   const viewerId = Number(filterViewer) || 0;
   const clientId = explainClientId(filterDevice);
   const remote = where === "away";
+  // Any library, or one holding both movies and episodes, doesn't say which a
+  // play is, and rules for only Movies or only Episodes need to know.
+  const libraryRow = summary.data?.rows.find((r) => r.libraryId === libraryId);
+  const needsKind =
+    !title &&
+    (libraryId === 0 ||
+      !libraryRow ||
+      (!libraryRow.chosenByPlugin &&
+        (libraryRow.cells.length !== 1 || !libraryRow.cells[0]?.kind)));
   const answer = useAsync<QualityAnswer | null>(
     (signal) =>
       clientId
@@ -364,12 +375,13 @@ export function WhoGetsWhat() {
               clientId,
               ...(title ? { titleKey: title.key } : {}),
               ...(!title && libraryId ? { libraryId } : {}),
+              ...(needsKind ? { kind } : {}),
               remote,
             },
             signal,
           )
         : Promise.resolve(null),
-    [viewerId, clientId, remote, title?.key, libraryId],
+    [viewerId, clientId, remote, title?.key, libraryId, needsKind ? kind : ""],
   );
   const viewer = viewers?.find((v) => v.id === viewerId);
 
@@ -537,8 +549,10 @@ export function WhoGetsWhat() {
                               <td className="px-5 py-3.5">
                                 <SummaryCellView
                                   cell={pair.home}
+                                  kind={pair.kind}
                                   where="home"
                                   chosenByPlugin={row.chosenByPlugin}
+                                  quality={quality}
                                   resolveRule={resolveRule}
                                   onOpenRule={setRule}
                                 />
@@ -546,8 +560,10 @@ export function WhoGetsWhat() {
                               <td className="px-5 py-3.5">
                                 <SummaryCellView
                                   cell={pair.away}
+                                  kind={pair.kind}
                                   where="away"
                                   chosenByPlugin={row.chosenByPlugin}
+                                  quality={quality}
                                   resolveRule={resolveRule}
                                   onOpenRule={setRule}
                                 />
@@ -609,8 +625,10 @@ export function WhoGetsWhat() {
                             <p className="text-xs text-fg-muted">{t("At home")}</p>
                             <SummaryCellView
                               cell={pair.home}
+                              kind={pair.kind}
                               where="home"
                               chosenByPlugin={row.chosenByPlugin}
+                              quality={quality}
                               resolveRule={resolveRule}
                               onOpenRule={setRule}
                             />
@@ -619,8 +637,10 @@ export function WhoGetsWhat() {
                             <p className="text-xs text-fg-muted">{t("Away")}</p>
                             <SummaryCellView
                               cell={pair.away}
+                              kind={pair.kind}
                               where="away"
                               chosenByPlugin={row.chosenByPlugin}
+                              quality={quality}
                               resolveRule={resolveRule}
                               onOpenRule={setRule}
                             />
@@ -716,6 +736,21 @@ export function WhoGetsWhat() {
                     onChange={(v) => setLibraryId(Number(v))}
                     options={libraryOptions}
                     ariaLabel={t("Library")}
+                  />
+                </div>
+              ) : null}
+              {needsKind ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-fg-muted">{t("What")}</p>
+                  <Segmented
+                    ariaLabel={t("What")}
+                    size="sm"
+                    value={kind}
+                    onChange={setKind}
+                    options={[
+                      { value: "movie", label: t("Movie") },
+                      { value: "episode", label: t("Episode") },
+                    ]}
                   />
                 </div>
               ) : null}

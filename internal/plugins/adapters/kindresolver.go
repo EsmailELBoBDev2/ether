@@ -28,6 +28,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -193,6 +194,7 @@ type KindResolver struct {
 	specBudgetUntil map[string]time.Time
 
 	usenetVerdicts *resolver.UsenetVerdictCache
+	grabRejects    kindGrabRejects
 
 	streamMu           sync.Mutex
 	streamSearches     map[string]*streamSearchSession
@@ -2649,8 +2651,8 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 				"item", item.ID,
 				"attempt", attempt,
 				"candidates", total,
-				"source", src.ID,
-				"pattern", src.Pattern,
+				"source", logredact.Source(src.ID),
+				"pattern", logredact.Source(src.Pattern),
 				"took", took.Round(time.Millisecond),
 				"err", err,
 			)
@@ -2667,9 +2669,9 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 					"plugin", rec.PluginID,
 					"library", lib.Key,
 					"item", item.ID,
-					"source", f.Source.ID,
-					"pattern", f.Source.Pattern,
-					"winning", winning.ID,
+					"source", logredact.Source(f.Source.ID),
+					"pattern", logredact.Source(f.Source.Pattern),
+					"winning", logredact.Source(winning.ID),
 					"err", f.Err,
 				)
 			}
@@ -2773,15 +2775,18 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					"plugin", rec.PluginID,
 					"library", lib.Key,
 					"item", item.ID,
-					"source", cachedSrc.ID,
-					"pattern", cachedSrc.Pattern,
+					"source", logredact.Source(cachedSrc.ID),
+					"pattern", logredact.Source(cachedSrc.Pattern),
 					"took", time.Since(cachedStart).Round(time.Millisecond),
 					"err", oerr,
 				)
 			}
 			// Cached source went stale upstream: invalidate and fall through.
 			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
-			r.deleteCandidates(fk)
+			var grabRefusal *newznab.GrabRefusal
+			if !errors.As(oerr, &grabRefusal) {
+				r.deleteCandidates(fk)
+			}
 		}
 	}
 
@@ -3437,7 +3442,8 @@ func parsePreparingReply(body []byte) error {
 	return core.PreparingFromPending(pending.RetryInMS)
 }
 
-func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) ([]core.PlayableSource, error) {
+func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) (_ []core.PlayableSource, err error) {
+	defer func() { err = logredact.SourceError(err) }()
 	pr, err := r.mgr.Get(ctx, rec.PluginID)
 	if err != nil || !pr.Enabled || !pr.Manifest.HasCapability(plugins.CapKindResolver) {
 		return nil, core.ErrSourceUnavailable
@@ -4069,7 +4075,8 @@ func (r *KindResolver) stripCandidateAuth(cand core.SourceCandidate) core.Source
 	return cand
 }
 
-func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
+func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (_ core.MediaSource, err error) {
+	defer func() { err = logredact.SourceError(err) }()
 	start := time.Now()
 	rel = r.stripReleaseAuth(rel)
 	if rel.Protocol == core.ProtocolTorrent || rel.InfoHash != "" || rel.MagnetURL != "" {
@@ -4079,7 +4086,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		rel.Protocol = core.ProtocolTorrent
 		queueMode := isReleaseQueueMode(ctx)
 		if r.log != nil {
-			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "queue", queueMode)
+			r.log.Info("kindresolver: opening release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "queue", queueMode)
 		}
 		acqCtx, acqCancel := withHardTimeout(ctx, r.engineOpenTimeout)
 		defer acqCancel()
@@ -4087,7 +4094,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			resolved, err := r.resolveTorrent(acqCtx, rel)
 			if err != nil {
 				if r.log != nil {
-					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "resolve_torrent", "took", time.Since(start).Round(time.Millisecond), "err", err)
+					r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "resolve_torrent", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 				}
 				return nil, err
 			}
@@ -4106,9 +4113,9 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			if err != nil {
 				if r.log != nil {
 					if errors.Is(err, core.ErrDownloadQueued) {
-						r.log.Info("kindresolver: release download queued", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Info("kindresolver: release download queued", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					} else {
-						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_queue", "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "debrid_queue", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					}
 				}
 				return nil, err
@@ -4118,9 +4125,9 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			if err != nil {
 				if r.log != nil {
 					if errors.Is(err, core.ErrDownloadQueued) {
-						r.log.Info("kindresolver: queued release still downloading", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Info("kindresolver: queued release still downloading", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					} else {
-						r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", err)
+						r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "debrid_acquire", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 					}
 				}
 				return nil, err
@@ -4132,12 +4139,12 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		ms, err := r.engine.Open(openCtx, rel.ID, payload)
 		if err != nil {
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "engine_open", "took", time.Since(start).Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "engine_open", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "open_took", time.Since(openStart).Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
+			r.log.Info("kindresolver: opened release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "open_took", time.Since(openStart).Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
 		return ms, nil
 	}
@@ -4147,8 +4154,12 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		}
 		rel.Protocol = core.ProtocolUsenet
 		releaseKey := normalizeNZBKey(rel.NZBURL)
+		rejectKey := kindGrabRejectKey(rel)
+		if refusal := r.grabRejects.lookup(rejectKey, r.now()); refusal != nil {
+			return nil, refusal
+		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer)
+			r.log.Info("kindresolver: opening release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol)
 		}
 		fetchStart := time.Now()
 		fetchCtx, fetchCancel := withHardTimeout(ctx, r.nzbFetchTimeout)
@@ -4156,8 +4167,13 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		fetchCancel()
 		fetchTook := time.Since(fetchStart)
 		if err != nil {
+			now := r.now()
+			if refusal := newznab.ClassifyGrabRefusal(err, now); refusal != nil {
+				r.grabRejects.record(rejectKey, now, refusal.RetryAt)
+				return nil, refusal
+			}
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "fetch_nzb", "took", fetchTook.Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "fetch_nzb", "took", fetchTook.Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
@@ -4182,7 +4198,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			}
 			if perr != nil {
 				if r.log != nil {
-					r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", perr)
+					r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "prepare_nzb", "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(perr))
 				}
 				return nil, perr
 			}
@@ -4196,12 +4212,12 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		if err != nil {
 			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, contentID, err)
 			if r.log != nil {
-				r.log.Warn("kindresolver: release open failed", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", err)
+				r.log.Warn("kindresolver: release open failed", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "stage", "engine_open", "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "err", logredact.SourceError(err))
 			}
 			return nil, err
 		}
 		if r.log != nil {
-			r.log.Info("kindresolver: opened release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
+			r.log.Info("kindresolver: opened release", "release", logredact.Source(rel.ID), "name", logredact.Source(rel.Name), "protocol", rel.Protocol, "fetch_took", fetchTook.Round(time.Millisecond), "open_took", openTook.Round(time.Millisecond), "took", time.Since(start).Round(time.Millisecond), "size", ms.Size())
 		}
 		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash, contentID), nil
 	}

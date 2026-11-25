@@ -24,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/archive"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -157,11 +158,11 @@ type SourceRouter interface {
 func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	bs, err := openSource(ctx, src, deps)
 	if err != nil {
-		return nil, err
+		return nil, logredact.SourceError(err)
 	}
 	if err := verifySourceDuration(ctx, src, bs, deps); err != nil {
 		_ = bs.Close()
-		return nil, err
+		return nil, logredact.SourceError(err)
 	}
 	return bs, nil
 }
@@ -558,9 +559,14 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			}
 			return resolver.DefaultHealthHedgeDelay
 		},
-		BeforeLaunch: func(_, next, _ int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
+		BeforeLaunch: func(_, next, inflight int, _ time.Time, _ bool) (resolver.LaunchAction, time.Time) {
 			if nonVideoUsenet[next] && maxUsenetGrabs > 0 && usenetNonVideoGrabs >= maxUsenetGrabs {
-				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", ordered[next].ID, ordered[next].Pattern, maxUsenetGrabs)
+				// A refused grab does not consume the cap. Wait for
+				// in-flight attempts to settle before skipping the next.
+				if inflight > 0 {
+					return resolver.LaunchHold, time.Time{}
+				}
+				skipErrs[next] = fmt.Errorf("source %q (%s): skipped after non-video Usenet grab cap (%d)", logredact.Source(ordered[next].ID), logredact.Source(ordered[next].Pattern), maxUsenetGrabs)
 				return resolver.LaunchSkip, time.Time{}
 			}
 			return resolver.LaunchAllow, time.Time{}
@@ -571,6 +577,10 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			}
 		},
 		OnResult: func(i int, a sourceAttempt) {
+			var refusal *newznab.GrabRefusal
+			if nonVideoUsenet[i] && errors.As(a.err, &refusal) {
+				usenetNonVideoGrabs--
+			}
 			attempts[i] = &a
 		},
 		OnDrop: func(_ int, a sourceAttempt, _ bool) {
@@ -610,9 +620,12 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	allUnstreamable := true
 	allRejected := true
 	allWrongContent := true
+	var nextGrab *newznab.GrabRefusal
+	allGrabRefused := true
 	for i, cand := range ordered {
 		if skipErrs[i] != nil {
 			errs = append(errs, skipErrs[i])
+			allGrabRefused = false
 			allUnstreamable = false
 			allRejected = false
 			allWrongContent = false
@@ -634,7 +647,18 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if !errors.Is(a.err, core.ErrWrongContent) {
 			allWrongContent = false
 		}
-		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, a.err))
+		var refusal *newznab.GrabRefusal
+		if errors.As(a.err, &refusal) {
+			if nextGrab == nil || refusal.RetryAt.Before(nextGrab.RetryAt) {
+				nextGrab = refusal
+			}
+		} else {
+			allGrabRefused = false
+		}
+		errs = append(errs, fmt.Errorf("source %q (%s): %w", logredact.Source(cand.ID), logredact.Source(cand.Pattern), a.err))
+	}
+	if allGrabRefused && nextGrab != nil {
+		return nil, core.PlayableSource{}, nextGrab
 	}
 	if allUnstreamable && len(errs) > 0 {
 		return nil, core.PlayableSource{}, errors.Join(errs...)
@@ -659,7 +683,8 @@ func isConfirmedSourceFailure(err error) bool {
 	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
-	return isPermanentRejection(err) ||
+	var refusal *newznab.GrabRefusal
+	return errors.As(err, &refusal) || isPermanentRejection(err) ||
 		errors.Is(err, core.ErrWrongContent) ||
 		errors.Is(err, ErrPluginAnswer) ||
 		errors.Is(err, ErrDigestMismatch) ||

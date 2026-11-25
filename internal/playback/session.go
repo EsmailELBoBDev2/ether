@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -617,6 +618,33 @@ func displayTitle(t *core.Title) string {
 	if t == nil {
 		return ""
 	}
+	switch {
+	case t.MediaRole == core.MediaRoleTrack || t.MBItemType == "Audio" && t.MediaClass == core.MediaClassMusic:
+		artist := playbackCredit(t, "artist")
+		if artist == "" {
+			for _, parent := range t.MediaParents {
+				if parent.Role == core.MediaRoleArtist && parent.Title != "" {
+					artist = parent.Title
+					break
+				}
+			}
+		}
+		if artist == "" && !t.SelfChild {
+			artist = t.ShowTitle
+		}
+		if artist != "" && artist != t.Title {
+			return artist + " – " + t.Title
+		}
+		return t.Title
+	case t.MediaClass == core.MediaClassBook || t.MediaClass == core.MediaClassAudiobook || t.MBItemType == "Book" || t.MBItemType == "AudioBook":
+		if t.MediaRole == core.MediaRolePart && t.ParentTitle != "" && t.ParentTitle != t.Title {
+			return t.ParentTitle + " – " + t.Title
+		}
+		if author := playbackCredit(t, "author"); author != "" {
+			return author + " – " + t.Title
+		}
+		return t.Title
+	}
 	if t.Type == core.TypeEpisode {
 		show := t.ShowTitle
 		if show == "" {
@@ -628,6 +656,16 @@ func displayTitle(t *core.Title) string {
 		return fmt.Sprintf("%s (%d)", t.Title, t.Year)
 	}
 	return t.Title
+}
+
+func playbackCredit(t *core.Title, role string) string {
+	var names []string
+	for _, credit := range t.MediaCredits {
+		if credit.Role == role && credit.Name != "" {
+			names = append(names, credit.Name)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // lock acquires a channel semaphore, honouring ctx.

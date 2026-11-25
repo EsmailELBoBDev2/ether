@@ -11,7 +11,7 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Check, Download, Film, Plus, RefreshCw, SlidersHorizontal, Tv } from "lucide-react";
+import { Check, Film, Plus, RefreshCw, SlidersHorizontal, Tv } from "lucide-react";
 import { useState } from "react";
 import { useAsync } from "../../lib/hooks";
 import { librariesApi } from "../libraries/api";
@@ -67,7 +67,7 @@ import { settleQualityRules, useQuality, type Quality } from "./useQuality";
  * A new profile starts as a copy of the media's first profile (its quality
  * order and format scores), so it ranks like the owner's own until changed.
  */
-function blankProfile(profiles: QualityProfile[], media: ProfileMedia): QualityProfile {
+export function blankProfile(profiles: QualityProfile[], media: ProfileMedia): QualityProfile {
   const taken = (name: string) => profiles.some((p) => p.name === name && p.mediaType === media);
   let n = profiles.filter((p) => p.mediaType === media).length + 1;
   while (taken(t("Profile {n}", { n }))) n++;
@@ -534,7 +534,7 @@ function ProfileList({
   const profiles = quality.profiles ?? [];
   const visible = profiles
     .map((profile, index) => ({ profile, index }))
-    .filter(({ profile }) => profile.mediaType === media);
+    .filter(({ profile }) => !profile.mediaType || profile.mediaType === media);
   const homeDefault = mediaDefault(quality, media, false);
   const awayDefault = mediaDefault(quality, media, true);
   const [importing, setImporting] = useState(false);
@@ -791,7 +791,7 @@ function ProfileList({
               </p>
             </div>
           </div>
-          <Button size="sm" onClick={() => open(profiles.length, blankProfile(profiles, media))}>
+          <Button size="sm" onClick={() => setImporting(true)}>
             <Plus size={14} /> {t("Add profile")}
           </Button>
         </div>
@@ -919,27 +919,6 @@ function ProfileList({
           drawerTab === "tiers" ? (
             <>
               <SettingsSection title={t("Profile")}>
-                {isNew ? (
-                  <SettingsRow
-                    title={t("Start from a preset")}
-                    description={t(
-                      "Copy quality order and format scores from TRaSH Guides or Profilarr.",
-                    )}
-                    control={
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEditing(null);
-                          setImporting(true);
-                        }}
-                      >
-                        <Download size={14} />
-                        {t("Import a preset quality profile")}
-                      </Button>
-                    }
-                  />
-                ) : null}
                 <TextRow
                   label={t("Name")}
                   value={draft.name}

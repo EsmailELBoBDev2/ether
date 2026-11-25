@@ -491,6 +491,7 @@ export interface EtherConfig {
     defaultTv?: string;
     remoteMovie?: string;
     remoteTv?: string;
+    databases?: ProfileDatabase[] | null;
     sync?: QualitySync;
   };
   transcode: {
@@ -624,10 +625,19 @@ export interface CustomFormatDefinition {
 }
 
 /** Where an imported profile came from and when it last synced. */
+export interface ProfileDatabase {
+  id: string;
+  name: string;
+  repo: string;
+  branch?: string;
+}
+
 export interface ProfileImport {
   source: string;
   app: "radarr" | "sonarr" | string;
   profile: string;
+  database?: string;
+  noSync?: boolean;
   trashId?: string;
   scoreSet?: string;
   groups?: string[] | null;

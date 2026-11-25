@@ -239,7 +239,9 @@ func (s *QualitySyncer) plan(ctx context.Context, imp core.ProfileImport, cfg co
 		if qimp.App != "" {
 			app = qimp.App
 		}
-		return PlanQualityImport(qimp, app, found, cfg), nil
+		plan := PlanQualityImport(qimp, app, found, cfg)
+		plan.Database = strings.TrimSpace(imp.Database)
+		return plan, nil
 	case ImportSourceDictionarry, ImportSourceProfilarr:
 		if s.deps.Dictionarry == nil {
 			return QualityImportPlan{}, errors.New("Profilarr (Dictionarry) is not configured")
@@ -253,7 +255,7 @@ func (s *QualitySyncer) plan(ctx context.Context, imp core.ProfileImport, cfg co
 					if err != nil {
 						return QualityImportPlan{}, fmt.Errorf("custom database %q: %w", dbID, err)
 					}
-					client = s.deps.Dictionarry.ForArchive(norm.ArchiveURL)
+					client = s.deps.Dictionarry.ForDatabase(dbID, norm.ArchiveURL)
 					foundDB = true
 					break
 				}
@@ -366,7 +368,7 @@ func (s *QualitySyncer) apply(c *config.Config, name string, saved core.ProfileI
 			def.App = app
 		}
 		if plan.Source != "" {
-			def.ManagedBy = plan.Source + ":" + app
+			def.ManagedBy = managedBySource(plan.Source, plan.Database, app)
 		}
 		at := -1
 		for i := range c.Resolver.CustomFormats {

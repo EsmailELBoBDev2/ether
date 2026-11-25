@@ -66,6 +66,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/recommend"
 	"github.com/braedonsaunders/ether/internal/remote"
 	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/safety"
 	"github.com/braedonsaunders/ether/internal/screens"
 	"github.com/braedonsaunders/ether/internal/segcache"
@@ -209,10 +210,10 @@ type App struct {
 	// (heartbeated; see rolling.go).
 	draining atomic.Bool
 
-	tmdb      *tmdb.Client
+	tmdb        *tmdb.Client
 	libraries   *libraries.Service
 	libProfiles *libraryProfiles
-	catalog   *catalog.Catalog
+	catalog     *catalog.Catalog
 	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
 	titleRefresh     *titleRefresher
 	titleRefreshOnce sync.Once
@@ -676,7 +677,10 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	// so a listing fetched by either is cached for the other.
 	ua := httpclient.FormatUserAgent(a.opts.Version)
 	a.guides = resolver.NewTrashGuides(resolver.TrashOptions{UserAgent: ua})
-	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{UserAgent: ua})
+	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{
+		UserAgent: ua,
+		Client:    (&safefetch.Guard{}).Client(&http.Client{Timeout: 30 * time.Second}),
+	})
 	a.qualitySync = resolver.NewQualitySyncer(resolver.QualitySyncDeps{
 		Guides:      a.guides,
 		Dictionarry: a.dictionarry,

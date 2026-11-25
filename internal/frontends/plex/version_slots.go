@@ -79,7 +79,7 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 					infoTarget = int64(t.Key)
 				}
 			}
-		} else if !info.Estimated && info.Video() != nil {
+		} else if !info.Estimated && info.HasPlayableMedia() {
 			infoTarget = int64(t.Key)
 		}
 		if selected == 0 {
@@ -102,7 +102,7 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 		appliedSlotProbe := false
 		// A stopped session's persisted probe belongs only to the version
 		// that played; never stamp an explicit non-Auto pick onto Auto.
-		if id == infoTarget && (ps != nil || (!slotInfo.Estimated && slotInfo.Video() != nil)) {
+		if id == infoTarget && (ps != nil || (!slotInfo.Estimated && slotInfo.HasPlayableMedia())) {
 			v.Info = slotInfo
 			appliedSlotProbe = !slotInfo.Estimated && slotInfo.Video() != nil
 			if ps != nil && ps.Resolution != nil && (ps.Resolution.Release.Name != "" || ps.Resolution.Release.Info.Height > 0) {
@@ -114,7 +114,7 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 			}
 		} else if ps == nil && v.Auto && v.Info.Estimated && infoTarget != int64(t.Key) {
 			if wp, ok := s.playback().(frontend.WarmProber); ok && pr != nil && pr.User != nil {
-				if warm, ok := wp.WarmProbeInfo(pr.User, caps, t.Key); ok && !warm.Estimated && warm.Video() != nil {
+				if warm, ok := wp.WarmProbeInfo(pr.User, caps, t.Key); ok && !warm.Estimated && warm.HasPlayableMedia() {
 					v.Info = warm
 					appliedSlotProbe = true
 				}

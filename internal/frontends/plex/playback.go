@@ -676,7 +676,10 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		}
 	}
 	if tt == "audio" || tt == "music" {
-		if rawContainer := strings.ToLower(strings.TrimSpace(q.Get("container"))); rawContainer != "" && len(p.caps.HLSContainers) == 0 {
+		// Containers from video transcode targets do not describe music
+		// output. The music target is applied after the source is probed.
+		p.caps.HLSContainers = nil
+		if rawContainer := strings.ToLower(strings.TrimSpace(q.Get("container"))); rawContainer != "" {
 			p.caps.HLSContainers = []string{rawContainer}
 		}
 	}
@@ -1049,13 +1052,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		}
 		s.burnOnlyShownSubtitle(pr, p, ps.Info)
 		if ps.Info.Video() == nil {
-			directContainers, directCodecs := directMusicProfile(pr.ProfileExtra)
-			if len(directContainers) > 0 {
-				p.caps.Containers = addUnique(p.caps.Containers, directContainers...)
-			}
-			if len(directCodecs) > 0 {
-				p.caps.AudioCodecs = addUnique(p.caps.AudioCodecs, directCodecs...)
-			}
+			applyMusicDirectPlay(&p.caps, pr.ProfileExtra, ps.Info, p.opts.AudioStream)
 			if len(p.caps.HLSContainers) == 0 && len(p.caps.TranscodeAudioCodecs) == 0 {
 				targetContainers, targetCodecs := streamingMusicTarget(pr.ProfileExtra, p.protocol)
 				if len(targetContainers) > 0 {
@@ -1521,7 +1518,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		if p.mediaID != int64(t.Key) {
 			m.ID = p.mediaID
 			m.Part[0].ID = p.mediaID
-			m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", p.mediaID, stamp, containerExt(m.Container))
+			m.Part[0].Key = mediaPartKey(p.mediaID, stamp, info)
 		}
 		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 	}
@@ -3324,6 +3321,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		}
 		partPlay.opts.DirectPlay = true
 		partPlay.opts.DirectStream = true
+		applyMusicDirectPlay(&partPlay.caps, pr.ProfileExtra, ps.Info, -1)
 		// A part range of a playback that is already on the broker must not
 		// open a second session. That open supersedes the live encoder.
 		already := false

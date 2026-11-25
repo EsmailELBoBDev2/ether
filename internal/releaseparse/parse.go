@@ -1531,6 +1531,8 @@ func parseAudio(upper string) (string, bool) {
 		return "dts", atmos
 	case containsAny(upper, " FLAC"):
 		return "flac", atmos
+	case strings.Contains(upper, " ALAC "):
+		return "alac", atmos
 	case containsAny(upper, " OPUS"):
 		return "opus", atmos
 	case containsAny(upper, "AC3", " DD5", " DD ", " DD-", "DOLBY DIGITAL"):

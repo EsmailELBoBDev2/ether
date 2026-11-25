@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -834,8 +835,34 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 	if src.DurationSec > 0 {
 		dur = time.Duration(src.DurationSec * float64(time.Second))
 	}
+	path := src.Path
+	if path == "" && src.Release != nil {
+		path = firstNonEmpty(src.Release.File, src.Release.FileHint)
+	}
+	if path == "" && src.Container != nil {
+		path = src.Container.Member
+	}
+	if path == "" {
+		if u, err := url.Parse(src.URL); err == nil {
+			path = u.Path
+		}
+	}
+	audioContainer, audioCodec := core.AudioFileHint(firstNonEmpty(path, rel.Name))
+	mime, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(src.MIME)), ";")
+	switch strings.TrimSpace(mime) {
+	case "audio/flac", "audio/x-flac":
+		audioContainer, audioCodec = "flac", "flac"
+	case "audio/mpeg":
+		audioContainer, audioCodec = "mp3", "mp3"
+	case "audio/opus":
+		audioContainer, audioCodec = "ogg", "opus"
+	case "audio/alac", "audio/x-alac":
+		audioContainer, audioCodec = "mp4", "alac"
+	case "audio/ogg":
+		audioContainer = "ogg"
+	}
 	info := core.MediaInfo{
-		Container: kindContainerFromMIME(src.MIME, firstNonEmpty(rel.Name, src.Path, src.URL)),
+		Container: kindContainerFromMIME(src.MIME, firstNonEmpty(rel.Name, path)),
 		Duration:  dur,
 		Size:      size,
 		Estimated: true,
@@ -845,7 +872,9 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 			info.BitrateKbps = int((size * 8) / sec / 1000)
 		}
 	}
-	if rel.Info.Height > 0 || rel.Info.VideoCodec != "" {
+	if audioContainer != "" {
+		info.Container = audioContainer
+	} else if rel.Info.Height > 0 || rel.Info.VideoCodec != "" {
 		w := 0
 		if rel.Info.Height > 0 {
 			w = (rel.Info.Height * 16) / 9
@@ -863,11 +892,11 @@ func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release,
 		}
 		info.Streams = append(info.Streams, vs)
 	}
-	if rel.Info.AudioCodec != "" {
+	if audioCodec = firstNonEmpty(audioCodec, rel.Info.AudioCodec); audioCodec != "" {
 		info.Streams = append(info.Streams, core.StreamInfo{
 			Index:    len(info.Streams),
 			Type:     "audio",
-			Codec:    rel.Info.AudioCodec,
+			Codec:    audioCodec,
 			Channels: kindChannelsFromString(rel.Info.Channels),
 		})
 	}
@@ -917,10 +946,6 @@ func kindContainerFromMIME(mime, name string) string {
 		return "mpegts"
 	case "video/quicktime":
 		return "mov"
-	case "audio/mpeg":
-		return "mp3"
-	case "audio/flac":
-		return "flac"
 	}
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(name))) {
 	case ".mkv":

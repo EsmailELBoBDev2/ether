@@ -807,7 +807,7 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 	caps := s.clientCapsForKey(pr, t.Key)
 	if src, ok := s.playback().(resumedVersionSource); ok {
 		info, rel, sel, ok := src.ResumedVersion(ctx, pr.User, t.Key, caps)
-		if !ok || rel.ID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+		if !ok || rel.ID == "" || info.Estimated || !info.HasPlayableMedia() {
 			return frontend.MediaInfo{}, frontend.Release{}, "", false
 		}
 		return info, rel, sel, true
@@ -817,7 +817,7 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 		return frontend.MediaInfo{}, frontend.Release{}, "", false
 	}
 	info, releaseID, ok := src.ResumedTracks(ctx, pr.User, t.Key, caps)
-	if !ok || releaseID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+	if !ok || releaseID == "" || info.Estimated || !info.HasPlayableMedia() {
 		return frontend.MediaInfo{}, frontend.Release{}, "", false
 	}
 	return info, frontend.Release{ID: releaseID}, "", true
@@ -889,14 +889,14 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 				relCopy := ps.Resolution.Release
 				playedRec = &relCopy
 			}
-			if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
+			if !info.Estimated && info.HasPlayableMedia() {
 				probed = info
 			}
 		} else if resumed.ok {
 			probed, probedRelease, playedSelector, info = resumed.info, resumed.rel.ID, resumed.selector, resumed.info
 			relCopy := resumed.rel
 			playedRec = &relCopy
-		} else if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
+		} else if !info.Estimated && info.HasPlayableMedia() {
 			probed = info
 		}
 		if media, edition := s.mediaForVariants(ctx, pr, t, stamp, probed, probedRelease, playedSelector, playedRec, ps); len(media) > 0 {
@@ -925,7 +925,7 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 			if sessionMedia && ps != nil && pin.selected != 0 && pin.selected != int64(t.Key) {
 				m.ID = pin.selected
 				m.Part[0].ID = pin.selected
-				m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", pin.selected, stamp, containerExt(m.Container))
+				m.Part[0].Key = mediaPartKey(pin.selected, stamp, info)
 			}
 			m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 		}
@@ -971,12 +971,23 @@ func partFileName(t *frontend.Title, ext string) string {
 	return "/ether/" + name + "." + ext
 }
 
+func mediaFileExt(info frontend.MediaInfo) string {
+	container := plexContainer(info.Container)
+	switch {
+	case strings.EqualFold(info.Container, "webm"):
+		return "webm"
+	case container == "mp4" && info.AudioOnly():
+		return "m4a"
+	}
+	return containerExt(container)
+}
+
+func mediaPartKey(id, stamp int64, info frontend.MediaInfo) string {
+	return fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, mediaFileExt(info))
+}
+
 func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.Media {
 	container := plexContainer(info.Container)
-	ext := containerExt(container)
-	if strings.EqualFold(info.Container, "webm") {
-		ext = "webm"
-	}
 	dur := ms(info.Duration)
 	if dur <= 0 {
 		dur = ms(t.Runtime)
@@ -1034,9 +1045,9 @@ func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.M
 	m.HasVoiceActivity = model.Ptr(false)
 	p := model.Part{
 		ID:           id,
-		Key:          fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, ext),
+		Key:          mediaPartKey(id, stamp, info),
 		Duration:     dur,
-		File:         partFileName(t, ext),
+		File:         partFileName(t, mediaFileExt(info)),
 		Size:         info.Size,
 		AudioProfile: m.AudioProfile,
 		Container:    container,
@@ -1301,9 +1312,10 @@ func (s *Server) renderStreams(key frontend.RatingKey, info frontend.MediaInfo, 
 			ps.DisplayTitle = videoDisplayTitle(st)
 			ps.ExtendedDisplayTitle = ps.DisplayTitle
 		case "audio":
+			ps.BitDepth = st.BitDepth
 			if st.BitsPerRawSample != nil {
 				ps.BitDepth = *st.BitsPerRawSample
-			} else if plexCodec(st.Codec) == "dca" && !strings.Contains(strings.ToLower(st.Profile), "express") {
+			} else if ps.BitDepth == 0 && ps.Codec == "dca" && !strings.Contains(strings.ToLower(st.Profile), "express") {
 				ps.BitDepth = 24
 			}
 			ps.HearingImpaired, ps.VisualImpaired, ps.Comment = trueDisposition(st.HearingImpaired), trueDisposition(st.VisualImpaired), trueDisposition(st.Commentary)

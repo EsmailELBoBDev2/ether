@@ -195,7 +195,7 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 	if !(pin.frozen && pin.selected != 0 && pin.selected != int64(t.Key)) && frontend.IsAutoVersionSelector(playedSelector) {
 		alignPlayedAutoVariant(vs, alignRelease)
 	}
-	probedReady := !probed.Estimated && len(probed.Streams) > 0 && probed.Video() != nil
+	probedReady := !probed.Estimated && probed.HasPlayableMedia()
 	// playedIdx is the Media the session plays: the one it was admitted on
 	// when known, otherwise the version whose release is playing (Auto
 	// when the playing release is not one of the explicit non-Auto picks,
@@ -242,10 +242,10 @@ func (s *Server) mediaForVariants(ctx context.Context, pr *Request, t *frontend.
 		warmAuto := playedIdx < 0 && probedReady && v.Auto
 		variant := v
 		if played || warmAuto {
-			keepReleaseBitrate := !probeDisagrees(v.Info, probed) && v.Info.BitrateKbps > 0 && (probedRelease != "" || autoDuplicatesRow || probed.BitrateKbps <= 0)
+			keepReleaseBitrate := probed.Video() != nil && !probeDisagrees(v.Info, probed) && v.Info.BitrateKbps > 0 && (probedRelease != "" || autoDuplicatesRow || probed.BitrateKbps <= 0)
 			variant.Info = mergeProbedVariantInfo(v.Info, probed, keepReleaseBitrate)
 		} else if !v.Auto && sameVariantRelease(v.Release, vs[0].Release) && probedReady && !matchedNonAuto && !probeDisagrees(v.Info, probed) {
-			variant.Info = mergeProbedVariantInfo(v.Info, probed, v.Info.BitrateKbps > 0)
+			variant.Info = mergeProbedVariantInfo(v.Info, probed, probed.Video() != nil && v.Info.BitrateKbps > 0)
 		}
 		variant.Info = variantInfoForClient(variant.Info, caps)
 		m := buildMediaVariant(t, variant, stamp, s.variantIDs)
@@ -364,10 +364,9 @@ func buildMediaVariant(t *frontend.Title, v frontend.ReleaseVariant, stamp int64
 		id = registry.idFor(t.Key, versionIdentity(v))
 	}
 	if id != int64(t.Key) {
-		ext := containerExt(plexContainer(v.Info.Container))
 		m.ID = id
 		m.Part[0].ID = id
-		m.Part[0].Key = fmt.Sprintf("/library/parts/%d/%d/file.%s", id, stamp, ext)
+		m.Part[0].Key = mediaPartKey(id, stamp, v.Info)
 	}
 	if v.Label != "" {
 		m.Extra = []model.Attr{model.A("title", v.Label)}

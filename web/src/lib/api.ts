@@ -78,6 +78,7 @@ import type {
   SourceStartup,
   SystemLoad,
   TestResult,
+  UpdateNotes,
   UpdateStatus,
   UsenetProvider,
 } from "./types";
@@ -521,7 +522,9 @@ export const api = {
   checkUpdates: () => post<UpdateStatus>("/updates/check", {}),
   updateStatus: () => apiFetch<UpdateStatus>("/updates/"),
   updateNow: (force = false) => post<UpdateStatus>("/updates/apply", { force }),
-  dismissInstalledUpdate: () => post<UpdateStatus>("/updates/dismiss-installed", {}),
+  updateNotes: (version: string, signal?: AbortSignal) =>
+    apiFetch<UpdateNotes>(`/updates/notes${qs({ version })}`, { signal }),
+  dismissUpdateNotes: (version: string) => post<void>("/updates/notes/dismiss", { version }),
 
   // ---- Cluster ---------------------------------------------------------------------
   clusterSetupStatus: (signal?: AbortSignal) =>

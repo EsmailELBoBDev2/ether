@@ -130,6 +130,8 @@ export interface FakeOptions {
   /** Override /status/hwaccel and dashboard.sections.hwaccel for OS/GPU tests. */
   hwaccel?: Record<string, unknown>;
   bootstrap?: Partial<Bootstrap>;
+  /** Preview the one-time release notes drawer after an update. */
+  whatsNew?: boolean;
   /** Artificial latency for realism in the browser; 0 in tests. */
   latencyMs?: number;
   /** Serve as a node of a three-node PostgreSQL cluster instead of a standalone server. */
@@ -1622,16 +1624,34 @@ export function createFakeServer(opts: FakeOptions = {}) {
     };
   }
 
+  const currentNotes = `## Console
+- Release notes open in Ether after an update and can be reopened from Maintenance.
+- Updates shows the last and next checks. Use **Check now** whenever you want to check manually.
+
+## Playback
+- Continue watching keeps your latest position when switching between apps.
+- The activity page shows whether a stream plays directly or uses transcoding.`;
+  const availableNotes = `## Libraries
+- Library scans show which folder Ether is indexing.
+- Search includes season and episode matches.
+
+## Playback
+- Subtitle changes keep the current release playing.`;
+  let notesUnseen = opts.whatsNew === true;
+  const availableVersion = "0.9.1";
+  const notesUrl = "https://github.com/braedonsaunders/ether/releases";
+  let lastUpdateCheck = Date.now() - 3600_000;
   let updateRequested = false;
   let updateForced = false;
   function updateStatus() {
     return {
       enabled: true,
-      current: "0.2.0",
+      current: state.boot.version,
       available: {
-        version: "0.3.0",
+        version: availableVersion,
         kind: "binary",
-        notesUrl: "https://example.invalid/notes",
+        notes: availableNotes,
+        notesUrl,
         staged: true,
       },
       capability: "self-apply",
@@ -1643,7 +1663,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       autoUpdate: state.config.updates.autoUpdate,
       requested: updateRequested,
       force: updateForced,
-      lastCheck: new Date(Date.now() - 3600_000).toISOString(),
+      lastCheck: new Date(lastUpdateCheck).toISOString(),
+      nextCheck: new Date(lastUpdateCheck + 6 * 3600_000).toISOString(),
       window: {
         start: state.config.updates.maintenanceStart ?? "03:00",
         end: state.config.updates.maintenanceEnd ?? "06:00",
@@ -4973,7 +4994,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       case "GET /updates":
         return json(updateStatus());
+      case "GET /updates/notes": {
+        const version = q.get("version");
+        if (version === availableVersion)
+          return json({ version, markdown: availableNotes, notesUrl });
+        if (version && version !== state.boot.version)
+          return err(404, "release_not_found", "Release notes not found for this version.");
+        return json({ version: state.boot.version, markdown: currentNotes, unseen: notesUnseen });
+      }
+      case "POST /updates/notes/dismiss":
+        notesUnseen = false;
+        return new Response(null, { status: 204 });
       case "POST /updates/check":
+        lastUpdateCheck = Date.now();
         return json(updateStatus(), 202);
       case "POST /updates/apply":
         updateRequested = true;

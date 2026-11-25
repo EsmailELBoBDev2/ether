@@ -843,6 +843,14 @@ export interface EtherUser {
   allowedLibraries: number[] | null;
 }
 
+export interface UpdateNotes {
+  version: string;
+  markdown?: string;
+  notesUrl?: string;
+  unseen?: boolean;
+  installed?: UpdateStatus["installed"];
+}
+
 /** GET /api/updates/ — the server's self-update manager. */
 export interface UpdateStatus {
   checking?: boolean;

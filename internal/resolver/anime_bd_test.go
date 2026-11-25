@@ -65,6 +65,7 @@ func TestAnimeMultiCourResolveAndReject(t *testing.T) {
 	titleEp13 := &core.Title{
 		Key:                   core.EpisodeKey(1000, 1, 13),
 		Type:                  core.TypeEpisode,
+		ShowIDs:               core.IDs{TMDB: 1000},
 		Title:                 "It's Too Late",
 		ShowTitle:             "86",
 		ShowAlternativeTitles: []string{"Eighty-Six"},

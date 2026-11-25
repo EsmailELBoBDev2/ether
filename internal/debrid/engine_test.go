@@ -205,7 +205,7 @@ func TestEngineRefreshesRevokedLinks(t *testing.T) {
 }
 
 func TestEngineErrorClassification(t *testing.T) {
-	t.Run("link keeps failing is missing", func(t *testing.T) {
+	t.Run("reissued links with media HTTP 404 are transient", func(t *testing.T) {
 		r := newEngineRig(t, 256<<10, -1)
 		r.media.mu.Lock()
 		r.media.status["realdebrid-1"] = http.StatusNotFound
@@ -223,7 +223,7 @@ func TestEngineErrorClassification(t *testing.T) {
 		}
 		r.media.mu.Unlock()
 		_, err = src.ReadAt(make([]byte, 10), 0)
-		if !errors.Is(err, core.ErrArticleMissing) {
+		if !errors.Is(err, core.ErrSourceUnavailable) || errors.Is(err, core.ErrOriginalLost) || errors.Is(err, core.ErrArticleMissing) {
 			t.Fatalf("got %v (link calls %d)", err, prov.callCount("link"))
 		}
 	})

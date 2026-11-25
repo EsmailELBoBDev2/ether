@@ -150,10 +150,10 @@ func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, i
 	return core.Decision{}, core.ErrNotAvailable
 }
 
-func (s surface) PlexOriginalRange(ctx context.Context, a frontend.SessionAccess, item core.RatingKey, playID, release, revision string) core.OriginalRange {
-	if a.Protocol == s.protocol && s.protocol == "plex" {
-		if reader, ok := s.broker.(frontend.PlexOriginalRange); ok {
-			return reader.PlexOriginalRange(ctx, a, item, playID, release, revision)
+func (s surface) OriginalRange(ctx context.Context, a frontend.SessionAccess, id, release, revision string) core.OriginalRange {
+	if a.Protocol == s.protocol {
+		if reader, ok := s.broker.(frontend.OriginalRangeReader); ok {
+			return reader.OriginalRange(ctx, a, id, release, revision)
 		}
 	}
 	return core.OriginalRange{}

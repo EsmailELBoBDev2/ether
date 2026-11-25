@@ -201,24 +201,19 @@ func (b *Broker) OriginalPlaybackState(ctx context.Context, a frontend.SessionAc
 	return out, nil
 }
 
-// PlexOriginalRange connects issued native Part reads to the same broker
-// recovery used by file grants. Only a new release-specific part can
-// advertise the replacement's byte coordinates.
-func (b *Broker) PlexOriginalRange(ctx context.Context, a frontend.SessionAccess, item core.RatingKey, playID, partRelease, partRevision string) core.OriginalRange {
+// OriginalRange applies file-grant recovery to a direct read for an owned
+// session. The request must identify the replacement to use its byte coordinates.
+func (b *Broker) OriginalRange(ctx context.Context, a frontend.SessionAccess, id, release, sourceRevision string) core.OriginalRange {
 	if _, ok := b.deps.Playback.(core.OriginalRecovery); !ok {
-		return core.OriginalRange{}
-	}
-	id, err := b.PlexSessionForSource(ctx, a, item, playID)
-	if err != nil {
 		return core.OriginalRange{}
 	}
 	s, v, err := b.access(ctx, a, id)
 	if err != nil {
 		return core.OriginalRange{}
 	}
-	named := partRelease != "" && partRelease != core.KindAutoVersionID
+	named := release != "" && release != core.KindAutoVersionID
 	revision := ""
-	if s.originalReplaced && (partRevision == s.sourceETag || (named && partRelease == s.exactRelease)) {
+	if s.originalReplaced && (sourceRevision == s.sourceETag || (named && release == s.exactRelease)) {
 		revision = s.sourceETag
 	}
 	return core.OriginalRange{Revision: revision, Lost: func() {

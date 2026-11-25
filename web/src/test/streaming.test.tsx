@@ -645,6 +645,11 @@ describe("Source routing", () => {
       sourcePreference: "usenet",
       sourceAlwaysFirst: false,
     });
+    // Wait for the saved draft to reload before making another edit.
+    await waitFor(
+      () => expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
+      WAIT,
+    );
     // "Always cached debrid" saves debrid with the always flag.
     fireEvent.click(within(section).getByRole("button", { name: "Which source goes first" }));
     fireEvent.click(await screen.findByRole("option", { name: "Always cached debrid" }));

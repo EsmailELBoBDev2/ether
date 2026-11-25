@@ -697,11 +697,30 @@ func TitleTooGeneric(title string) bool {
 // of want (for example "The" against "The Mentalist", "Star" against "Star
 // Trek", or "Walking" against "The Walking Dead"). Equal titles return false.
 func TitleLeadingFragment(parsed, want string) bool {
-	pa, wa := normalizeTitleFields(parsed), normalizeTitleFields(want)
+	// A disambiguating qualifier ("Doctor Who (2005)", "Shameless (US)") is
+	// not more of the name: a release named without it is the same show.
+	pa, wa := normalizeTitleFields(parsed), trimTitleQualifiers(normalizeTitleFields(want))
 	if isStrictTokenPrefix(pa, wa) {
 		return true
 	}
 	return isStrictTokenPrefix(stripLeadingArticle(pa), stripLeadingArticle(wa))
+}
+
+// titleQualifierCountries are the country codes catalogues append to tell
+// same-named shows apart.
+var titleQualifierCountries = map[string]bool{"us": true, "uk": true, "au": true, "ca": true, "nz": true, "ie": true, "za": true, "in": true, "kr": true, "jp": true, "de": true, "fr": true, "es": true, "it": true, "nl": true, "se": true, "no": true, "dk": true, "br": true, "mx": true}
+
+// trimTitleQualifiers drops trailing year and country-code tokens.
+func trimTitleQualifiers(tokens []string) []string {
+	for len(tokens) > 1 {
+		last := tokens[len(tokens)-1]
+		isYear := len(last) == 4 && (strings.HasPrefix(last, "19") || strings.HasPrefix(last, "20")) && strings.Trim(last, "0123456789") == ""
+		if !isYear && !titleQualifierCountries[last] {
+			break
+		}
+		tokens = tokens[:len(tokens)-1]
+	}
+	return tokens
 }
 
 func isStrictTokenPrefix(prefix, full []string) bool {

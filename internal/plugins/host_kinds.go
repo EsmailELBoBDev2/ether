@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -78,6 +79,9 @@ type KindBackends struct {
 	// ResolveSourcesResult, when set, is preferred over ResolveSources and
 	// carries per-indexer search status alongside candidates (#733).
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+
+	NormalizeStoredReleaseLinks func(context.Context, []byte) ([]byte, error)
+
 	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
 	// before admitting a background check against the plugin's daily allowance.
 	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)
@@ -115,6 +119,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindLiveSearch = b.KindLiveSearch
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.ResolveSourcesResult = b.ResolveSourcesResult
+	m.deps.Backends.NormalizeStoredReleaseLinks = b.NormalizeStoredReleaseLinks
 	m.deps.Backends.PeekUsenetCheck = b.PeekUsenetCheck
 	m.deps.Backends.AdmitBackgroundUsenetCheck = b.AdmitBackgroundUsenetCheck
 	m.deps.Backends.CachePut = b.CachePut
@@ -132,6 +137,8 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
+		NormalizeStoredReleaseLinks: m.deps.Backends.NormalizeStoredReleaseLinks,
+
 		KindUpsert:                 m.deps.Backends.KindUpsert,
 		KindUpsertStats:            m.deps.Backends.KindUpsertStats,
 		KindUpsertUndo:             m.deps.Backends.KindUpsertUndo,
@@ -478,7 +485,8 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	if _, _, err := h.kindCheck(ctx, kindKey, CapCatalogProvider); err != nil {
 		return core.KindPage{}, err
 	}
-	backend := h.m.kindBackends().KindItems
+	backends := h.m.kindBackends()
+	backend := backends.KindItems
 	if backend == nil {
 		return core.KindPage{}, ErrUnavailable
 	}
@@ -488,7 +496,11 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	if limit > MaxKindUpsertItems {
 		limit = MaxKindUpsertItems
 	}
-	return backend(ctx, h.plugin, kindKey, cursor, limit)
+	page, err := backend(ctx, h.plugin, kindKey, cursor, limit)
+	if err == nil {
+		err = normalizeKindPageHints(ctx, &page, backends.NormalizeStoredReleaseLinks)
+	}
+	return page, err
 }
 
 // KindVisible evaluates the library's Rules and viewer access policy for a
@@ -643,7 +655,8 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 	if q.Limit > MaxKindUpsertItems {
 		q.Limit = MaxKindUpsertItems
 	}
-	backend := h.m.kindBackends().KindBrowse
+	backends := h.m.kindBackends()
+	backend := backends.KindBrowse
 	if backend == nil {
 		return core.KindPage{}, ErrUnavailable
 	}
@@ -654,7 +667,36 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 	if page.Items == nil {
 		page.Items = []core.KindItem{}
 	}
-	return page, nil
+	err = normalizeKindPageHints(ctx, &page, backends.NormalizeStoredReleaseLinks)
+	return page, err
+}
+
+func normalizeKindPageHints(ctx context.Context, page *core.KindPage, normalize func(context.Context, []byte) ([]byte, error)) error {
+	if normalize == nil || len(page.Items) == 0 {
+		return nil
+	}
+	hints := make([]json.RawMessage, len(page.Items))
+	for i, item := range page.Items {
+		hints[i] = item.Hints
+	}
+	raw, err := json.Marshal(hints)
+	if err != nil {
+		return err
+	}
+	normalized, err := normalize(ctx, raw)
+	if err != nil || bytes.Equal(raw, normalized) {
+		return err
+	}
+	if err := json.Unmarshal(normalized, &hints); err != nil {
+		return err
+	}
+	page.Items = slices.Clone(page.Items)
+	for i := range page.Items {
+		if len(page.Items[i].Hints) != 0 {
+			page.Items[i].Hints = hints[i]
+		}
+	}
+	return nil
 }
 
 // DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls

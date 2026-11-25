@@ -65,6 +65,9 @@ type Backends struct {
 	KindLiveSearch       func(ctx context.Context, pluginID string, viewerID int64, kindKey, query string, limit int) (found int, err error)
 	ResolveSources       func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	ResolveSourcesResult func(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error)
+
+	NormalizeStoredReleaseLinks func(context.Context, []byte) ([]byte, error)
+
 	// PeekUsenetCheck returns a cached shared Usenet verdict by keyless NZB URL
 	// before admitting a background check against the plugin's daily allowance.
 	PeekUsenetCheck func(q core.SourceQuery) (core.SourceCandidate, bool)

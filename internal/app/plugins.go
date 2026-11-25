@@ -502,6 +502,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		admitUsenetCheck = a.availability.AdmitPluginUsenetCheck
 	}
 	mgr.SetKindBackends(plugins.KindBackends{
+		NormalizeStoredReleaseLinks: kindResolver.NormalizeStoredReleaseLinks,
+
 		KindUpsert:                 itemsSvc.KindUpsert,
 		KindUpsertStats:            itemsSvc.KindUpsertWithStats,
 		KindUpsertUndo:             itemsSvc.KindUpsertWithUndo,

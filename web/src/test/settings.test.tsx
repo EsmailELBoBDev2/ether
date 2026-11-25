@@ -615,6 +615,7 @@ describe("Settings", () => {
 
   it("keeps personal touches on Recommendations › Tuning for everyone, not for one viewer", async () => {
     renderApp("/recommendations");
+    fireEvent.click(await screen.findByRole("button", { name: /Page settings/ }, WAIT));
     fireEvent.click(await screen.findByRole("tab", { name: "Tuning" }, WAIT));
     expect(
       await screen.findByLabelText("Match and finish time on details", {}, WAIT),

@@ -152,6 +152,8 @@ export default function ViewerProfile() {
           : null;
   usePageTitle(activeViewer ? [t("Viewers"), viewerName(activeViewer), tabTitle, subTitle] : null);
   const setTab = (next: string) => navigate(`/viewers/${id}/${next}`);
+  // Hooks run before the loading and error returns below.
+  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
 
   const refresh = async () => {
     setRefreshing(true);
@@ -180,7 +182,6 @@ export default function ViewerProfile() {
     );
   const name = viewerName(v);
   const life = viewerLifecycle(v);
-  const plexConnected = useAppOptional()?.boot.plexEnabled !== false;
   // Watchlist, alerts and connected apps need server access; a viewer kept
   // for imported history (or paused / unshared) has none of them.
   const serverAccess =

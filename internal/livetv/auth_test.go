@@ -147,6 +147,13 @@ func TestXtreamSourceImportsTheLiveLineupThroughTheAPI(t *testing.T) {
 	if cs[1].ArchiveDays() != 2 {
 		t.Fatal("channel archive window was not saved")
 	}
+	summaries, err := s.ChannelSummaries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 2 || summaries[0].ArchiveDays != 0 || summaries[1].ArchiveDays != 2 {
+		t.Fatal("channel summaries did not reflect the imported archive windows")
+	}
 	start := time.Date(2026, 11, 23, 14, 5, 6, 0, time.UTC)
 	if raw, err := s.ArchiveURL(ctx, cs[1], start, 61*time.Second); err != nil ||
 		raw != up.URL+"/timeshift/u/p/2/2026-11-23:09-05/101.ts" {

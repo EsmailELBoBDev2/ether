@@ -606,6 +606,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, i int, id string,
 	}
 	defer release()
 	started := fo.meter.begin()
+	ctx = core.WithProviderMissHint(ctx, &pf.misses)
 	ctx = core.WithArticlePartValidator(ctx, func(data []byte, part core.ArticlePart) error {
 		return pf.validateArticleIdentity(i, data, part)
 	})

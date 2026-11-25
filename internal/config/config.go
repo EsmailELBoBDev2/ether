@@ -278,7 +278,22 @@ type Usenet struct {
 	// (connections are dialled lazily and expire when idle). A provider's
 	// own MinIdle overrides this.
 	MinIdle int `json:"minIdle"`
+	// LoadMode says how the primary (non-backfill) providers share
+	// requests. "" or UsenetLoadInOrder: strict priority order, a lower
+	// provider only takes overflow (see usenet/spill.go). UsenetLoadBalanced:
+	// every primary is one tier, so each request goes to the least busy one
+	// and every account carries load. Backfill accounts are never balanced.
+	LoadMode string `json:"loadMode,omitempty"`
 }
+
+// Usenet.LoadMode values.
+const (
+	UsenetLoadInOrder  = "inOrder"
+	UsenetLoadBalanced = "balanced"
+)
+
+// Balanced reports whether the primaries share load (LoadMode "balanced").
+func (u Usenet) Balanced() bool { return u.LoadMode == UsenetLoadBalanced }
 
 // Repair bounds opportunistic PAR2 reconstruction. Disabled until the owner
 // opts in; the live benchmark enables it explicitly without editing config.

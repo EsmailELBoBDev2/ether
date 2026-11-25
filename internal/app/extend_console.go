@@ -140,7 +140,7 @@ func consolePages() []consolePage {
 			Route: "/playback", NavGroup: extend.NavGroupStreaming, InNav: true,
 			Sections: []extend.PageSection{
 				section("audio", T("Audio"), T("audio languages original dub loudness night mode dialogue household")),
-				section("subtitles", T("Subtitles"), T("subtitles languages appearance timing sync providers opensubtitles subdl subsource")),
+				section("subtitles", T("Subtitles"), T("subtitles languages appearance style timing sync drift fix corrected copy")),
 				section("transcoding", T("Streams & transcoding"), T("ffmpeg hardware gpu streams at once limit rtx")),
 				section("devices", T("App compatibility"), T("compatibility codecs")),
 				section("extras", T("Extras"), T("intro credits skip chapters up next post-play")),
@@ -174,6 +174,12 @@ func consolePages() []consolePage {
 				section("simkl", T("Simkl"), T("simkl sync history")),
 				section("mdblist", T("MDBList"), T("mdblist sync history")),
 				section("llm", T("Language model"), T("llm ollama openai recaps search")),
+				// Every subtitle provider (accounts, plugins, Stremio add-ons)
+				// is one group of cards on the overview; the href is the
+				// console's "point at this setting" link (settingHref).
+				{Key: "subtitle-providers", Label: T("Subtitle providers"),
+					Keywords: T("subtitles providers opensubtitles subdl subsource stremio add-on plugin"),
+					Href:     "/services/overview#setting=s=subtitle-providers"},
 				section("opensubtitles", T("OpenSubtitles"), T("subtitles")),
 				section("subdl", T("SubDL"), T("subtitles")),
 				section("subsource", T("SubSource"), T("subtitles")),

@@ -7,6 +7,9 @@ import {
   catalogueGroups,
 } from "../libraries/CatalogueSources";
 import { useStreamEvent } from "../../lib/stream";
+import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
+import { AddSubtitleProvider } from "./AddSubtitleProvider";
+import { SubtitleCheck } from "./SubtitleCheck";
 import { IntegrationSetupFooter } from "../../components/IntegrationSetupFooter";
 import { Badge, Button, SettingsSection, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import {
@@ -1091,18 +1094,17 @@ export function ConnectedServices({
               disabled={locked}
               test={testButton}
               href={
-                s.tab === "introdb" ||
-                s.tab === "opensubtitles" ||
-                s.tab === "subdl" ||
-                s.tab === "subsource"
+                s.tab === "introdb"
                   ? "/playback/extras"
-                  : s.tab === "llm"
-                    ? "/recommendations"
-                    : s.tab === "trakt"
-                      ? ownerPath === "/viewers"
-                        ? "/viewers"
-                        : `${ownerPath}/sign-in?signin=sync`
-                      : "/viewers"
+                  : s.tab === "opensubtitles" || s.tab === "subdl" || s.tab === "subsource"
+                    ? "/playback/subtitles"
+                    : s.tab === "llm"
+                      ? "/recommendations"
+                      : s.tab === "trakt"
+                        ? ownerPath === "/viewers"
+                          ? "/viewers"
+                          : `${ownerPath}/sign-in?signin=sync`
+                        : "/viewers"
               }
               usage={
                 s.tab === "introdb"
@@ -1267,6 +1269,11 @@ function ServiceOverview({
   const navigate = useNavigate();
   const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
   const [addingSource, setAddingSource] = useState(false);
+  const subtitlePlugins = useRegistry("subtitleProvider").descriptors.filter(isPluginDescriptor);
+  const [addingSubtitles, setAddingSubtitles] = useState(false);
+  const [checkingSubtitles, setCheckingSubtitles] = useState<{ id: string; name: string } | null>(
+    null,
+  );
   const [ownerPostersSaved, setOwnerPostersSaved] = useState(false);
   useStreamEvent("plugins.changed", () => {
     void catalogue.reload();
@@ -1484,7 +1491,21 @@ function ServiceOverview({
           />
         </IntegrationGroup>
       </>
-      <IntegrationGroup title={t("Playback extras")}>
+      <IntegrationGroup
+        title={t("Subtitle providers")}
+        setting="subtitle-providers"
+        footer={
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Button variant="secondary" onClick={() => setAddingSubtitles(true)}>
+              <Plus size={14} />
+              {t("Add subtitle provider")}
+            </Button>
+            <p className="text-sm text-fg-muted">
+              {t("Every provider that is on is searched, and the best match for the file is used.")}
+            </p>
+          </div>
+        }
+      >
         <IntegrationAppCard
           identity={{ id: "opensubtitles", name: "OpenSubtitles" }}
           description={t("Fetch subtitles when a release doesn't include them.")}
@@ -1528,6 +1549,42 @@ function ServiceOverview({
           configureHref="/services/subsource"
           configureLabel={on("subsource") ? t("Manage SubSource") : t("Set up SubSource")}
         />
+        {subtitlePlugins.map((provider) => {
+          const name = textOf(provider.label) || provider.owner;
+          return (
+            <IntegrationAppCard
+              key={provider.id}
+              identity={{ id: provider.id, name }}
+              logo={
+                provider.icon && /^(https?:|\/|data:)/.test(provider.icon) ? (
+                  <img src={provider.icon} alt="" />
+                ) : undefined
+              }
+              description={t(
+                "Offered beside your other subtitle providers; a file downloads only when picked.",
+              )}
+              status={<Badge variant="success">{t("On")}</Badge>}
+              action={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={t("Check subtitles from {name}", { name })}
+                  onClick={() => setCheckingSubtitles({ id: provider.owner, name })}
+                >
+                  {t("Check subtitles")}
+                </Button>
+              }
+              configureHref={`/plugins/installed?plugin=${encodeURIComponent(provider.owner)}&tab=setup`}
+              configureLabel={t("Open plugin")}
+            />
+          );
+        })}
+      </IntegrationGroup>
+      {addingSubtitles ? <AddSubtitleProvider onClose={() => setAddingSubtitles(false)} /> : null}
+      {checkingSubtitles ? (
+        <SubtitleCheck provider={checkingSubtitles} onClose={() => setCheckingSubtitles(null)} />
+      ) : null}
+      <IntegrationGroup title={t("Playback extras")}>
         <IntegrationAppCard
           identity={{ id: "introdb", name: "TheIntroDB" }}
           description={t("Intro and credits markers so viewers can skip them.")}
@@ -1587,14 +1644,17 @@ function IntegrationGroup({
   title,
   children,
   footer,
+  setting,
 }: {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Stable key a link elsewhere in the console can point at (`settingHref`). */
+  setting?: string;
 }) {
   const cards = flattenCards(children).filter(isValidElement);
   return (
-    <section aria-label={title} className="space-y-3 pt-6 first:pt-0">
+    <section aria-label={title} data-setting={setting} className="space-y-3 pt-6 first:pt-0">
       <h2 className="text-sm font-semibold text-fg">{title}</h2>
       <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {cards.map((child, index) => {

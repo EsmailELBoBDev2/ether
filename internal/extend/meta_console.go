@@ -28,6 +28,9 @@ type PageSection struct {
 	// console applies its search-terms translation to the source string,
 	// keeping the English terms beside the translated ones.
 	Keywords Text `json:"keywords,omitempty"`
+	// Href is where ⌘K lands when the section is not a tab of its own, for
+	// example a group of cards on another tab. Empty means route/key.
+	Href string `json:"href,omitempty"`
 }
 
 // PageMeta is the Meta of a KindPage descriptor. Built-in pages stay

@@ -1938,7 +1938,25 @@ export function createPluginsMock(): {
 
   return {
     handle,
-    descriptors: () => fixtures.filter((f) => f.detail.enabled).flatMap((f) => f.descriptors),
+    descriptors: () =>
+      fixtures
+        .filter((f) => f.detail.enabled)
+        .flatMap((f) => [
+          ...f.descriptors,
+          // A Stremio add-on with its subtitles role on is a subtitle
+          // provider, as on the real server.
+          ...(f.detail.stremioOnly && f.detail.roles?.some((r) => r.role === "subtitles" && r.on)
+            ? [
+                {
+                  kind: "subtitleProvider",
+                  id: `plugin:${f.detail.id}/subtitles`,
+                  owner: f.detail.id,
+                  label: { resolved: f.detail.name },
+                  meta: {},
+                } satisfies Descriptor,
+              ]
+            : []),
+        ]),
     version: () => version,
   };
 }

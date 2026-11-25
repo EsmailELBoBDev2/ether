@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { addonsApi } from "../../../components/addons/addons";
+import { settingHref } from "../../../components/SettingFocus";
 import { t, tn } from "../../../i18n";
 import { apiFetch, errorMessage } from "../../../lib/api";
 import { invalidateRegistry, textOf, useRegistry } from "../../../lib/extend";
@@ -67,7 +68,7 @@ const META: Record<
     title: () => t("Subtitles"),
     about: () =>
       t("Offered beside your other subtitle providers; a file downloads only when picked."),
-    href: "/playback/subtitles",
+    href: settingHref("/services/overview", "subtitle-providers"),
     link: () => t("Open subtitle providers"),
   },
   metadata: {

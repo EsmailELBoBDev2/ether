@@ -1077,7 +1077,7 @@ describe("Playback", () => {
   });
 
   it("identifies cached subtitles by real title, episode and download age, with explicit unknown titles", async () => {
-    renderApp("/playback/subtitles");
+    renderApp("/playback/subtitles/timing");
     expect(
       await screen.findByText("Some Show · S01E02 · The Episode", {}, WAIT),
     ).toBeInTheDocument();

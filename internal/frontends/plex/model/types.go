@@ -518,9 +518,9 @@ type Stream struct {
 	Format               string  `plex:"format,omitempty"`
 	// Lyric streams (streamType 4): timed is "1" for synced lyrics, provider
 	// names the source and minLines the timed line count, as PMS writes them.
-	Timed    string `plex:"timed,omitempty"`
-	Provider string `plex:"provider,omitempty"`
-	MinLines int    `plex:"minLines,omitempty"`
+	Timed                string  `plex:"timed,omitempty"`
+	Provider             string  `plex:"provider,omitempty"`
+	MinLines             int     `plex:"minLines,omitempty"`
 	FrameRate            float64 `plex:"frameRate,omitempty"`
 	HasScalingMatrix     *bool   `plex:"hasScalingMatrix"`
 	Height               int     `plex:"height,omitempty"`

@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/ids"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
 // ticksPerMillisecond converts milliseconds to .NET ticks (100 ns), the unit

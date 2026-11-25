@@ -22,7 +22,9 @@ type QualityQuestion struct {
 	// Title is the title the viewer is asking about. Optional.
 	Title *core.Title
 	// Kind is the scope when no title is supplied: "movie" or "episode".
-	// Empty means unknown.
+	// A real play is always one of the two, so when neither the title, the
+	// library nor Kind says which, the answer is for a movie and says so
+	// (QualityAnswer.KindAssumed).
 	Kind string
 	// InLibrary reports whether the question's title or library is in a
 	// library a rule names. Optional.
@@ -68,18 +70,22 @@ type QualityLayer struct {
 
 // QualityAnswer is the profile, limits and ceiling a play gets, and why.
 type QualityAnswer struct {
-	Profile       string         `json:"profile"`
-	ProfileSource ProfileSource  `json:"profileSource"`
-	ProfileRuleID string         `json:"profileRuleId,omitempty"`
-	LimitRuleIDs  []string       `json:"limitRuleIds"`
-	Kind          string         `json:"kind,omitempty"`
-	MaxHeight     int            `json:"maxHeight"` // 0 = no ceiling
-	HDR           bool           `json:"hdr"`
-	DolbyVision   bool           `json:"dolbyVision"`
-	BitrateKbps   int            `json:"bitrateKbps"` // 0 = no cap
-	Stereo        bool           `json:"stereo,omitempty"`
-	Blocked       bool           `json:"blocked"`
-	Layers        []QualityLayer `json:"layers"`
+	Profile       string        `json:"profile"`
+	ProfileSource ProfileSource `json:"profileSource"`
+	ProfileRuleID string        `json:"profileRuleId,omitempty"`
+	LimitRuleIDs  []string      `json:"limitRuleIds"`
+	// Kind is the kind the answer was evaluated for: "movie" or "episode".
+	Kind string `json:"kind"`
+	// KindAssumed is set when nothing in the question named the kind, so
+	// Kind is the default ("movie"); ask again with Kind for the other.
+	KindAssumed bool           `json:"kindAssumed,omitempty"`
+	MaxHeight   int            `json:"maxHeight"` // 0 = no ceiling
+	HDR         bool           `json:"hdr"`
+	DolbyVision bool           `json:"dolbyVision"`
+	BitrateKbps int            `json:"bitrateKbps"` // 0 = no cap
+	Stereo      bool           `json:"stereo,omitempty"`
+	Blocked     bool           `json:"blocked"`
+	Layers      []QualityLayer `json:"layers"`
 }
 
 func mediaToKind(media string) string {
@@ -102,6 +108,12 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 	if media == core.MediaAny {
 		media = normalizeMedia(in.Kind)
 	}
+	// Rules scoped to Movies or Episodes match every real play of that kind,
+	// so an answer with no kind would skip them and contradict playback.
+	kindAssumed := false
+	if media != core.MediaMovie && media != core.MediaTV {
+		media, kindAssumed = core.MediaMovie, true
+	}
 	pluginChosen := strings.TrimSpace(in.ChosenByPlugin) != ""
 	target := playTarget{
 		media:              media,
@@ -122,6 +134,7 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 		ProfileSource: choice.source,
 		LimitRuleIDs:  limitRuleIDs,
 		Kind:          mediaToKind(media),
+		KindAssumed:   kindAssumed,
 		MaxHeight:     d.profile.MaxHeight,
 		HDR:           d.profile.AllowHDR,
 		DolbyVision:   d.profile.AllowDolbyVision,

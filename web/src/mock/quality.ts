@@ -638,7 +638,9 @@ export function createQualityMock() {
       titleInfo?.kind ||
       q.kind ||
       (q.mediaType === "tv" ? "episode" : q.mediaType === "movie" ? "movie" : "");
-    const kind: "" | "movie" | "episode" =
+    // A real play is a movie or an episode; with nothing to say which, the
+    // server answers for a movie and reports kindAssumed.
+    const named: "" | "movie" | "episode" =
       rawKind === "movie" || rawKind === "episode"
         ? rawKind
         : targetLib?.mediaType === "show"
@@ -646,6 +648,8 @@ export function createQualityMock() {
           : targetLib?.mediaType === "movie"
             ? "movie"
             : "";
+    const kind: "movie" | "episode" = named || "movie";
+    const kindAssumed = !named;
 
     const where: "home" | "away" = q.remote ? "away" : "home";
     const rules = effectiveRules(config, getPolicy, q.userId);
@@ -798,7 +802,8 @@ export function createQualityMock() {
 
     const answer: QualityAnswer = {
       profile: chosenByPlugin ? "" : (prof?.name ?? profileName),
-      ...(kind ? { kind } : {}),
+      kind,
+      ...(kindAssumed ? { kindAssumed } : {}),
       profileSource,
       ...(profileRuleId ? { profileRuleId } : {}),
       limitRuleIds,

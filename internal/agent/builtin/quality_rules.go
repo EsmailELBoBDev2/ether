@@ -193,7 +193,7 @@ func qualityExplainTool(d Deps) tools.Tool {
 			"remote":    pBool("True when streaming away from home (default false)"),
 			"titleKey":  pString("Optional movie or episode title key from catalog_search or playback_history", 32),
 			"libraryId": pInt("Optional library id from quality_rules_list (when titleKey is not given)", 1, 1<<31-1),
-			"kind":      pEnum("Optional title kind when titleKey is not given", config.KindMovie, config.KindEpisode),
+			"kind":      pEnum("Title kind when titleKey is not given and the library does not imply one; defaults to movie (the answer reports kindAssumed)", config.KindMovie, config.KindEpisode),
 		}),
 		Execute: func(ctx context.Context, _ tools.Principal, in map[string]any) (tools.Result, error) {
 			if d.QualityRules == nil {

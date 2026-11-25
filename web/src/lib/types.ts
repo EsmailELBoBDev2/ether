@@ -748,6 +748,12 @@ export interface QualityRuleOrigin {
   kind: "awayLimit" | "viewerLimit" | "rule" | "awayProfile" | "library" | "tvDefault";
   /** The library's, viewer's or old rule's name, when there is one. */
   name?: string;
+  /**
+   * Why the upgrade shaped the rule this way: "awayByKind" (movies and TV had
+   * different away profiles, so it stays an Away rule) or "awayDefaultWins"
+   * (the away profile outranked library profiles, so this rule is At home).
+   */
+  reason?: "awayByKind" | "awayDefaultWins";
 }
 
 export interface QualityRule {
@@ -1227,11 +1233,13 @@ export interface QualityClient {
  * opaque server strings; a rule stores the id and the name shown when picked.
  */
 export interface QualityDevices {
-  /** Kinds of device: "tv", "mobile", "computer". */
-  groups: { id: string; name: string }[] | null;
-  types: { id: string; name: string; group: string }[] | null;
-  /** devices: the device types the app runs on, filled in from the app catalogue. */
-  apps: { id: string; name: string; protocol?: string; devices?: string[] }[] | null;
+  /** Kinds of device: "tv", "mobile", "computer". `aliases` are extra search words ("iPad", "Shield"). */
+  groups: { id: string; name: string; aliases?: string[] }[] | null;
+  types: { id: string; name: string; group: string; aliases?: string[] }[] | null;
+  /** devices: the device types the app runs on; `aliases`: its other names. */
+  apps:
+    | { id: string; name: string; protocol?: string; devices?: string[]; aliases?: string[] }[]
+    | null;
   /** Devices the server has seen. */
   clients:
     | {
@@ -1330,8 +1338,10 @@ export interface QualityLayer {
 
 export interface QualityAnswer {
   profile: string;
-  /** "movie" or "episode" when the answer is scoped to one kind. */
-  kind?: string;
+  /** The kind the play was evaluated for. Send `kind` in the question to choose it. */
+  kind: "movie" | "episode";
+  /** Nothing in the question named the kind (no title, no Movies/Shows library, no `kind`), so it is "movie". */
+  kindAssumed?: boolean;
   profileSource: QualityDecisionSource;
   profileRuleId?: string;
   limitRuleIds: string[];

@@ -286,6 +286,7 @@ describe("who gets what", () => {
     });
     const answer: QualityAnswer = {
       profile: "At home",
+      kind: "movie",
       profileSource: "rule",
       profileRuleId: "r_b",
       limitRuleIds: ["r_b"],

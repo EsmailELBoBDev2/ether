@@ -169,13 +169,17 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 		{Kind: "rule", Name: "Infuse / jellyfin"},
 		{Kind: "rule", Name: "Plex for Android (Mobile)"},
 		{Kind: "rule", Name: "Apple TV"},
-		{Kind: "awayProfile"},
-		{Kind: "library", Name: "Anime Shows"},
-		{Kind: "library", Name: "Favorites"},
-		{Kind: "library", Name: "Favorites"},
-		{Kind: "library", Name: "Movies"},
-		{Kind: "library", Name: "Movies"}, // hidden built-in fallback
-		{Kind: "tvDefault"},
+		// The shared away profile is Default away; the rules below it apply
+		// at home, as 0.3.20 ranked Away above library profiles.
+		{Kind: "library", Name: "Anime Shows", Reason: config.OriginAwayDefaultWins},
+		{Kind: "library", Name: "Favorites", Reason: config.OriginAwayDefaultWins},
+		{Kind: "library", Name: "Favorites", Reason: config.OriginAwayDefaultWins},
+		{Kind: "library", Name: "Movies", Reason: config.OriginAwayDefaultWins},
+		{Kind: "library", Name: "Movies", Reason: config.OriginAwayDefaultWins}, // hidden built-in fallback
+		{Kind: "tvDefault", Reason: config.OriginAwayDefaultWins},
+	}
+	if q.DefaultAway != "Away" {
+		t.Fatalf("DefaultAway = %q, want the shared away profile", q.DefaultAway)
 	}
 	if len(q.Rules) != len(wantOrigins) {
 		t.Fatalf("got %d rules, want %d: %+v", len(q.Rules), len(wantOrigins), q.Rules)
@@ -185,7 +189,7 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 			t.Fatalf("rule %d provenance = %+v, want %+v", i+1, rule.From, wantOrigins[i])
 		}
 	}
-	if r := q.Rules[10]; r.Kind != config.KindMovie || len(r.Libraries) != 0 {
+	if r := q.Rules[9]; r.Kind != config.KindMovie || len(r.Libraries) != 0 {
 		t.Fatalf("expected hidden built-in fallback, got %+v", r)
 	}
 	// Every rule must have a unique non-empty ID.
@@ -258,7 +262,7 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	// 4. Mixed Favorites collection: movie gets "4K", episode gets "4K (TV)".
 	check("fav collection movie", web, nil, &favMovie, "4K", 0, false)
 	check("fav collection episode", web, nil, &favEp, "4K (TV)", 0, false)
-	// 5. Away beats library profile ("Away" rule sits above library rules) + 8000 kbps cap.
+	// 5. Away beats library profile (library rules apply at home; Default away) + 8000 kbps cap.
 	check("anime episode away web", webAway, nil, &animeEp, "Away", 8000, false)
 	// 6. Capped viewer gets strictest 4000 kbps at home AND away.
 	check("capped viewer home", web, &core.User{ID: cappedUID}, &plainMovie, "4K", 4000, false)

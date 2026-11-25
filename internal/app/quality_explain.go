@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,27 @@ type qualityDeviceApp struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Protocol string `json:"protocol"`
+	// Aliases are the devices the app runs on and their other names, so
+	// searching "iPad" or "Shield" finds the app.
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+// qualityAppAliases are the search words for a registry app: the device
+// types it runs on and their aliases.
+func qualityAppAliases(app clientreg.App) []string {
+	var out []string
+	add := func(s string) {
+		if s != "" && s != app.Name && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	for _, d := range app.Devices {
+		add(d)
+		for _, alias := range clientreg.DeviceAliases(d) {
+			add(alias)
+		}
+	}
+	return out
 }
 
 type qualityDeviceClient struct {
@@ -107,6 +129,7 @@ func (a *App) handleQualityDevices(w http.ResponseWriter, r *http.Request) {
 			ID:       clientreg.AppID(item),
 			Name:     item.Name,
 			Protocol: item.Protocol,
+			Aliases:  qualityAppAliases(item),
 		})
 	}
 	clients := []qualityDeviceClient{}

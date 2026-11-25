@@ -13,7 +13,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/stremio"
-	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 const tvdbCatalogueLimit = 100
@@ -212,7 +211,7 @@ func (a *App) wireCatalogueSources() {
 		unique := make([]core.Title, 0, len(res.Titles))
 		seen := map[core.RatingKey]bool{}
 		for _, title := range res.Titles {
-			if title.Type == core.MediaType(ref.typ) && title.IDs.TMDB > 0 && !seen[title.Key] {
+			if title.Type == core.MediaType(ref.typ) && title.Key != 0 && (id == string(core.MetadataTVDB) || title.IDs.TMDB > 0) && !seen[title.Key] {
 				seen[title.Key] = true
 				unique = append(unique, title)
 			}
@@ -291,16 +290,8 @@ func (a *App) wireCatalogueSources() {
 		defer cancel()
 		var res collections.CatalogueSync
 		var err error
-		if id == "tvdb" {
-			ids, fetchErr := tvdb.SeriesIDs(itemCtx, a.cfg.Get().Catalog.TVDBKey, ref.limit)
-			err = fetchErr
-			if err == nil {
-				res.Listed = len(ids)
-				res.Titles, err = a.catalog.TVDBSourceTitles(itemCtx, ids)
-				if err != nil && itemCtx.Err() == nil {
-					err = fmt.Errorf("Could not match TheTVDB shows to TMDB.")
-				}
-			}
+		if id == string(core.MetadataTVDB) {
+			res.Titles, res.Listed, err = a.catalog.TVDBSourceTitles(itemCtx, ref.limit)
 		} else if a.collections != nil {
 			res, err = a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, ref.typ)
 		} else {
@@ -363,7 +354,7 @@ func (a *App) wireCatalogueSources() {
 				result(nil)
 				continue
 			}
-			if !force && refreshed > 0 {
+			if !force && refreshed > 0 && id != string(core.MetadataTVDB) {
 				// Stale but synced before: serve what is stored and refresh
 				// in the background.
 				bg, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -377,6 +368,13 @@ func (a *App) wireCatalogueSources() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				// TheTVDB is refreshed in this open library's context only.
+				// Keep the recorded membership if a refresh fails.
+				if id == string(core.MetadataTVDB) && !force && refreshed > 0 {
+					_ = syncSource(ctx, id, ref, false, false)
+					result(nil)
+					return
+				}
 				result(syncSource(ctx, id, ref, force, true))
 			}()
 		}

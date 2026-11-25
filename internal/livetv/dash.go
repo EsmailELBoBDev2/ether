@@ -96,6 +96,11 @@ func (s *Service) serveOwnedDASH(w http.ResponseWriter, r *http.Request, ss *ses
 	segDur := max(tlTarget, policy.SegmentDuration())
 	minBufSec := max(2, int(math.Ceil(segDur.Seconds())))
 	windowSec := max(minBufSec*3, int(math.Ceil(policy.PlaylistWindow().Seconds())))
+	if lease.tl.dvrWindow > 0 {
+		first := periods[0].segs[0]
+		last := periods[len(periods)-1].segs
+		windowSec = max(windowSec, int(math.Ceil((last[len(last)-1].start + last[len(last)-1].dur - first.start).Seconds())))
+	}
 	delaySec := max(minBufSec, int(math.Ceil(policy.TargetLatency().Seconds())))
 
 	videoBW, audioBW := ownedDASHBandwidths(ss)
@@ -138,7 +143,7 @@ func (s *Service) serveOwnedDASH(w http.ResponseWriter, r *http.Request, ss *ses
 			fmt.Fprintf(&b, `<SegmentTemplate timescale="%d" presentationTimeOffset="%d" startNumber="%d" initialization="%s" media="%s"><SegmentTimeline>`,
 				scale, pto, period.segs[0].seq, html.EscapeString(initURL), html.EscapeString(mediaURL))
 			for _, seg := range period.segs {
-				start, dur, has := transcode.FMP4TrackSpan(seg.data, tr.ID, tr.DefaultDuration, tr.EditShift)
+				start, dur, has := seg.trackTime(tr)
 				if !has {
 					start = pto + int64(math.Round((seg.start-period.start).Seconds()*float64(scale)))
 					dur = max(int64(1), int64(math.Round(seg.dur.Seconds()*float64(scale))))
@@ -266,7 +271,11 @@ func (s *Service) ensureDASH(ctx context.Context, ss *session, id string) (core.
 		dec.VideoCopy = true
 		dec.AudioCopy = true
 	}
-	input, err := s.relayInput(ss)
+	inputSession := ss
+	if ss.owned != nil && ss.owned.relay != nil && ss.owned.relay.shared {
+		inputSession = ss.owned.relay.sess.Load()
+	}
+	input, err := s.relayInput(inputSession)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +290,9 @@ func (s *Service) ensureDASH(ctx context.Context, ss *session, id string) (core.
 	}
 	// Replace any superseded HLS relay/passthrough so two ffmpeg processes do
 	// not compete on the same session.
-	replacedOwned, ss.owned = ss.owned, nil
+	if inputSession == ss {
+		replacedOwned, ss.owned = ss.owned, nil
+	}
 	ss.dash = ds
 	return ds, nil
 }

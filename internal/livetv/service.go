@@ -23,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 func init() {
@@ -144,6 +145,8 @@ type Service struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	dvrOnce          sync.Once
+	dvr              *transcode.LiveDVRCache
 	direct           ownedServiceState // Direct-path owned timelines and slates (owned_*.go)
 }
 

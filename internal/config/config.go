@@ -888,6 +888,7 @@ type LiveTVScreens struct {
 }
 
 type LiveTV struct {
+	TimeshiftMinutes *int `json:"timeshiftMinutes,omitempty"` // nil uses 60; zero keeps only the live window
 	// LatencyProfile is the owner preference for every Live TV client.
 	LatencyProfile string `json:"latencyProfile,omitempty"`
 
@@ -910,6 +911,19 @@ type LiveTV struct {
 	// viewer. "fastest", "balanced" or "rocksolid"; empty means balanced.
 	// A channel may override it.
 	Stability string `json:"stability,omitempty"`
+}
+
+const (
+	DefaultTimeshiftMinutes = 60
+	MaxTimeshiftMinutes     = 240
+)
+
+// EffectiveTimeshiftMinutes applies the default and the supported range.
+func (c LiveTV) EffectiveTimeshiftMinutes() int {
+	if c.TimeshiftMinutes == nil {
+		return DefaultTimeshiftMinutes
+	}
+	return min(max(*c.TimeshiftMinutes, 0), MaxTimeshiftMinutes)
 }
 
 // Live TV stability presets (LiveTV.Stability and the per-channel override).

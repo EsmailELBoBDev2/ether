@@ -6,12 +6,7 @@
 export type MaybePromise<T> = T | Promise<T>;
 
 export type PluginKind =
-  | "source"
-  | "integration"
-  | "notification_channel"
-  | "livetv_source"
-  | "extension"
-  | "content";
+  "source" | "integration" | "notification_channel" | "livetv_source" | "extension" | "content";
 
 export type Capability =
   | "stream_source"
@@ -398,10 +393,7 @@ export type SlotKind =
   | "command";
 
 type ActionSlot =
-  | "actionMenu.title"
-  | "actionMenu.viewer"
-  | "actionMenu.collection"
-  | "actionMenu.release";
+  "actionMenu.title" | "actionMenu.viewer" | "actionMenu.collection" | "actionMenu.release";
 export type SlotMeta = { key: string; label: string } & (
   | { slot: ActionSlot; action: string; route?: never }
   | { slot: Exclude<SlotKind, ActionSlot>; route: string; action?: never }
@@ -437,9 +429,6 @@ export interface Contributes {
   screens?: ScreenMeta[];
   surfaces?: SurfaceMeta[];
 }
-
-
-
 
 export interface ScreenMeta {
   id: string;
@@ -508,13 +497,7 @@ export interface LiveFeedMeta {
   entityKinds?: string[];
 }
 
-export type LiveEventState =
-  | "pre"
-  | "in"
-  | "post"
-  | "delayed"
-  | "postponed"
-  | "canceled";
+export type LiveEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
 
 export interface LiveEventLeague {
   id: string;
@@ -718,9 +701,18 @@ export type MediaRole =
   | "collection";
 
 export type MediaBrowserItemType =
-  | "Movie" | "Series" | "Season" | "Episode" | "Video"
-  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
-  | "Book" | "PhotoAlbum" | "Photo";
+  | "Movie"
+  | "Series"
+  | "Season"
+  | "Episode"
+  | "Video"
+  | "MusicArtist"
+  | "MusicAlbum"
+  | "Audio"
+  | "AudioBook"
+  | "Book"
+  | "PhotoAlbum"
+  | "Photo";
 
 /**
  * How a library is seen per protocol. Each app block overrides how that app
@@ -831,7 +823,8 @@ export interface KindLibraryShelf {
   /** OR values for `facet`. */
   values?: string[];
   /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
-  filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  filters?:
+    Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
   /** What the shelf is for, so apps draw it their own way and keep its titles out of other rows: "recentContexts" (Jump back in) or "liked" (Liked songs). */
   purpose?: "recentContexts" | "liked";
   /** The shelf's default look; an owner's look on a Recommendations page wins. "tracks" draws a track list. */
@@ -1046,11 +1039,20 @@ export interface KindPage {
 
 export type KindBrowseTotalMode = "cheap" | "none" | "exact";
 
-/** One OR-list of values on a single field for KindBrowseRequest.anyGroups (#767). */
-export interface KindBrowseFacetGroup {
+/** One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807). */
+export interface KindBrowseFacetAlt {
   field: string;
   values: string[];
 }
+
+/**
+ * One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+ * Pass either `{field, values}` for one field or `{any: [{field, values}, ...]}`
+ * to OR alternatives across fields (ANDed with the rest of the query).
+ */
+export type KindBrowseFacetGroup =
+  | { field: string; values: string[]; any?: KindBrowseFacetAlt[] }
+  | { any: KindBrowseFacetAlt[]; field?: string; values?: string[] };
 
 export interface KindBrowseRequest {
   kind: string;
@@ -1066,9 +1068,13 @@ export interface KindBrowseRequest {
   allFacets?: Record<string, string[]>;
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
-  /** Any-of facet groups ANDed together (allows multiple OR lists on the same field). */
+  /** Any-of facet groups ANDed together (single-field `{field, values}` or cross-field `{any: [...]}`). */
   anyGroups?: KindBrowseFacetGroup[];
+  /** Field presence/absence filter: `true` keeps items with no value, `false` keeps items with at least one (#807). */
+  empty?: Record<string, boolean>;
   query?: string;
+  /** Same text matching as `query`; items that match are dropped (#807). */
+  excludeQuery?: string;
   /**
    * Controls whether kinds.browse computes KindPage.total:
    * - "cheap" (default): return total only when O(1) (tallies, cached count, or single-page result)
@@ -1343,7 +1349,13 @@ export interface PlayableSource {
   expiresAt?: number;
   container?: {
     format?: string;
-    volumes: Array<{ url?: string; headers?: Record<string, string>; keepHeadersOnRedirect?: string[]; blobRef?: string; size: number }>;
+    volumes: Array<{
+      url?: string;
+      headers?: Record<string, string>;
+      keepHeadersOnRedirect?: string[];
+      blobRef?: string;
+      size: number;
+    }>;
     member?: string;
     memberIndex?: number;
     passwordSecret?: string;
@@ -1389,7 +1401,13 @@ export interface StreamUrlOptions {
   absolute?: boolean;
 }
 
-export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+export interface PendingReply {
+  pending: true;
+  retryInMs?: number;
+  job?: string;
+  sources?: never;
+  matches?: never;
+}
 
 export interface KindResolveResponse {
   pending?: boolean;
@@ -1767,13 +1785,7 @@ export type ViewSpecBlock =
       kind: "text";
       content: ViewSpecValue;
       tone?:
-        | "default"
-        | "negative"
-        | "positive"
-        | "warning"
-        | "muted"
-        | "strong"
-        | ViewSpecFieldRef;
+        "default" | "negative" | "positive" | "warning" | "muted" | "strong" | ViewSpecFieldRef;
       when?: ViewSpecFieldRef;
     }
   | {

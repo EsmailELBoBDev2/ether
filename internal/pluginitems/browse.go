@@ -43,13 +43,15 @@ type BrowseQuery struct {
 	Desc       bool                // false = default direction for Sort; true = reverse
 	Facets     map[string][]string // field key -> values, any of (OR within key, AND across keys)
 	// AllFacets requires every listed value per field; ExcludeFacets
-	// drops items having any listed value; AnyGroups adds one OR-list
-	// per group so a single field can carry several any-of lists ANDed
-	// together (#767). All four combine with AND and the same per-type
-	// value handling.
+	// drops items having any listed value; AnyGroups adds one OR-group
+	// per entry (a single {field, values} list or {any: [...]} across
+	// fields, #767, #807); Empty tests field presence/absence per key;
+	// ExcludeQuery drops items matching the same text search as Search.
 	AllFacets     map[string][]string
 	ExcludeFacets map[string][]string
 	AnyGroups     []core.KindBrowseFacetGroup
+	Empty         map[string]bool
+	ExcludeQuery  string
 	// Watched filters on the viewer's watch state in SQL (ViewerID):
 	// true keeps items with a state_watch view_count > 0, false keeps
 	// items without one. Nil applies no watched predicate.
@@ -295,6 +297,10 @@ func (s *Service) buildBrowsePlan(
 		driveFromFields bool
 	)
 
+	if err := s.appendBrowseEmptyFields(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Empty); err != nil {
+		return browseQueryPlan{}, err
+	}
+
 	isPG := store.DialectOf(s.db) == store.Postgres
 	if driveFacetFromSort {
 		// Probe the covering PK (item_ref, field, v_text, v_int) (or
@@ -352,15 +358,7 @@ func (s *Service) buildBrowsePlan(
 				if idx == driverIdx {
 					continue
 				}
-				if c.kind == clauseEnvelope {
-					mode := facetAny
-					if c.negate {
-						mode = facetNone
-					}
-					appendLibraryFacetMode(&filterWhere, &filterArgs, map[string][]string{c.key: c.vals}, types, mode, isPG)
-					continue
-				}
-				appendClauseExistsSQL(&filterWhere, &filterArgs, c, isPG)
+				appendBrowseClauseSQL(&filterWhere, &filterArgs, c, types, isPG)
 			}
 		}
 		if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
@@ -469,6 +467,7 @@ func (s *Service) buildBrowsePlan(
 			baseArgs = append(baseArgs, viewerID)
 		}
 	}
+	appendBrowseExcludeQuery(&bw, &baseArgs, q.ExcludeQuery, isPG)
 	if err := s.appendVisibilityForViewer(ctx, &bw, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
 		return browseQueryPlan{}, err
 	}
@@ -518,7 +517,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 			return BrowsePage{}, err
 		}
 	}
-	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0
+	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups) || len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0
 
 	// Probe O(1) item/field tallies before building the page query so single
 	// tallied facets answer totals without COUNT(*), empty buckets return
@@ -754,8 +753,7 @@ type activeBrowseFacet struct {
 	vals []string
 }
 
-func collectActiveBrowseFacets(q BrowseQuery) []activeBrowseFacet {
-	var active []activeBrowseFacet
+func collectActiveBrowseFacets(q BrowseQuery) (active []activeBrowseFacet, hasDisjunction bool) {
 	collect := func(m map[string][]string, mode facetMode) {
 		for _, k := range sortedFacetKeys(m) {
 			vals := dedupCleanValues(m[k])
@@ -769,16 +767,16 @@ func collectActiveBrowseFacets(q BrowseQuery) []activeBrowseFacet {
 	collect(q.AllFacets, facetAll)
 	collect(q.ExcludeFacets, facetNone)
 	for _, g := range q.AnyGroups {
-		if strings.TrimSpace(g.Field) == "" {
-			continue
+		alts := activeAnyGroupAlts(g)
+		switch len(alts) {
+		case 0:
+		case 1:
+			active = append(active, activeBrowseFacet{mode: facetAny, key: alts[0].Field, vals: dedupCleanValues(alts[0].Values)})
+		default:
+			hasDisjunction = true
 		}
-		vals := dedupCleanValues(g.Values)
-		if len(vals) == 0 {
-			continue
-		}
-		active = append(active, activeBrowseFacet{mode: facetAny, key: g.Field, vals: vals})
 	}
-	return active
+	return active, hasDisjunction
 }
 
 func (s *Service) queryFieldTallyCounts(ctx context.Context, libraryID core.LibraryID, tallyLevels []string, fieldVals map[string][]string) (map[browseTextTallyKey]int, error) {
@@ -909,6 +907,9 @@ func (s *Service) queryPersonTallyCounts(ctx context.Context, libraryID core.Lib
 }
 
 func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef, level string) (browseTallyInfo, error) {
+	if len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) {
+		return browseTallyInfo{}, nil
+	}
 	noExtraFilters := q.Policy.Passive() && q.TabPolicy.Passive() && !q.Hidden && q.PersonID <= 0 && q.Watched == nil && q.MaxContentRating == "" && len(q.ExcludeKeys) == 0
 	if parentRef != "" {
 		if !noExtraFilters || hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || hasActiveAnyGroups(q.AnyGroups) {
@@ -1021,7 +1022,8 @@ func (s *Service) browseTallyProbe(ctx context.Context, q BrowseQuery, parentRef
 	}
 	singleLevel := libTotal > 0 && levelTotal == libTotal && (!defaultedRoot || len(kindRec.Decl.Levels) == 1)
 
-	active := collectActiveBrowseFacets(q)
+	active, hasDisjunction := collectActiveBrowseFacets(q)
+	noExtraFilters = noExtraFilters && !hasDisjunction
 	if len(active) == 0 && q.PersonID <= 0 {
 		if noExtraFilters {
 			return browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}, nil
@@ -2446,13 +2448,8 @@ func hasActiveFacets(facets map[string][]string) bool {
 
 func hasActiveAnyGroups(groups []core.KindBrowseFacetGroup) bool {
 	for _, g := range groups {
-		if strings.TrimSpace(g.Field) == "" {
-			continue
-		}
-		for _, v := range g.Values {
-			if strings.TrimSpace(v) != "" {
-				return true
-			}
+		if len(activeAnyGroupAlts(g)) > 0 {
+			return true
 		}
 	}
 	return false
@@ -2482,8 +2479,16 @@ func checkFacetValueBound(anyGroups []core.KindBrowseFacetGroup, maps ...map[str
 			}
 		}
 	}
+	alts := 0
 	for _, g := range anyGroups {
 		total += len(g.Values)
+		alts += len(g.Any)
+		if alts > MaxBrowseFacetValues {
+			return fmt.Errorf("pluginitems: facet anyGroups alternatives exceed %d per query", MaxBrowseFacetValues)
+		}
+		for _, alt := range g.Any {
+			total += len(alt.Values)
+		}
 		if total > MaxBrowseFacetValues {
 			return fmt.Errorf("pluginitems: facet values exceed %d per query", MaxBrowseFacetValues)
 		}
@@ -2607,14 +2612,7 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 	appendLibraryFacetMode(where, args, allFacets, types, facetAll, isPG)
 	appendLibraryFacetMode(where, args, excludeFacets, types, facetNone, isPG)
 	for _, g := range anyGroups {
-		if strings.TrimSpace(g.Field) == "" {
-			continue
-		}
-		cleanVals := cleanFacetValues(g.Values)
-		if len(cleanVals) == 0 {
-			continue
-		}
-		appendLibraryFacetMode(where, args, map[string][]string{g.Field: cleanVals}, types, facetAny, isPG)
+		appendAnyGroupClause(where, args, types, g, isPG)
 	}
 	return nil
 }
@@ -2629,6 +2627,7 @@ const (
 	clausePeople
 	clausePersonID
 	clauseEnvelope
+	clauseDisjunction
 )
 
 type browseFacetClause struct {
@@ -2639,6 +2638,7 @@ type browseFacetClause struct {
 	pids         []int64
 	peopleFields []string
 	disjuncts    []fieldDisjunct
+	alternatives []browseFacetClause
 	defaultPart  string
 	negate       bool
 	singleValued bool
@@ -2737,15 +2737,26 @@ func collectBrowseFieldClauses(q BrowseQuery, types map[string]string, peopleFie
 		}
 	}
 	for _, g := range q.AnyGroups {
-		if strings.TrimSpace(g.Field) == "" {
+		alts := activeAnyGroupAlts(g)
+		switch len(alts) {
+		case 0:
 			continue
-		}
-		vals := dedupCleanValues(g.Values)
-		if len(vals) == 0 {
-			continue
-		}
-		if !addOne(g.Field, vals, false) {
-			return nil, true
+		case 1:
+			if !addOne(alts[0].Field, dedupCleanValues(alts[0].Values), false) {
+				return nil, true
+			}
+		default:
+			group := browseFacetClause{kind: clauseDisjunction, estCount: -1}
+			for _, alt := range alts {
+				c, skip, impossible := buildBrowseFacetClause(types, alt.Field, dedupCleanValues(alt.Values), false)
+				if !skip && !impossible {
+					group.alternatives = append(group.alternatives, c)
+				}
+			}
+			if len(group.alternatives) == 0 {
+				return nil, true
+			}
+			clauses = append(clauses, group)
 		}
 	}
 	for _, key := range sortedFacetKeys(q.ExcludeFacets) {
@@ -2885,7 +2896,8 @@ func pickBrowseDriver(clauses []browseFacetClause, tally browseTallyInfo) (bestI
 	bestIdx = -1
 	for i := range clauses {
 		c := &clauses[i]
-		if c.negate || c.kind == clauseEnvelope {
+		// A disjunction has no estimate for the union of its alternatives.
+		if c.negate || c.kind == clauseEnvelope || c.kind == clauseDisjunction {
 			continue
 		}
 		if tally.talliesActive {
@@ -3091,6 +3103,30 @@ func appendCorrelatedTextClause(where *strings.Builder, args *[]any, fieldKey st
 		*args = append(*args, v)
 	}
 	where.WriteString(`SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND +f.v_text IN (` + strings.Join(ph, ", ") + `))`)
+}
+
+func appendBrowseClauseSQL(where *strings.Builder, args *[]any, c browseFacetClause, types map[string]string, isPG bool) {
+	switch c.kind {
+	case clauseEnvelope:
+		mode := facetAny
+		if c.negate {
+			mode = facetNone
+		}
+		appendLibraryFacetMode(where, args, map[string][]string{c.key: c.vals}, types, mode, isPG)
+	case clauseDisjunction:
+		where.WriteString(" AND (")
+		for i, alt := range c.alternatives {
+			if i > 0 {
+				where.WriteString(" OR ")
+			}
+			var predicate strings.Builder
+			appendBrowseClauseSQL(&predicate, args, alt, types, isPG)
+			where.WriteString("(" + strings.TrimPrefix(predicate.String(), " AND ") + ")")
+		}
+		where.WriteString(")")
+	default:
+		appendClauseExistsSQL(where, args, c, isPG)
+	}
 }
 
 func appendClauseExistsSQL(where *strings.Builder, args *[]any, c browseFacetClause, isPG bool) {

@@ -28,11 +28,15 @@ type SearchQuery struct {
 	PersonID   int64
 	Facets     map[string][]string
 	// AllFacets requires every listed value per field; ExcludeFacets
-	// drops items having any listed value; AnyGroups adds one OR-list
-	// per group, ANDed with the rest (see BrowseQuery).
+	// drops items having any listed value; AnyGroups adds one OR-group
+	// per entry (single field or cross-field {any: [...]}); Empty tests
+	// field presence/absence; ExcludeQuery drops items matching the text
+	// query (see BrowseQuery, #767, #807).
 	AllFacets     map[string][]string
 	ExcludeFacets map[string][]string
 	AnyGroups     []core.KindBrowseFacetGroup
+	Empty         map[string]bool
+	ExcludeQuery  string
 	Limit         int
 }
 
@@ -41,6 +45,15 @@ type SearchQuery struct {
 func (s *Service) Search(ctx context.Context, q SearchQuery) (BrowsePage, error) {
 	if q.LibraryID <= 0 {
 		return BrowsePage{}, nil
+	}
+	if len(q.Empty) > 0 {
+		rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
+		if err != nil {
+			return BrowsePage{}, err
+		}
+		if _, err := validateBrowseEmptyFields(rec.Decl, q.Empty); err != nil {
+			return BrowsePage{}, err
+		}
 	}
 	tokens := tokenizeSearchQuery(q.Query)
 	if len(tokens) == 0 {

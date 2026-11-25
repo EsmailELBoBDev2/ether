@@ -348,7 +348,7 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 	for i := range entries {
 		e := &entries[i]
 		q := e.q
-		if e.parentRef != "" {
+		if e.parentRef != "" || len(q.Empty) > 0 || hasActiveExcludeQuery(q.ExcludeQuery) {
 			continue
 		}
 		noExtraFilters := q.Policy.Passive() && q.TabPolicy.Passive() && !q.Hidden && q.PersonID <= 0 && q.Watched == nil && q.MaxContentRating == "" && len(q.ExcludeKeys) == 0
@@ -385,7 +385,8 @@ func (s *Service) resolveBrowseBatchTallies(ctx context.Context, libraryID core.
 		}
 		singleLevel := libTotal > 0 && levelTotal == libTotal && (!defaultedRoot || len(kindRec.Decl.Levels) == 1)
 
-		active := collectActiveBrowseFacets(q)
+		active, hasDisjunction := collectActiveBrowseFacets(q)
+		noExtraFilters = noExtraFilters && !hasDisjunction
 		if len(active) == 0 && q.PersonID <= 0 {
 			if noExtraFilters {
 				e.tally = browseTallyInfo{totalExact: true, total: levelTotal, libTotal: libTotal, singleLevel: singleLevel}

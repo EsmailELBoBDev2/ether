@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -522,13 +524,42 @@ func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([
 	return visible, nil
 }
 
+// ValidKindEmptyField reports whether field may appear as a key in
+// KindBrowseRequest.Empty for decl (#807): any declared field on decl, any
+// optional item envelope column (released, year, rating, summary, recording,
+// parentId, index, or the virtual decade alias), or a <dateField>-decade facet
+// whose base is a declared date field.
+func ValidKindEmptyField(decl MediaKindMeta, field string) bool {
+	if strings.TrimSpace(field) == "" || field != strings.TrimSpace(field) {
+		return false
+	}
+	for _, f := range decl.Fields {
+		if f.Key == field {
+			return true
+		}
+	}
+	switch field {
+	case "released", "year", "rating", "summary", "recording", "parentId", "index", "decade":
+		return true
+	}
+	if base, ok := libraryfilter.SplitDateDecadeFacet(field); ok {
+		for _, f := range decl.Fields {
+			if f.Key == base && f.Type == "date" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // KindBrowse browses or searches kindKey using the same LibraryPolicy path
 // as Ether's console and protocol projectors for the requesting
 // frontend-adapter viewer (#615). Only frontend adapter requests carrying an
 // authenticated viewer may call it; the viewer comes solely from the host
 // context, never from guest input.
 func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
-	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+	_, decl, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter)
+	if err != nil {
 		return core.KindPage{}, err
 	}
 	viewerID, ok := ViewerFromContext(ctx)
@@ -561,8 +592,19 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			facetValues += len(vals)
 		}
 	}
+	anyAlts := 0
 	for _, g := range q.AnyGroups {
 		facetValues += len(g.Values)
+		anyAlts += len(g.Any)
+		for _, alt := range g.Any {
+			facetValues += len(alt.Values)
+		}
+	}
+	if anyAlts > MaxKindBrowseFacetValues {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "anyGroups",
+			Message: fmt.Sprintf("anyGroups alternatives exceed %d per query", MaxKindBrowseFacetValues),
+		}}}
 	}
 	if facetValues > MaxKindBrowseFacetValues {
 		field := "facets"
@@ -573,6 +615,25 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			Field:   field,
 			Message: fmt.Sprintf("facet values exceed %d per query", MaxKindBrowseFacetValues),
 		}}}
+	}
+	if len(q.Empty) > 0 {
+		keys := make([]string, 0, len(q.Empty))
+		for k := range q.Empty {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !ValidKindEmptyField(decl, k) {
+				f := "empty"
+				if k != "" {
+					f = "empty." + k
+				}
+				return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+					Field:   f,
+					Message: fmt.Sprintf("unknown field %q", k),
+				}}}
+			}
+		}
 	}
 	if q.Limit <= 0 {
 		q.Limit = 200

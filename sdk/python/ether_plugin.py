@@ -1411,7 +1411,7 @@ class PluginContext:
     def kinds_browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Browse or search `kind` with the library's Rules and viewer access
         policy applied for the requesting frontend-adapter viewer (#615). Only
@@ -3103,10 +3103,12 @@ class MockHostClient:
             parent_id = str(q.get("parentId") or "")
             level = str(q.get("level") or "")
             needle = str(q.get("query") or "").strip().lower()
+            exclude_needle = str(q.get("excludeQuery") or "").strip().lower()
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
             all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
             exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
             any_groups = q.get("anyGroups") if isinstance(q.get("anyGroups"), list) else []
+            empty_fields = q.get("empty") if isinstance(q.get("empty"), dict) else {}
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -3119,7 +3121,11 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets or all_facets or exclude_facets or any_groups:
+                if exclude_needle:
+                    hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+                    if exclude_needle in hay:
+                        continue
+                if facets or all_facets or exclude_facets or any_groups or empty_fields:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
 
                     def _have(fk: str) -> List[str]:
@@ -3149,10 +3155,56 @@ class MockHostClient:
                         for grp in any_groups:
                             if not isinstance(grp, dict):
                                 continue
+                            alts: List[Tuple[str, List[str]]] = []
                             fk = str(grp.get("field") or "").strip()
                             raw_vals = grp.get("values") if isinstance(grp.get("values"), list) else []
                             want = [str(w).strip() for w in raw_vals if str(w).strip()]
-                            if fk and want and not any(w.lower() in _have(fk) for w in want):
+                            if fk and want:
+                                alts.append((fk, want))
+                            raw_any = grp.get("any") if isinstance(grp.get("any"), list) else []
+                            for alt in raw_any:
+                                if not isinstance(alt, dict):
+                                    continue
+                                afk = str(alt.get("field") or "").strip()
+                                avals = alt.get("values") if isinstance(alt.get("values"), list) else []
+                                awant = [str(w).strip() for w in avals if str(w).strip()]
+                                if afk and awant:
+                                    alts.append((afk, awant))
+                            if alts and not any(
+                                any(w.lower() in _have(afk) for w in awant)
+                                for afk, awant in alts
+                            ):
+                                ok = False
+                                break
+                    if ok and empty_fields:
+                        for fk, want_empty in empty_fields.items():
+                            has_val = False
+                            if fk in item_fields and item_fields[fk] is not None:
+                                raw = item_fields[fk]
+                                if isinstance(raw, list):
+                                    has_val = any(v is not None and v != "" for v in raw)
+                                elif isinstance(raw, str):
+                                    has_val = raw != ""
+                                else:
+                                    has_val = True
+                            elif fk == "released":
+                                has_val = bool(it.get("released"))
+                            elif fk in ("year", "decade"):
+                                has_val = int(it.get("year") or 0) > 0
+                            elif fk == "rating":
+                                has_val = float(it.get("rating") or 0) > 0
+                            elif fk == "summary":
+                                has_val = bool(it.get("summary"))
+                            elif fk == "recording":
+                                has_val = bool(it.get("recording"))
+                            elif fk == "parentId":
+                                has_val = bool(it.get("parentId"))
+                            elif fk == "index":
+                                has_val = int(it.get("index") or 0) > 0
+                            if want_empty and has_val:
+                                ok = False
+                                break
+                            if not want_empty and not has_val:
                                 ok = False
                                 break
                     if not ok:
@@ -3918,6 +3970,50 @@ class KindBrowseDecl(TypedDict, total=False):
     expand: KindBrowseExpand
 
 
+class KindBrowseFacetAlt(TypedDict):
+    """One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807)."""
+
+    field: str
+    values: List[str]
+
+
+class KindBrowseFacetGroup(TypedDict, total=False):
+    """One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+
+    Supply either ``field`` + ``values`` for one field or ``any`` with a list
+    of ``{field, values}`` alternatives ORed across fields.
+    """
+
+    field: str
+    values: List[str]
+    any: List[KindBrowseFacetAlt]
+
+
+class KindBrowseQuery(TypedDict, total=False):
+    """Query passed to kinds.browse from a frontend adapter (#615, #767, #807)."""
+
+    parentId: str
+    level: str
+    cursor: str
+    limit: int
+    sort: str
+    desc: bool
+    facets: Dict[str, List[str]]
+    allFacets: Dict[str, List[str]]
+    excludeFacets: Dict[str, List[str]]
+    anyGroups: List[KindBrowseFacetGroup]
+    empty: Dict[str, bool]
+    query: str
+    excludeQuery: str
+    total: Literal["cheap", "none", "exact"]
+
+
+class KindBrowseRequest(KindBrowseQuery, total=False):
+    """Request body for POST /ether/v1/kinds/{kind}/browse or /search."""
+
+    kind: str
+
+
 class KindExpandRequest(TypedDict, total=False):
     """Request body for POST /ether/v1/kinds/{kind}/expand.
 
@@ -4377,7 +4473,7 @@ class _KindsClient:
     def browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
         viewer_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         tok = self._resolve_viewer_token(viewer_token)

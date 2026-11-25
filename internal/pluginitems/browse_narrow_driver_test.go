@@ -30,6 +30,7 @@ func narrowDriverTestDecl() plugins.MediaKindMeta {
 			{Key: "episodes", Type: "int", Label: "Episodes", Indexed: true},
 			{Key: "score", Type: "float", Label: "Score", Indexed: true},
 			{Key: "cast", Type: "people", Label: "Cast"},
+			{Key: "optional", Type: "string", Label: "Optional", Indexed: true},
 		},
 		Browse: plugins.KindBrowseDecl{
 			Sorts:  []string{"released", "title", "added", "year", "rating", "last_viewed"},
@@ -74,6 +75,8 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 		episodes int64
 		score    float64
 		cast     []string
+		summary  string
+		optional bool
 	}
 
 	var roots []seedRow
@@ -119,15 +122,22 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 			castRaw[ci] = map[string]any{"name": name}
 		}
 
+		summary := ""
+		if i%20 == 0 {
+			summary = "Has a summary"
+			title += " Skipmarker"
+		}
+		optional := i%40 == 0
 		roots = append(roots, seedRow{
 			id: id, title: title, sort: strings.ToLower(title),
 			released: rel, added: added, year: yr, rating: sc,
-			avail: avail, buckets: buckets, episodes: ep, score: sc, cast: cast,
+			avail: avail, buckets: buckets, episodes: ep, score: sc, cast: cast, summary: summary, optional: optional,
 		})
 		items = append(items, core.KindItem{
 			ID:       id,
 			Level:    "item",
 			Title:    title,
+			Summary:  summary,
 			Released: rel,
 			AddedAt:  added,
 			Year:     yr,
@@ -142,6 +152,9 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 				"cast":       rawJSON(t, castRaw),
 			},
 		})
+		if optional {
+			items[len(items)-1].Fields["optional"] = rawJSON(t, "present")
+		}
 	}
 	// Children under it-000 for parent-scoped multi-facet browse.
 	for c := 0; c < 12; c++ {
@@ -314,11 +327,73 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 		t.Fatalf("CompilePolicy: %v", err)
 	}
 
-	cases := []struct {
+	type browseCase struct {
 		name  string
 		q     BrowseQuery
 		match func(seedRow) bool
-	}{
+	}
+	newFilterCases := []browseCase{
+		{
+			name: "empty_plus_facets",
+			q: BrowseQuery{
+				LibraryID: libID,
+				Level:     "item",
+				Facets:    map[string][]string{"available": {"yes"}, "bucket": {"b00", "b04", "b08"}},
+				Empty:     map[string]bool{"optional": true, "summary": false},
+				Limit:     2,
+			},
+			match: func(r seedRow) bool {
+				return r.avail == "yes" && hasAny(r.buckets, []string{"b00", "b04", "b08"}) && !r.optional && r.summary != ""
+			},
+		},
+		{
+			name: "cross_field_group_plus_exclusion",
+			q: BrowseQuery{
+				LibraryID: libID,
+				Level:     "item",
+				Facets:    map[string][]string{"available": {"yes"}},
+				AnyGroups: []core.KindBrowseFacetGroup{{Any: []core.KindBrowseFacetAlt{
+					{Field: "bucket", Values: []string{"b02"}},
+					{Field: "year", Values: []string{"2000"}},
+					{Field: "episodes", Values: []string{"invalid"}},
+				}}},
+				ExcludeFacets: map[string][]string{"bucket": {"b08"}},
+				Limit:         2,
+			},
+			match: func(r seedRow) bool {
+				return r.avail == "yes" && (slices.Contains(r.buckets, "b02") || r.year == 2000) && !slices.Contains(r.buckets, "b08")
+			},
+		},
+		{
+			name: "exclude_query_plus_facets",
+			q: BrowseQuery{
+				LibraryID:    libID,
+				Level:        "item",
+				Facets:       map[string][]string{"available": {"yes"}, "bucket": {"b00", "b02", "b04", "b06", "b08"}},
+				ExcludeQuery: "skipmark",
+				Limit:        2,
+			},
+			match: func(r seedRow) bool {
+				return r.avail == "yes" && hasAny(r.buckets, []string{"b00", "b02", "b04", "b06", "b08"}) && r.summary == ""
+			},
+		},
+	}
+	for _, tc := range newFilterCases {
+		tally, err := s.browseTallyProbe(ctx, tc.q, "", tc.q.Level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		col, kind, desc, defaultDesc := parseBrowseSort(tc.q)
+		plan, err := s.buildBrowsePlan(ctx, tc.q, "", tc.q.Level, col, kind, desc, defaultDesc, tc.q.Limit, tally)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tally.totalExact || plan.driver == nil || !slices.Equal(plan.driver.cteArgs, []any{"available", "yes"}) {
+			t.Fatalf("%s: expected a narrow available driver and no tally total, got driver=%v tally=%+v", tc.name, plan.driver, tally)
+		}
+	}
+
+	cases := []browseCase{
 		{
 			name: "narrow_enum_plus_broad_multi_plus_exclude",
 			q: BrowseQuery{
@@ -463,7 +538,7 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
+	for _, tc := range append(cases, newFilterCases...) {
 		for _, sortKey := range []string{"released:desc", "title:asc"} {
 			t.Run(tc.name+"/"+sortKey, func(t *testing.T) {
 				q := tc.q
@@ -599,6 +674,11 @@ func TestBrowseNarrowDriverEquivalence(t *testing.T) {
 				NoTotal:   true,
 				Limit:     6,
 			},
+		}
+		for _, tc := range newFilterCases {
+			q := tc.q
+			q.NoTotal = true
+			batchQueries = append(batchQueries, q)
 		}
 		batchPages, err := s.BrowseBatch(ctx, batchQueries)
 		if err != nil {

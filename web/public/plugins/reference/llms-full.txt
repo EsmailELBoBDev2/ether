@@ -1706,19 +1706,27 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
-A `kinds.browse` query filters with three facet maps and optional
-any-of groups that all combine with AND: `facets` (any of the listed
-values per field), `allFacets` (every listed value per field, for
-"tagged both X and Y"), `excludeFacets` (none of the listed values, for
-"without X"), and `anyGroups` (an array of `{field, values}` OR-lists,
-so the same multi-valued field can carry several any-of groups ANDed
-together — for example `(Rock OR Hard Rock) AND (Live OR Live
-Recording)` on `genres`). All four accept the same per-type values as
-`facets`, including `lo..hi` ranges for numbers and dates and people
-names, and are evaluated inside the browse query so paging and `total`
-stay correct. A query may carry at most 32 `anyGroups` and at most 256
-total facet values across `facets`, `allFacets`, `excludeFacets`, and
-`anyGroups`. Pass `total` to control whether `KindPage.total` is
+A `kinds.browse` query filters with facet maps, any-of groups, field
+presence tests, and text matching that all combine with AND: `facets`
+(any of the listed values per field), `allFacets` (every listed value
+per field, for "tagged both X and Y"), `excludeFacets` (none of the
+listed values, for "without X"), `anyGroups` (an array of OR-groups,
+each either `{field, values}` on one field — for example `(Rock OR Hard
+Rock) AND (Live OR Live Recording)` on `genres` — or `{any: [{field,
+values}, ...]}` to OR alternatives across fields, for example `label =
+"North" OR parentLabel = "North"`), `empty` (a `{field: bool}` map where
+`true` keeps items with no value in the field and `false` keeps items
+with at least one, covering declared fields and item columns such as
+`released`, `year`, `rating`, `summary`, and `recording`; unknown fields
+are rejected), `query` (full-text match), and `excludeQuery` (same text
+matching as `query`; matching items are dropped). All facet filters
+accept the same per-type values as `facets`, including `lo..hi` ranges
+for numbers and dates and people names, and are evaluated inside the
+browse query so paging and `total` stay correct. A query may carry at
+most 32 `anyGroups` and at most 256 total facet values across `facets`,
+`allFacets`, `excludeFacets`, and `anyGroups` (counting every
+alternative's values in `{any: [...]}`); `empty` counts toward neither
+bound. Pass `total` to control whether `KindPage.total` is
 computed: `"cheap"` (the default) returns `total` only when it is O(1)
 (item or single-facet field tallies, an already-cached exact count, or a
 single-page result) and omits `total` otherwise rather than scanning the
@@ -2689,7 +2697,7 @@ type KindPage struct {
 }
 ``````
 
-## Source: internal/core/kinditem.go#KindBrowseFacetGroup.fields.md
+## Source: internal/core/kinditem.go#KindBrowseFacetAlt.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
@@ -2697,16 +2705,64 @@ type KindPage struct {
 | `values` | `[]string` | emitted (validation may require a value) |  |
 
 
+## Source: internal/core/kinditem.go#KindBrowseFacetAlt
+
+``````
+// KindBrowseFacetAlt is one {field, values} alternative inside a cross-field
+// KindBrowseFacetGroup (#807).
+type KindBrowseFacetAlt struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+``````
+
+## Source: internal/core/kinditem.go#KindBrowseFacetGroup.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `field` | `string` | may be omitted (see validation for conditions) |  |
+| `values` | `[]string` | may be omitted (see validation for conditions) |  |
+| `any` | `[]KindBrowseFacetAlt` | may be omitted (see validation for conditions) |  |
+
+
 ## Source: internal/core/kinditem.go#KindBrowseFacetGroup
 
 ``````
-// KindBrowseFacetGroup is one OR-list of values on a single field for
-// KindBrowseRequest.AnyGroups (#767). Multiple groups — including repeated
-// groups on the same field — combine with AND alongside Facets, AllFacets,
-// and ExcludeFacets.
+// KindBrowseFacetGroup is one OR-group for KindBrowseRequest.AnyGroups (#767, #807).
+// A group either names a single {field, values} OR-list or carries a list of
+// {field, values} alternatives in Any that are ORed together across fields
+// (and ANDed with the rest). Multiple groups — including repeated groups on
+// the same field — combine with AND alongside Facets, AllFacets,
+// ExcludeFacets, Empty, and ExcludeQuery.
 type KindBrowseFacetGroup struct {
-	Field  string   `json:"field"`
-	Values []string `json:"values"`
+	Field  string               `json:"field,omitempty"`
+	Values []string             `json:"values,omitempty"`
+	Any    []KindBrowseFacetAlt `json:"any,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#KindBrowseFacetGroup.Alternatives
+
+``````
+// Alternatives returns the {field, values} alternatives carried by g. A
+// single-field {field, values} group returns a slice of one; when Any is
+// present, its alternatives are returned (after the top-level field/values if
+// both were supplied).
+func (g KindBrowseFacetGroup) Alternatives() []KindBrowseFacetAlt {
+	hasSingle := strings.TrimSpace(g.Field) != "" && len(g.Values) > 0
+	if len(g.Any) == 0 {
+		if !hasSingle {
+			return nil
+		}
+		return []KindBrowseFacetAlt{{Field: g.Field, Values: g.Values}}
+	}
+	if !hasSingle {
+		return g.Any
+	}
+	out := make([]KindBrowseFacetAlt, 0, len(g.Any)+1)
+	out = append(out, KindBrowseFacetAlt{Field: g.Field, Values: g.Values})
+	out = append(out, g.Any...)
+	return out
 }
 ``````
 
@@ -2720,11 +2776,13 @@ type KindBrowseFacetGroup struct {
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
 | `desc` | `bool` | may be omitted (see validation for conditions) |  |
-| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field (OR within a field, AND across fields). AllFacets requires every listed value per field, ExcludeFacets drops items having any listed value, and AnyGroups adds one OR-list per group so the same field can carry several any-of lists ANDed together (#767). All four combine with AND and accept the same per-type values (including lo..hi ranges and people names). |
+| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field (OR within a field, AND across fields). AllFacets requires every listed value per field, ExcludeFacets drops items having any listed value, and AnyGroups adds one OR-group per entry — either a single {field, values} list or {any: [{field, values}, ...]} ORed across fields (#767, #807). All four combine with AND and accept the same per-type values (including lo..hi ranges and people names). |
 | `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `anyGroups` | `[]KindBrowseFacetGroup` | may be omitted (see validation for conditions) |  |
+| `empty` | `map[string]bool` | may be omitted (see validation for conditions) | Empty tests field presence or absence per field key (#807): true keeps items with no value in the field, false keeps items with at least one. Counts toward neither facet value bound; unknown fields are rejected. |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
+| `excludeQuery` | `string` | may be omitted (see validation for conditions) | ExcludeQuery drops items whose indexed text matches, using the same text matching as Query (#807). |
 | `total` | `string` | may be omitted (see validation for conditions) | Total controls whether kinds.browse computes KindPage.Total (#682):   - "" or "cheap" (default): populate Total only when O(1) (item or     field tallies, a cached exact count, or a single-page result) and     omit Total otherwise instead of running a full COUNT(*).   - "none": never compute or return Total.   - "exact": compute an exact Total (cached per library generation). |
 
 
@@ -2744,15 +2802,23 @@ type KindBrowseRequest struct {
 	// Facets requires any of the listed values per field (OR within a
 	// field, AND across fields). AllFacets requires every listed value
 	// per field, ExcludeFacets drops items having any listed value, and
-	// AnyGroups adds one OR-list per group so the same field can carry
-	// several any-of lists ANDed together (#767). All four combine with
-	// AND and accept the same per-type values (including lo..hi ranges
-	// and people names).
+	// AnyGroups adds one OR-group per entry — either a single {field,
+	// values} list or {any: [{field, values}, ...]} ORed across fields
+	// (#767, #807). All four combine with AND and accept the same
+	// per-type values (including lo..hi ranges and people names).
 	Facets        map[string][]string    `json:"facets,omitempty"`
 	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
 	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
-	Query         string                 `json:"query,omitempty"`
+	// Empty tests field presence or absence per field key (#807): true
+	// keeps items with no value in the field, false keeps items with at
+	// least one. Counts toward neither facet value bound; unknown fields
+	// are rejected.
+	Empty        map[string]bool `json:"empty,omitempty"`
+	Query        string          `json:"query,omitempty"`
+	// ExcludeQuery drops items whose indexed text matches, using the same
+	// text matching as Query (#807).
+	ExcludeQuery string          `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total (#682):
 	//   - "" or "cheap" (default): populate Total only when O(1) (item or
 	//     field tallies, a cached exact count, or a single-page result) and
@@ -18084,6 +18150,38 @@ func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#ValidKindEmptyField
+
+``````
+// ValidKindEmptyField reports whether field may appear as a key in
+// KindBrowseRequest.Empty for decl (#807): any declared field on decl, any
+// optional item envelope column (released, year, rating, summary, recording,
+// parentId, index, or the virtual decade alias), or a <dateField>-decade facet
+// whose base is a declared date field.
+func ValidKindEmptyField(decl MediaKindMeta, field string) bool {
+	if strings.TrimSpace(field) == "" || field != strings.TrimSpace(field) {
+		return false
+	}
+	for _, f := range decl.Fields {
+		if f.Key == field {
+			return true
+		}
+	}
+	switch field {
+	case "released", "year", "rating", "summary", "recording", "parentId", "index", "decade":
+		return true
+	}
+	if base, ok := libraryfilter.SplitDateDecadeFacet(field); ok {
+		for _, f := range decl.Fields {
+			if f.Key == base && f.Type == "date" {
+				return true
+			}
+		}
+	}
+	return false
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.KindBrowse
 
 ``````
@@ -18093,7 +18191,8 @@ func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([
 // authenticated viewer may call it; the viewer comes solely from the host
 // context, never from guest input.
 func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
-	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+	_, decl, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter)
+	if err != nil {
 		return core.KindPage{}, err
 	}
 	viewerID, ok := ViewerFromContext(ctx)
@@ -18126,8 +18225,19 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			facetValues += len(vals)
 		}
 	}
+	anyAlts := 0
 	for _, g := range q.AnyGroups {
 		facetValues += len(g.Values)
+		anyAlts += len(g.Any)
+		for _, alt := range g.Any {
+			facetValues += len(alt.Values)
+		}
+	}
+	if anyAlts > MaxKindBrowseFacetValues {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "anyGroups",
+			Message: fmt.Sprintf("anyGroups alternatives exceed %d per query", MaxKindBrowseFacetValues),
+		}}}
 	}
 	if facetValues > MaxKindBrowseFacetValues {
 		field := "facets"
@@ -18138,6 +18248,25 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 			Field:   field,
 			Message: fmt.Sprintf("facet values exceed %d per query", MaxKindBrowseFacetValues),
 		}}}
+	}
+	if len(q.Empty) > 0 {
+		keys := make([]string, 0, len(q.Empty))
+		for k := range q.Empty {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !ValidKindEmptyField(decl, k) {
+				f := "empty"
+				if k != "" {
+					f = "empty." + k
+				}
+				return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+					Field:   f,
+					Message: fmt.Sprintf("unknown field %q", k),
+				}}}
+			}
+		}
 	}
 	if q.Limit <= 0 {
 		q.Limit = 200
@@ -40836,7 +40965,8 @@ Ether exposes two viewer-scoped host calls that run the exact same
 built-in protocol projectors:
 
 - `kinds.browse(kind, query)` — browse or search a kind page with policy already
-  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, anyGroups?, query?, total?}`).
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, allFacets?, excludeFacets?, anyGroups?, empty?, query?, excludeQuery?, total?}`).
+  `anyGroups` entries accept `{field, values}` or cross-field `{any: [{field, values}, ...]}` (values across every alternative count toward the 256-value bound); `empty` maps field names (declared fields or item columns like `released`, `year`, `rating`, `summary`, `recording`) to `true` (missing) or `false` (present) without counting toward value bounds (unknown fields are rejected); `excludeQuery` drops items matching the same text search as `query`.
   `total` defaults to `"cheap"` (returns `total` only when O(1) from tallies/cache/single page, omitting it otherwise); pass `"none"` to skip totals or `"exact"` when a caller needs an exact filtered count.
   Prefer this when your adapter lists or searches pages directly from Ether's library.
 - `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
@@ -56965,7 +57095,7 @@ type KindPage struct {
 }
 ``````
 
-## Source: sdk/go/kinds.go#KindBrowseFacetGroup.fields.md
+## Source: sdk/go/kinds.go#KindBrowseFacetAlt.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
@@ -56973,16 +57103,39 @@ type KindPage struct {
 | `values` | `[]string` | emitted (validation may require a value) |  |
 
 
+## Source: sdk/go/kinds.go#KindBrowseFacetAlt
+
+``````
+// KindBrowseFacetAlt is one {field, values} alternative inside a cross-field
+// KindBrowseFacetGroup (#807).
+type KindBrowseFacetAlt struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindBrowseFacetGroup.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `field` | `string` | may be omitted (see validation for conditions) |  |
+| `values` | `[]string` | may be omitted (see validation for conditions) |  |
+| `any` | `[]KindBrowseFacetAlt` | may be omitted (see validation for conditions) |  |
+
+
 ## Source: sdk/go/kinds.go#KindBrowseFacetGroup
 
 ``````
-// KindBrowseFacetGroup is one OR-list of values on a single field for
-// KindBrowseRequest.AnyGroups (#767). Multiple groups — including repeated
-// groups on the same field — combine with AND alongside Facets, AllFacets,
-// and ExcludeFacets.
+// KindBrowseFacetGroup is one OR-group for KindBrowseRequest.AnyGroups (#767, #807).
+// A group either names a single {field, values} OR-list or carries a list of
+// {field, values} alternatives in Any that are ORed together across fields
+// (and ANDed with the rest). Multiple groups — including repeated groups on
+// the same field — combine with AND alongside Facets, AllFacets,
+// ExcludeFacets, Empty, and ExcludeQuery.
 type KindBrowseFacetGroup struct {
-	Field  string   `json:"field"`
-	Values []string `json:"values"`
+	Field  string               `json:"field,omitempty"`
+	Values []string             `json:"values,omitempty"`
+	Any    []KindBrowseFacetAlt `json:"any,omitempty"`
 }
 ``````
 
@@ -56996,11 +57149,13 @@ type KindBrowseFacetGroup struct {
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
 | `desc` | `bool` | may be omitted (see validation for conditions) |  |
-| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field; AllFacets requires every listed value, ExcludeFacets drops items having any listed value, and AnyGroups adds one OR-list per group so the same field can carry several any-of lists ANDed together (#767). All four combine with AND. |
+| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field; AllFacets requires every listed value, ExcludeFacets drops items having any listed value, and AnyGroups adds one OR-group per entry — either a single {field, values} list or {any: [{field, values}, ...]} ORed across fields (#767, #807). All four combine with AND. |
 | `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `anyGroups` | `[]KindBrowseFacetGroup` | may be omitted (see validation for conditions) |  |
+| `empty` | `map[string]bool` | may be omitted (see validation for conditions) | Empty tests field presence or absence per field key (#807): true keeps items with no value in the field, false keeps items with at least one. Counts toward neither value bound; unknown fields are rejected. |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
+| `excludeQuery` | `string` | may be omitted (see validation for conditions) | ExcludeQuery drops items whose indexed text matches, using the same text matching as Query (#807). |
 | `total` | `string` | may be omitted (see validation for conditions) | Total controls whether kinds.browse computes KindPage.Total: "" or "cheap" (default) returns Total only when O(1), "none" omits it, and "exact" computes an exact Total (cached per library generation). |
 
 
@@ -57018,14 +57173,22 @@ type KindBrowseRequest struct {
 	Desc     bool   `json:"desc,omitempty"`
 	// Facets requires any of the listed values per field; AllFacets
 	// requires every listed value, ExcludeFacets drops items having any
-	// listed value, and AnyGroups adds one OR-list per group so the same
-	// field can carry several any-of lists ANDed together (#767). All
-	// four combine with AND.
+	// listed value, and AnyGroups adds one OR-group per entry — either a
+	// single {field, values} list or {any: [{field, values}, ...]} ORed
+	// across fields (#767, #807). All four combine with AND.
 	Facets        map[string][]string    `json:"facets,omitempty"`
 	AllFacets     map[string][]string    `json:"allFacets,omitempty"`
 	ExcludeFacets map[string][]string    `json:"excludeFacets,omitempty"`
 	AnyGroups     []KindBrowseFacetGroup `json:"anyGroups,omitempty"`
-	Query         string                 `json:"query,omitempty"`
+	// Empty tests field presence or absence per field key (#807): true
+	// keeps items with no value in the field, false keeps items with at
+	// least one. Counts toward neither value bound; unknown fields are
+	// rejected.
+	Empty map[string]bool `json:"empty,omitempty"`
+	Query string          `json:"query,omitempty"`
+	// ExcludeQuery drops items whose indexed text matches, using the same
+	// text matching as Query (#807).
+	ExcludeQuery string `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total:
 	// "" or "cheap" (default) returns Total only when O(1), "none" omits it,
 	// and "exact" computes an exact Total (cached per library generation).
@@ -68599,7 +68762,7 @@ class PluginContext:
     def kinds_browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Browse or search `kind` with the library's Rules and viewer access
         policy applied for the requesting frontend-adapter viewer (#615). Only
@@ -70291,10 +70454,12 @@ class MockHostClient:
             parent_id = str(q.get("parentId") or "")
             level = str(q.get("level") or "")
             needle = str(q.get("query") or "").strip().lower()
+            exclude_needle = str(q.get("excludeQuery") or "").strip().lower()
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
             all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
             exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
             any_groups = q.get("anyGroups") if isinstance(q.get("anyGroups"), list) else []
+            empty_fields = q.get("empty") if isinstance(q.get("empty"), dict) else {}
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -70307,7 +70472,11 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets or all_facets or exclude_facets or any_groups:
+                if exclude_needle:
+                    hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+                    if exclude_needle in hay:
+                        continue
+                if facets or all_facets or exclude_facets or any_groups or empty_fields:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
 
                     def _have(fk: str) -> List[str]:
@@ -70337,10 +70506,56 @@ class MockHostClient:
                         for grp in any_groups:
                             if not isinstance(grp, dict):
                                 continue
+                            alts: List[Tuple[str, List[str]]] = []
                             fk = str(grp.get("field") or "").strip()
                             raw_vals = grp.get("values") if isinstance(grp.get("values"), list) else []
                             want = [str(w).strip() for w in raw_vals if str(w).strip()]
-                            if fk and want and not any(w.lower() in _have(fk) for w in want):
+                            if fk and want:
+                                alts.append((fk, want))
+                            raw_any = grp.get("any") if isinstance(grp.get("any"), list) else []
+                            for alt in raw_any:
+                                if not isinstance(alt, dict):
+                                    continue
+                                afk = str(alt.get("field") or "").strip()
+                                avals = alt.get("values") if isinstance(alt.get("values"), list) else []
+                                awant = [str(w).strip() for w in avals if str(w).strip()]
+                                if afk and awant:
+                                    alts.append((afk, awant))
+                            if alts and not any(
+                                any(w.lower() in _have(afk) for w in awant)
+                                for afk, awant in alts
+                            ):
+                                ok = False
+                                break
+                    if ok and empty_fields:
+                        for fk, want_empty in empty_fields.items():
+                            has_val = False
+                            if fk in item_fields and item_fields[fk] is not None:
+                                raw = item_fields[fk]
+                                if isinstance(raw, list):
+                                    has_val = any(v is not None and v != "" for v in raw)
+                                elif isinstance(raw, str):
+                                    has_val = raw != ""
+                                else:
+                                    has_val = True
+                            elif fk == "released":
+                                has_val = bool(it.get("released"))
+                            elif fk in ("year", "decade"):
+                                has_val = int(it.get("year") or 0) > 0
+                            elif fk == "rating":
+                                has_val = float(it.get("rating") or 0) > 0
+                            elif fk == "summary":
+                                has_val = bool(it.get("summary"))
+                            elif fk == "recording":
+                                has_val = bool(it.get("recording"))
+                            elif fk == "parentId":
+                                has_val = bool(it.get("parentId"))
+                            elif fk == "index":
+                                has_val = int(it.get("index") or 0) > 0
+                            if want_empty and has_val:
+                                ok = False
+                                break
+                            if not want_empty and not has_val:
                                 ok = False
                                 break
                     if not ok:
@@ -71106,6 +71321,50 @@ class KindBrowseDecl(TypedDict, total=False):
     expand: KindBrowseExpand
 
 
+class KindBrowseFacetAlt(TypedDict):
+    """One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807)."""
+
+    field: str
+    values: List[str]
+
+
+class KindBrowseFacetGroup(TypedDict, total=False):
+    """One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+
+    Supply either ``field`` + ``values`` for one field or ``any`` with a list
+    of ``{field, values}`` alternatives ORed across fields.
+    """
+
+    field: str
+    values: List[str]
+    any: List[KindBrowseFacetAlt]
+
+
+class KindBrowseQuery(TypedDict, total=False):
+    """Query passed to kinds.browse from a frontend adapter (#615, #767, #807)."""
+
+    parentId: str
+    level: str
+    cursor: str
+    limit: int
+    sort: str
+    desc: bool
+    facets: Dict[str, List[str]]
+    allFacets: Dict[str, List[str]]
+    excludeFacets: Dict[str, List[str]]
+    anyGroups: List[KindBrowseFacetGroup]
+    empty: Dict[str, bool]
+    query: str
+    excludeQuery: str
+    total: Literal["cheap", "none", "exact"]
+
+
+class KindBrowseRequest(KindBrowseQuery, total=False):
+    """Request body for POST /ether/v1/kinds/{kind}/browse or /search."""
+
+    kind: str
+
+
 class KindExpandRequest(TypedDict, total=False):
     """Request body for POST /ether/v1/kinds/{kind}/expand.
 
@@ -71565,7 +71824,7 @@ class _KindsClient:
     def browse(
         self,
         kind: str,
-        query: Optional[Dict[str, Any]] = None,
+        query: Optional[Union[KindBrowseQuery, Dict[str, Any]]] = None,
         viewer_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         tok = self._resolve_viewer_token(viewer_token)
@@ -77185,12 +77444,7 @@ export function createConditionTemplate(opts: TemplateOptions): PluginDefinition
 export type MaybePromise<T> = T | Promise<T>;
 
 export type PluginKind =
-  | "source"
-  | "integration"
-  | "notification_channel"
-  | "livetv_source"
-  | "extension"
-  | "content";
+  "source" | "integration" | "notification_channel" | "livetv_source" | "extension" | "content";
 
 export type Capability =
   | "stream_source"
@@ -77577,10 +77831,7 @@ export type SlotKind =
   | "command";
 
 type ActionSlot =
-  | "actionMenu.title"
-  | "actionMenu.viewer"
-  | "actionMenu.collection"
-  | "actionMenu.release";
+  "actionMenu.title" | "actionMenu.viewer" | "actionMenu.collection" | "actionMenu.release";
 export type SlotMeta = { key: string; label: string } & (
   | { slot: ActionSlot; action: string; route?: never }
   | { slot: Exclude<SlotKind, ActionSlot>; route: string; action?: never }
@@ -77616,9 +77867,6 @@ export interface Contributes {
   screens?: ScreenMeta[];
   surfaces?: SurfaceMeta[];
 }
-
-
-
 
 export interface ScreenMeta {
   id: string;
@@ -77687,13 +77935,7 @@ export interface LiveFeedMeta {
   entityKinds?: string[];
 }
 
-export type LiveEventState =
-  | "pre"
-  | "in"
-  | "post"
-  | "delayed"
-  | "postponed"
-  | "canceled";
+export type LiveEventState = "pre" | "in" | "post" | "delayed" | "postponed" | "canceled";
 
 export interface LiveEventLeague {
   id: string;
@@ -77897,9 +78139,18 @@ export type MediaRole =
   | "collection";
 
 export type MediaBrowserItemType =
-  | "Movie" | "Series" | "Season" | "Episode" | "Video"
-  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
-  | "Book" | "PhotoAlbum" | "Photo";
+  | "Movie"
+  | "Series"
+  | "Season"
+  | "Episode"
+  | "Video"
+  | "MusicArtist"
+  | "MusicAlbum"
+  | "Audio"
+  | "AudioBook"
+  | "Book"
+  | "PhotoAlbum"
+  | "Photo";
 
 /**
  * How a library is seen per protocol. Each app block overrides how that app
@@ -78010,7 +78261,8 @@ export interface KindLibraryShelf {
   /** OR values for `facet`. */
   values?: string[];
   /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
-  filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
+  filters?:
+    Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
   /** What the shelf is for, so apps draw it their own way and keep its titles out of other rows: "recentContexts" (Jump back in) or "liked" (Liked songs). */
   purpose?: "recentContexts" | "liked";
   /** The shelf's default look; an owner's look on a Recommendations page wins. "tracks" draws a track list. */
@@ -78225,11 +78477,20 @@ export interface KindPage {
 
 export type KindBrowseTotalMode = "cheap" | "none" | "exact";
 
-/** One OR-list of values on a single field for KindBrowseRequest.anyGroups (#767). */
-export interface KindBrowseFacetGroup {
+/** One {field, values} alternative inside a cross-field KindBrowseFacetGroup (#807). */
+export interface KindBrowseFacetAlt {
   field: string;
   values: string[];
 }
+
+/**
+ * One OR-group for KindBrowseRequest.anyGroups (#767, #807).
+ * Pass either `{field, values}` for one field or `{any: [{field, values}, ...]}`
+ * to OR alternatives across fields (ANDed with the rest of the query).
+ */
+export type KindBrowseFacetGroup =
+  | { field: string; values: string[]; any?: KindBrowseFacetAlt[] }
+  | { any: KindBrowseFacetAlt[]; field?: string; values?: string[] };
 
 export interface KindBrowseRequest {
   kind: string;
@@ -78245,9 +78506,13 @@ export interface KindBrowseRequest {
   allFacets?: Record<string, string[]>;
   /** Items having any listed value per field are dropped. */
   excludeFacets?: Record<string, string[]>;
-  /** Any-of facet groups ANDed together (allows multiple OR lists on the same field). */
+  /** Any-of facet groups ANDed together (single-field `{field, values}` or cross-field `{any: [...]}`). */
   anyGroups?: KindBrowseFacetGroup[];
+  /** Field presence/absence filter: `true` keeps items with no value, `false` keeps items with at least one (#807). */
+  empty?: Record<string, boolean>;
   query?: string;
+  /** Same text matching as `query`; items that match are dropped (#807). */
+  excludeQuery?: string;
   /**
    * Controls whether kinds.browse computes KindPage.total:
    * - "cheap" (default): return total only when O(1) (tallies, cached count, or single-page result)
@@ -78522,7 +78787,13 @@ export interface PlayableSource {
   expiresAt?: number;
   container?: {
     format?: string;
-    volumes: Array<{ url?: string; headers?: Record<string, string>; keepHeadersOnRedirect?: string[]; blobRef?: string; size: number }>;
+    volumes: Array<{
+      url?: string;
+      headers?: Record<string, string>;
+      keepHeadersOnRedirect?: string[];
+      blobRef?: string;
+      size: number;
+    }>;
     member?: string;
     memberIndex?: number;
     passwordSecret?: string;
@@ -78568,7 +78839,13 @@ export interface StreamUrlOptions {
   absolute?: boolean;
 }
 
-export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+export interface PendingReply {
+  pending: true;
+  retryInMs?: number;
+  job?: string;
+  sources?: never;
+  matches?: never;
+}
 
 export interface KindResolveResponse {
   pending?: boolean;
@@ -78946,13 +79223,7 @@ export type ViewSpecBlock =
       kind: "text";
       content: ViewSpecValue;
       tone?:
-        | "default"
-        | "negative"
-        | "positive"
-        | "warning"
-        | "muted"
-        | "strong"
-        | ViewSpecFieldRef;
+        "default" | "negative" | "positive" | "warning" | "muted" | "strong" | ViewSpecFieldRef;
       when?: ViewSpecFieldRef;
     }
   | {

@@ -5969,6 +5969,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       return json({
         ...card(t),
+        tmdbId: Number(t.key) % 1e15,
         cast: t.people.map((id) => PEOPLE.find((p) => p.id === id)).filter(Boolean),
         directors: [],
         keywords: t.keywords.map((id) => KEYWORDS.find((k) => k.id === id)).filter(Boolean),

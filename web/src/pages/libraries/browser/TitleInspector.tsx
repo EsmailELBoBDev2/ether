@@ -112,6 +112,32 @@ export function TitleInspector({
       documentTitle={(title?.key === titleKey ? title.title : null) ?? t("Title details")}
       size="lg"
       bodyClassName="overflow-y-auto p-0"
+      headerActions={
+        title && (isShow || isMovie) ? (
+          <TitleMetadataActions
+            key={title.key}
+            title={title}
+            onRefresh={async () => {
+              await Promise.all([
+                state.reload(),
+                schedule.reload(),
+                releases.reload(),
+                library.reload(),
+              ]);
+              setArtworkRevision((revision) => revision + 1);
+              onLibraryChange?.();
+            }}
+            onMatch={(key) => {
+              if (key === titleKey) {
+                void state.reload();
+              } else {
+                onMatch?.(key);
+              }
+              onLibraryChange?.();
+            }}
+          />
+        ) : null
+      }
       subtabs={
         tabs.length ? (
           <SubtabNav
@@ -155,32 +181,6 @@ export function TitleInspector({
                     title.backdrop && appendArtworkRevision(title.backdrop, artworkRevision),
                 }
               : title
-          }
-          metadataActions={
-            isShow || isMovie ? (
-              <TitleMetadataActions
-                key={title.key}
-                title={title}
-                onRefresh={async () => {
-                  await Promise.all([
-                    state.reload(),
-                    schedule.reload(),
-                    releases.reload(),
-                    library.reload(),
-                  ]);
-                  setArtworkRevision((revision) => revision + 1);
-                  onLibraryChange?.();
-                }}
-                onMatch={(key) => {
-                  if (key === titleKey) {
-                    void state.reload();
-                  } else {
-                    onMatch?.(key);
-                  }
-                  onLibraryChange?.();
-                }}
-              />
-            ) : null
           }
           library={library.data ?? null}
           onLibraryReload={async () => {
@@ -336,7 +336,6 @@ function Overview({
   onShowReleases,
   onReload,
   onClose,
-  metadataActions,
 }: {
   watchlistAction?: ReactNode;
   watchlistViewers?: ReactNode;
@@ -351,7 +350,6 @@ function Overview({
   onShowReleases: () => void;
   onReload: () => void;
   onClose: () => void;
-  metadataActions: ReactNode;
 }) {
   const isShow = title.type === "show";
   return (
@@ -400,7 +398,6 @@ function Overview({
             {watchlistAction}
             {isShow || title.type === "movie" ? <WarmingControls titleKey={title.key} /> : null}
             {watchlistViewers}
-            {metadataActions}
           </div>
         ) : null}
         <LibraryStatusSection titleKey={title.key} status={library} onChanged={onLibraryReload} />

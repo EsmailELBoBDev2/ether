@@ -316,7 +316,10 @@ func (g *Grants) resolve(ctx context.Context, surface, credential string, asyncA
 	var id, lastUsed, expires int64
 	var owner int
 	// Expiry is checked in Go, not SQL: a queued sliding refresh that
-	// has not reached the writer already extends this grant (#648).
+	// has not reached the writer already extends this grant (#648). Read
+	// the queue before the row: the drainer drops a touch only after its
+	// write commits, so a touch missing from the queue is in the row.
+	touch, pending := g.pendingTouch(grantTouchKey{hash: hash, surface: surface})
 	err := g.db.QueryRowContext(ctx, `SELECT g.hash,g.viewer_id,u.is_owner,g.last_used,g.expires FROM identity_grants g JOIN auth_users u ON u.id=g.viewer_id WHERE g.hash=? AND g.surface=? AND g.revoked=0 AND u.active=1 AND (u.origin<>'dlna_guest' OR g.surface='dlna')`, hash, surface).Scan(&stored, &id, &owner, &lastUsed, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, core.ErrUnauthorized
@@ -324,7 +327,7 @@ func (g *Grants) resolve(ctx context.Context, surface, credential string, asyncA
 	if err != nil {
 		return nil, err
 	}
-	if touch, ok := g.pendingTouch(grantTouchKey{hash: hash, surface: surface}); ok {
+	if pending {
 		if touch.now > lastUsed {
 			lastUsed = touch.now
 		}
@@ -395,6 +398,7 @@ func (g *Grants) GrantReferenceExpiry(ctx context.Context, surface, reference st
 	if err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != reference || surface == "" || viewerID <= 0 {
 		return time.Time{}, core.ErrUnauthorized
 	}
+	queued := g.queuedExpiry(reference, surface)
 	var id, expires int64
 	err = g.db.QueryRowContext(ctx, `SELECT g.viewer_id,g.expires FROM identity_grants g JOIN auth_users u ON u.id=g.viewer_id WHERE g.hash=? AND g.surface=? AND g.viewer_id=? AND g.revoked=0 AND u.active=1 AND (u.origin<>'dlna_guest' OR g.surface='dlna')`, reference, surface, viewerID).Scan(&id, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -403,7 +407,9 @@ func (g *Grants) GrantReferenceExpiry(ctx context.Context, surface, reference st
 	if err != nil {
 		return time.Time{}, err
 	}
-	expires = g.effectiveExpiry(reference, surface, expires)
+	if queued > expires {
+		expires = queued
+	}
 	if expires <= g.now().UnixMilli() {
 		return time.Time{}, core.ErrUnauthorized
 	}

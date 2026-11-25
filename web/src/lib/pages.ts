@@ -199,7 +199,7 @@ export interface RowPresentation {
   numbered?: boolean;
   trailer?: boolean;
   hideWatched?: boolean;
-  surface?: { plugin: string; surface: string };
+  surface?: { plugin: string; pluginName?: string; surface: string };
 }
 
 /** A served row in a preview. */

@@ -247,7 +247,7 @@ export function ClientRulesTab() {
                 ? t("No rule applies to {media}. Choose All to see every rule.", {
                     media: mediaLabel(filter || undefined),
                   })
-                : t("Every app uses the default quality profiles.")
+                : t("Every app uses the default release profiles.")
             }
           />
         ) : (

@@ -1509,11 +1509,16 @@ function ServiceOverview({
         <IntegrationAppCard
           identity={{ id: "opensubtitles", name: "OpenSubtitles" }}
           description={t("Fetch subtitles when a release doesn't include them.")}
-          status={switchStatus(
-            on("opensubtitles"),
-            Boolean(saved("opensubtitles").apiKey),
-            t("Needs an API key"),
-          )}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(
+                on("opensubtitles"),
+                Boolean(saved("opensubtitles").apiKey),
+                t("Needs an API key"),
+              )}
+            </>
+          }
           enabled={on("opensubtitles")}
           busy={locked || busyId === "opensubtitles"}
           disabled={switchesHeld}
@@ -1526,7 +1531,12 @@ function ServiceOverview({
         <IntegrationAppCard
           identity={{ id: "subdl", name: "SubDL" }}
           description={t("Fetch subtitles from SubDL when a release doesn't include them.")}
-          status={switchStatus(on("subdl"), Boolean(saved("subdl").apiKey), t("Needs an API key"))}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(on("subdl"), Boolean(saved("subdl").apiKey), t("Needs an API key"))}
+            </>
+          }
           enabled={on("subdl")}
           busy={locked || busyId === "subdl"}
           disabled={switchesHeld}
@@ -1537,11 +1547,16 @@ function ServiceOverview({
         <IntegrationAppCard
           identity={{ id: "subsource", name: "SubSource" }}
           description={t("Fetch subtitles from SubSource when a release doesn't include them.")}
-          status={switchStatus(
-            on("subsource"),
-            Boolean(saved("subsource").apiKey),
-            t("Needs an API key"),
-          )}
+          status={
+            <>
+              <Badge variant="secondary">{t("Built-in")}</Badge>
+              {switchStatus(
+                on("subsource"),
+                Boolean(saved("subsource").apiKey),
+                t("Needs an API key"),
+              )}
+            </>
+          }
           enabled={on("subsource")}
           busy={locked || busyId === "subsource"}
           disabled={switchesHeld}
@@ -1551,6 +1566,7 @@ function ServiceOverview({
         />
         {subtitlePlugins.map((provider) => {
           const name = textOf(provider.label) || provider.owner;
+          const isStremio = Boolean((provider.meta as { stremio?: boolean } | undefined)?.stremio);
           return (
             <IntegrationAppCard
               key={provider.id}
@@ -1563,7 +1579,14 @@ function ServiceOverview({
               description={t(
                 "Offered beside your other subtitle providers; a file downloads only when picked.",
               )}
-              status={<Badge variant="success">{t("On")}</Badge>}
+              status={
+                <>
+                  <Badge variant="secondary">
+                    {isStremio ? t("Stremio add-on") : t("Plugin")}
+                  </Badge>
+                  <Badge variant="success">{t("On")}</Badge>
+                </>
+              }
               action={
                 <Button
                   size="sm"

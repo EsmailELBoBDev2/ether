@@ -656,3 +656,38 @@ func discoveryKeys(rows []core.HomeRow) map[core.RatingKey]bool {
 	}
 	return pageKeys(rest, 12)
 }
+
+func TestSurfaceRowCarriesPluginName(t *testing.T) {
+	h := newHarness(t, nil)
+	h.e.opts.Surfaces = func(context.Context) []core.SurfaceInfo {
+		return []core.SurfaceInfo{
+			{Plugin: "org.ether.sports", PluginName: "Sports", ID: "tonight", WireID: "sports.tonight", Title: "Tonight's Games"},
+		}
+	}
+	u := core.User{ID: 1, Username: "mia", IsOwner: true}
+	h.users.users = []core.User{u}
+	page := rpage(core.PageHome, core.Row{
+		ID:        "rsports01",
+		Source:    core.RowSource{Kind: SourceSurface, Params: map[string]string{"surface": "org.ether.sports:tonight"}},
+		Placement: core.RowPlacement{Mode: core.PlacementShow},
+	})
+	page.Mode = core.PageCurated
+	mustSavePage(t, h.e, page)
+	p, err := h.e.PreviewPage(context.Background(), &u, core.PageHome, core.PagePreviewRequest{Device: core.DeviceTV})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *core.RowSurface
+	for _, r := range p.Rows {
+		if r.Kind == SourceSurface && r.Present.Surface != nil {
+			found = r.Present.Surface
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("surface row not present in preview: %+v", p.Rows)
+	}
+	if found.Plugin != "org.ether.sports" || found.PluginName != "Sports" || found.Surface != "sports.tonight" {
+		t.Fatalf("surface = %+v, want plugin=org.ether.sports pluginName=Sports surface=sports.tonight", found)
+	}
+}

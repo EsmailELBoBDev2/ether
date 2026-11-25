@@ -2,6 +2,7 @@ package vela
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -73,10 +74,38 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 			result.Client.HDRFormats = append(result.Client.HDRFormats, format)
 		}
 	}
+	velaDolbyVisionProfiles(&result.Client, c)
 	if (c.HLS || c.MSE) && !velaSupportsTS(c) {
 		result.Client.HLSContainers = []string{"fmp4"}
 	}
 	return result, err
+}
+
+// velaDolbyVisionProfiles gives an Android client the Dolby Vision profiles
+// it declares ("5" grants profile 5, "8.1" profile 8) when Dolby Vision is on
+// and neither the registry nor an owner rule gave a profile list. A declared
+// list that grants none, such as only "7" or "8.4", declares no Dolby Vision
+// profiles; an omitted list changes nothing.
+func velaDolbyVisionProfiles(cc *frontend.ClientCaps, c client) {
+	identity := strings.ToLower(cc.Platform + " " + cc.Product + " " + cc.Device)
+	android := strings.Contains(identity, "android") || strings.Contains(identity, "shield") || strings.Contains(identity, "google tv")
+	if !android || c.DolbyVisionProfiles == nil || !slices.Contains(c.HDR, "dv") || !cc.DolbyVision || cc.DolbyVisionBaseOnly || cc.DVProfilesForced || cc.DVProfilesExplicit || len(cc.DVProfiles) > 0 {
+		return
+	}
+	profiles := []int{}
+	for _, variant := range *c.DolbyVisionProfiles {
+		profile := 0
+		switch variant {
+		case "5":
+			profile = 5
+		case "8.1":
+			profile = 8
+		}
+		if profile > 0 && !slices.Contains(profiles, profile) {
+			profiles = append(profiles, profile)
+		}
+	}
+	cc.DVProfiles, cc.DVProfilesExplicit = profiles, len(profiles) == 0
 }
 
 // velaSupportsTS reports whether a Vela client can play MPEG-TS HLS segments.

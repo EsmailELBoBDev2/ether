@@ -97,6 +97,7 @@ func (a *App) buildDiscovery() {
 	}
 	a.discoveryPersonal = personalize.NewDiscovery(a.db, a.catalog, a.state, a.safety.Allowed)
 	a.discoveryPersonal.NotInterested = a.notInterestedSignals
+	a.discoveryPersonal.AllowedFacts = a.safety.TitleFacts
 	a.overlays = overlays.New(a.db, overlays.Options{CacheDir: filepath.Join(a.opts.DataDir, "cache", "overlays"), Images: a.images, Allowed: a.safety.Allowed, Ratings: a.ratings, FactsFor: a.overlayFacts, PreparePage: a.prepareOverlayPage, Variants: a.artworkVariants, PluginBadges: a.overlayPluginBadgeSets, Taste: func(ctx context.Context, u *core.User) []string {
 		p, err := a.personalize.Taste(ctx, u)
 		if err != nil {

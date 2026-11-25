@@ -532,9 +532,12 @@ type HistoryTopStore interface {
 }
 
 // CompletedHistoryStore lists the distinct keys a viewer completed in
-// [from, to), latest completion first, one entry per key (Year in Review).
+// [from, to), latest completion first, one entry per key, only of kinds when
+// any are given, a page at a time (limit <= 0 is every entry), and counts the distinct films and shows among
+// them (Year in Review).
 type CompletedHistoryStore interface {
-	CompletedBetween(ctx context.Context, userID int64, from, to time.Time) ([]HistoryEntry, error)
+	CompletedBetween(ctx context.Context, userID int64, from, to time.Time, kinds []KeyKind, offset, limit int) ([]HistoryEntry, error)
+	CompletedCounts(ctx context.Context, userID int64, from, to time.Time) (movies, shows int, err error)
 }
 type HistoryStore interface {
 	QueryHistory(context.Context, HistoryQuery) ([]HistoryEntry, error)

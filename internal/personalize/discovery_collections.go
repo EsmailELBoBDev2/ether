@@ -3,6 +3,7 @@ package personalize
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -41,39 +42,130 @@ func reviewCollectionParts(key core.RatingKey) (int, core.MediaType, bool) {
 type reviewCollections struct {
 	d    *Discovery
 	base core.Collections
+
+	// cards keeps each viewer's listing cards briefly and shares a build in
+	// flight: one Jellyfin Views or library listing asks once per library,
+	// concurrently and outside any request memo.
+	mu    sync.Mutex
+	cards map[string]*reviewCardEntry
 }
+
+type reviewCardEntry struct {
+	done chan struct{}
+	col  *core.Collection
+	ok   bool
+	err  error
+	at   time.Time
+}
+
+// reviewCardTTL bounds how stale a listing's Year in Review card can be. The
+// card is last year's review for eleven months of the year.
+const reviewCardTTL = 30 * time.Second
 
 // ReviewCollections retains the collection engine as the authority for owner
 // collections and adds virtual collections assembled from the viewer's history.
 func (d *Discovery) ReviewCollections(base core.Collections) core.Collections {
 	return &reviewCollections{d: d, base: base}
 }
+
+// review builds a viewer's whole Year in Review collection of typ, for
+// opening it (Get, Items, member checks). Listings use reviewCard instead.
 func (c *reviewCollections) review(ctx context.Context, u *core.User, year int, typ core.MediaType) (*core.Collection, []core.Title, error) {
 	if u == nil {
 		return nil, nil, core.ErrUnauthorized
 	}
-	// A listing builds the review for each media type and then probes the
-	// listed collection's items; share one build per viewer and year for the
-	// rest of the read request.
-	hub, e := reqmemo.Do(ctx, fmt.Sprintf("personalize:review:%p:%d:%#v", c.d, year, u), func() (core.Hub, error) {
-		return c.d.YearInReview(ctx, u, year, 10000)
+	// Opening a collection reads it and probes its items; share one build
+	// per viewer, year and type for the rest of the read request.
+	hub, e := reqmemo.Do(ctx, fmt.Sprintf("personalize:review:%p:%d:%s:%#v", c.d, year, typ, u), func() (core.Hub, error) {
+		return c.d.yearInReview(ctx, u, year, 10000, false, typ, 0)
 	})
 	if e != nil {
 		return nil, nil, e
 	}
-	items := []core.Title{}
-	for _, t := range hub.Items {
-		if t.Type == typ {
-			items = append(items, t)
+	items := hub.Items
+	if items == nil {
+		items = []core.Title{}
+	}
+	return reviewCollection(u, year, typ, hub.Title, items, len(items)), items, nil
+}
+
+// reviewCardKeys is how many of the viewer's latest completed keys a
+// listing's card reads looking for its art. A year whose latest keys are all
+// unavailable is not listed; opening the collection still reads all of it.
+const reviewCardKeys = 16
+
+// reviewCard is a Year in Review collection as a listing shows it: whether
+// it exists, its art from the latest title, and its size from one counting
+// statement, without hydrating the rest of the viewer's year.
+func (c *reviewCollections) reviewCard(ctx context.Context, u *core.User, year int, typ core.MediaType) (*core.Collection, bool) {
+	if u == nil {
+		return nil, false
+	}
+	key := fmt.Sprintf("%d:%s:%#v", year, typ, u)
+	c.mu.Lock()
+	if e, ok := c.cards[key]; ok && (e.at.IsZero() || time.Since(e.at) < reviewCardTTL) {
+		c.mu.Unlock()
+		select {
+		case <-e.done:
+		case <-ctx.Done():
+			return nil, false
+		}
+		if e.err != nil {
+			return nil, false
+		}
+		return e.col, e.ok
+	}
+	if c.cards == nil || len(c.cards) >= 4096 {
+		c.cards = map[string]*reviewCardEntry{}
+	}
+	e := &reviewCardEntry{done: make(chan struct{})}
+	c.cards[key] = e
+	c.mu.Unlock()
+
+	e.col, e.ok, e.err = c.buildReviewCard(ctx, u, year, typ)
+	c.mu.Lock()
+	if e.err != nil {
+		delete(c.cards, key)
+	} else {
+		e.at = time.Now()
+	}
+	c.mu.Unlock()
+	close(e.done)
+	if e.err != nil {
+		return nil, false
+	}
+	return e.col, e.ok
+}
+
+func (c *reviewCollections) buildReviewCard(ctx context.Context, u *core.User, year int, typ core.MediaType) (*core.Collection, bool, error) {
+	hub, e := c.d.yearInReview(ctx, u, year, 1, false, typ, reviewCardKeys)
+	if e != nil || len(hub.Items) == 0 {
+		return nil, false, e
+	}
+	count := 1
+	if counter, ok := c.d.state.(core.CompletedHistoryStore); ok {
+		start := time.Date(year, 1, 1, 0, 0, 0, 0, c.d.now().Location())
+		movies, shows, e := counter.CompletedCounts(ctx, u.ID, start, start.AddDate(1, 0, 0))
+		if e != nil {
+			return nil, false, e
+		}
+		if typ == core.TypeMovie {
+			count = max(count, movies)
+		} else {
+			count = max(count, shows)
 		}
 	}
-	col := &core.Collection{Key: reviewCollectionKey(year, typ), Title: hub.Title, Summary: "Titles you completed this year, based on your private watch history.", Kind: "user", Type: typ, OwnerUserID: u.ID, ChildCount: len(items)}
+	return reviewCollection(u, year, typ, hub.Title, hub.Items, count), true, nil
+}
+
+func reviewCollection(u *core.User, year int, typ core.MediaType, title string, items []core.Title, count int) *core.Collection {
+	col := &core.Collection{Key: reviewCollectionKey(year, typ), Title: title, Summary: "Titles you completed this year, based on your private watch history.", Kind: "user", Type: typ, OwnerUserID: u.ID, ChildCount: count}
 	if len(items) > 0 {
 		col.PosterPath = items[0].PosterPath
 		col.BackdropPath = items[0].BackdropPath
 		col.UpdatedAt = time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
 	}
-	return col, items, nil
+	return col
 }
 func (c *reviewCollections) List(ctx context.Context, u *core.User, typ core.MediaType) ([]core.Collection, error) {
 	var out []core.Collection
@@ -237,8 +329,7 @@ func (c *reviewCollections) withReviews(ctx context.Context, u *core.User, typ c
 		if t != core.TypeMovie && t != core.TypeShow {
 			continue
 		}
-		col, items, e := c.review(ctx, u, year, t)
-		if e == nil && len(items) > 0 {
+		if col, ok := c.reviewCard(ctx, u, year, t); ok {
 			out = append(out, *col)
 		}
 	}
@@ -246,13 +337,46 @@ func (c *reviewCollections) withReviews(ctx context.Context, u *core.User, typ c
 }
 func (c *reviewCollections) Get(ctx context.Context, u *core.User, key core.RatingKey) (*core.Collection, error) {
 	if year, typ, ok := reviewCollectionParts(key); ok {
-		col, _, e := c.review(ctx, u, year, typ)
-		return col, e
+		// The collection itself is its card; only its items need the year.
+		if u == nil {
+			return nil, core.ErrUnauthorized
+		}
+		if card, ok := c.reviewCard(ctx, u, year, typ); ok {
+			col := *card
+			return &col, nil
+		}
+		return reviewCollection(u, year, typ, fmt.Sprintf("Your %d in Review", year), nil, 0), nil
 	}
 	if c.base == nil {
 		return nil, core.ErrNotFound
 	}
 	return c.base.Get(ctx, u, key)
+}
+
+// ProbeVisible answers a listing's visibility probe for a Year in Review
+// collection from its card: the card already found a title the viewer can
+// see, and counted the rest, so the listing does not build the whole year.
+func (c *reviewCollections) ProbeVisible(ctx context.Context, u *core.User, col core.Collection) (bool, int, bool, error) {
+	year, typ, ok := reviewCollectionParts(col.Key)
+	if !ok {
+		if p, ok := c.base.(interface {
+			ProbeVisible(context.Context, *core.User, core.Collection) (bool, int, bool, error)
+		}); ok {
+			return p.ProbeVisible(ctx, u, col)
+		}
+		return false, 0, false, nil
+	}
+	card, ok := c.reviewCard(ctx, u, year, typ)
+	if !ok {
+		return false, 0, true, nil
+	}
+	return true, card.ChildCount, true, nil
+}
+
+// AnswersVisible reports whether ProbeVisible answers for key itself.
+func (c *reviewCollections) AnswersVisible(key core.RatingKey) bool {
+	_, _, ok := reviewCollectionParts(key)
+	return ok
 }
 func (c *reviewCollections) Items(ctx context.Context, u *core.User, key core.RatingKey, offset, limit int) (core.Page, error) {
 	if year, typ, ok := reviewCollectionParts(key); ok {

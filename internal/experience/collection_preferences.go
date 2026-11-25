@@ -436,7 +436,11 @@ func (s *Service) viewCollectionsPageFirst(ctx context.Context, v *core.User, ty
 				continue
 			}
 		}
-		if stored == nil || stored.ID == core.LibraryMovies || stored.ID == core.LibraryShows {
+		// A collection the engine answers for itself (the viewer's own Year
+		// in Review) is probed in any library, never read in full.
+		prober, answered := s.d.Collections.(visibleProber)
+		answered = answered && prober.AnswersVisible(c.Key)
+		if stored == nil || stored.ID == core.LibraryMovies || stored.ID == core.LibraryShows || answered {
 			has, total, err := s.collectionVisibleProbe(ctx, v, c)
 			if err != nil {
 				return frontend.CollectionPage{}, true, err
@@ -1204,12 +1208,26 @@ func (s *Service) libraryCollectionItems(ctx context.Context, v *core.User, devi
 	return core.Page{Items: filtered[start:end], Total: total, TotalExact: true}, nil
 }
 
+// visibleProber answers a listing's visibility probe for collections it
+// already knows the viewer can see (personalize's Year in Review, built from
+// the viewer's own visible history) without paging their members; handled
+// is false for any other collection.
+type visibleProber interface {
+	ProbeVisible(ctx context.Context, v *core.User, c core.Collection) (has bool, total int, handled bool, err error)
+	AnswersVisible(key core.RatingKey) bool
+}
+
 // collectionHasVisibleMember reads bounded pages and stops at the first member
 // the viewer can see, without calculating a child count.
 // collectionVisibleProbe reports whether c has a member v may see, reading
 // only until the first one, and the collection's member total. It never loads
 // every member, so a listing can show large collections cheaply.
 func (s *Service) collectionVisibleProbe(ctx context.Context, v *core.User, c core.Collection) (bool, int, error) {
+	if p, ok := s.d.Collections.(visibleProber); ok {
+		if has, total, handled, err := p.ProbeVisible(ctx, v, c); handled || err != nil {
+			return has, total, err
+		}
+	}
 	total := -1
 	for offset := 0; ; {
 		page, err := s.d.Collections.Items(ctx, v, c.Key, offset, 32)
@@ -1242,6 +1260,11 @@ func (s *Service) collectionVisibleProbe(ctx context.Context, v *core.User, c co
 }
 
 func (s *Service) collectionHasVisibleMember(ctx context.Context, v *core.User, c core.Collection) (bool, error) {
+	if p, ok := s.d.Collections.(visibleProber); ok {
+		if has, _, handled, err := p.ProbeVisible(ctx, v, c); handled || err != nil {
+			return has, err
+		}
+	}
 	for offset := 0; ; {
 		page, err := s.d.Collections.Items(ctx, v, c.Key, offset, 32)
 		if err != nil {

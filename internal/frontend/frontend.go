@@ -517,9 +517,12 @@ type Host struct {
 	KindStreams KindStreams
 	// Loudness answers measured loudness for audio titles; nil sends none.
 	Loudness LoudnessReader
-	Identity SurfaceIdentity
-	IDs      ids.Codecs
-	Events   Subscriber
+	// SkipMarkers reads cached intro/credits ranges for playback plans; nil
+	// sends none.
+	SkipMarkers CachedMarkerRanges
+	Identity    SurfaceIdentity
+	IDs         ids.Codecs
+	Events      Subscriber
 	// WatchRefresh subscribes a mounted frontend to committed watch-state changes.
 	WatchRefresh WatchRefreshSubscriber
 	// HomeInvalidation subscribes a mounted frontend to committed state changes

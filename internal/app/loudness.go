@@ -68,6 +68,14 @@ func (a *App) frontendLoudness() frontend.LoudnessReader {
 	return a.loudness
 }
 
+// frontendSkipMarkers exposes the local-only marker reader to frontends.
+func (a *App) frontendSkipMarkers() frontend.CachedMarkerRanges {
+	if a == nil || a.markers == nil {
+		return nil
+	}
+	return a.markers
+}
+
 // historyPlays reads a viewer's completed plugin plays for recaps.
 func (a *App) historyPlays() func(context.Context, int64, time.Time, time.Time, int) ([]core.HistoryPlay, error) {
 	if a == nil || a.state == nil {

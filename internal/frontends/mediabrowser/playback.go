@@ -143,7 +143,10 @@ func offerJellyfinStatic(source map[string]any, opts frontend.DecideOptions) {
 
 const msgVideoTranscodingOff = "This title needs a video transcode to play on this device, and video transcoding is turned off."
 
-func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
+func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error, languages ...string) {
+	if frontend.WriteIndexersPaused(w, err, languages...) {
+		return
+	}
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		http.Error(w, bedtime.Error(), http.StatusForbidden)
@@ -504,7 +507,9 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if i.protocol == "jellyfin" {
-			i.playbackInfoError(w, v, "plan", err)
+			i.playbackInfoError(w, v, "plan", err, r.Header.Get("Accept-Language"))
+		} else if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+			return
 		} else if playback && noCompatibleStream(err) {
 			var reqLang *frontend.RequiredAudioLanguageError
 			if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
@@ -515,7 +520,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 				i.writeNoCompatibleStream(w)
 			}
 		} else if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
-			streamError(i.protocol, w, err)
+			streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		} else {
 			http.Error(w, "Playback unavailable", 503)
 		}
@@ -537,7 +542,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed && plan.Decision.Kind == "transcode" {
 		if i.protocol == "jellyfin" {
-			i.playbackInfoError(w, v, "transcoding disabled", frontend.ErrNotAvailable)
+			i.playbackInfoError(w, v, "transcoding disabled", frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		} else {
 			http.Error(w, "Playback unavailable", 422)
 		}
@@ -614,9 +619,11 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			if !jellyfinStaticFallback(err) || !staticPlayable {
 				if i.protocol == "jellyfin" {
-					i.playbackInfoError(w, v, "open", err)
+					i.playbackInfoError(w, v, "open", err, r.Header.Get("Accept-Language"))
+				} else if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+					return
 				} else if errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) {
-					streamError(i.protocol, w, err)
+					streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 				} else {
 					http.Error(w, "Playback unavailable", 503)
 				}
@@ -670,7 +677,7 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				_ = i.host.Sessions.Stop(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID)
 				if !jellyfinStaticFallback(err) || !staticPlayable {
-					i.playbackInfoError(w, v, "start stream", err)
+					i.playbackInfoError(w, v, "start stream", err, r.Header.Get("Accept-Language"))
 					return
 				}
 				if i.host.Log != nil {
@@ -939,7 +946,7 @@ func (i *instance) liveStreamsOpen(w http.ResponseWriter, r *http.Request) {
 	url, err := i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: frontend.StreamHLS})
 	if err != nil {
 		_ = i.host.Sessions.Stop(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID)
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
@@ -1009,7 +1016,7 @@ func (i *instance) liveStreamsMediaInfo(w http.ResponseWriter, r *http.Request) 
 		}
 		url, err := i.host.Sessions.StartStream(r.Context(), access, streamID, frontend.StreamRequest{Format: frontend.StreamHLS})
 		if err != nil {
-			streamError(i.protocol, w, err)
+			streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 			return
 		}
 		if prefix, ok := r.Context().Value(prefixKey{}).(string); ok {
@@ -1469,7 +1476,7 @@ func noCompatibleStream(err error) bool {
 // reads ErrorCode only on a resolved request, and otherwise shows its generic
 // network error. Admission failures retain 503 and Retry-After so clients
 // can retry once capacity returns. Keep failure stages in server diagnostics.
-func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, stage string, err error) {
+func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, stage string, err error, languages ...string) {
 	if i.host.Log != nil {
 		i.host.Log.Warn("PlaybackInfo failed", "protocol", i.protocol, "stage", stage, "err", err)
 	}
@@ -1479,7 +1486,7 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, 
 			http.Error(w, frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v), http.StatusUnprocessableEntity)
 			return
 		}
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, languages...)
 		return
 	}
 	code := "NoCompatibleStream"
@@ -1491,7 +1498,9 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, v *frontend.Viewer, 
 	body := map[string]any{"MediaSources": []any{}, "PlaySessionId": "", "ErrorCode": code}
 	var bedtime *frontend.ErrBedtime
 	var reqLang *frontend.RequiredAudioLanguageError
-	if errors.As(err, &bedtime) {
+	if msg := frontend.IndexersPausedMessage(err, languages...); msg != "" {
+		body["Message"] = msg
+	} else if errors.As(err, &bedtime) {
 		body["Message"] = bedtime.Error()
 	} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		body["Message"] = frontend.VideoTranscodingOffMessage(i.host.ViewerPolicy, v)

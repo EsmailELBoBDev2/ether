@@ -432,12 +432,27 @@ func (f *Fetcher) BodyPart(ctx context.Context, messageID string, groups []strin
 	if err != nil {
 		return nil, ap, err
 	}
+	return part.Data, articlePart(part), nil
+}
+
+func articlePart(part *yenc.Part) core.ArticlePart {
 	h := part.Header
-	ap = core.ArticlePart{Name: h.Name, FileSize: h.Size, Part: h.Part, Total: h.Total, Begin: h.Begin, End: h.End}
+	ap := core.ArticlePart{Name: h.Name, FileSize: h.Size, Part: h.Part, Total: h.Total, Begin: h.Begin, End: h.End}
 	if ap.Part == 0 {
 		ap.Part, ap.Total = 1, max(h.Total, 1)
 	}
-	return part.Data, ap, nil
+	return ap
+}
+
+var errArticleSlotMismatch = errors.New("article does not match requested slot")
+
+func validateArticleSlot(ctx context.Context, part *yenc.Part) error {
+	if validate := core.ArticleValidator(ctx); validate != nil {
+		if err := validate(part.Data, articlePart(part)); err != nil {
+			return fmt.Errorf("%w: %w", errArticleSlotMismatch, err)
+		}
+	}
+	return nil
 }
 
 // bodyChain fetches one article through the ordinary coalesced provider
@@ -461,6 +476,9 @@ func (f *Fetcher) bodyChain(ctx context.Context, id string, groups []string, pri
 		var wire int64
 		part, wire, e = p.body(ctx, id, groups, prio)
 		settle(wire)
+		if e == nil {
+			e = validateArticleSlot(ctx, part)
+		}
 		if e == nil && prio == core.PriorityLive {
 			p.noteLiveFetch(time.Since(start))
 		}
@@ -859,6 +877,12 @@ func (f *Fetcher) eachOnce(ctx context.Context, id, kind string, req routeReq, o
 			switch {
 			case errors.Is(err, core.ErrBudgetExhausted):
 				return err
+			case errors.Is(err, errArticleSlotMismatch):
+				// Identity is specific to the calling NZB's slot. Do not
+				// memoize this as a provider-wide miss for the message ID.
+				missing++
+				lastMissing = err
+				break attempts
 			case errors.Is(err, ErrNoSuchArticle):
 				missing++
 				lastMissing = err

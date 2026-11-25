@@ -174,7 +174,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 		Intent:             frontend.PlayIntent{ExactVersion: version != "", DeclaredCaps: true, Options: opts, AllowTranscoding: &allowed, Position: startPos},
 	})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{
@@ -184,7 +184,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 		Device:   dev,
 	})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	format := frontend.StreamDirect
@@ -201,7 +201,7 @@ func (i *instance) serveUniversalAudio(w http.ResponseWriter, r *http.Request, v
 	})
 	if err != nil {
 		_ = i.host.Sessions.Stop(r.Context(), access, session.ID)
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if !strings.HasPrefix(mediaURL, "/sessions/media/") || strings.ContainsAny(mediaURL, "\r\n") {

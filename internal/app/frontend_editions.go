@@ -96,7 +96,7 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 		if s.surface != "" {
 			vctx = core.WithLiveApp(vctx, s.surface)
 		}
-		if core.IndexerPurpose(vctx) == "" {
+		if core.IndexerPurpose(vctx) == core.IndexerPurposeOther {
 			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
 		}
 		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)
@@ -160,7 +160,7 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 		if s.surface != "" {
 			vctx = core.WithLiveApp(vctx, s.surface)
 		}
-		if core.IndexerPurpose(vctx) == "" {
+		if core.IndexerPurpose(vctx) == core.IndexerPurposeOther {
 			vctx = core.WithIndexerPurpose(vctx, core.IndexerPurposeDetail)
 		}
 		variants, err := s.app.pluginKindVersions(vctx, req.User, req.Title.Key)

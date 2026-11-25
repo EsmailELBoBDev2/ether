@@ -953,6 +953,8 @@ func (s *Server) processDownloadItem(ctx context.Context, it *downloadItem, run 
 			var reqLang *frontend.RequiredAudioLanguageError
 			if errors.As(err, &reqLang) {
 				fail(reqLang.Error())
+			} else if msg := frontend.IndexersPausedMessage(err); msg != "" {
+				fail(msg)
 			} else if noRelease(err) {
 				fail("No release available for download at this quality.")
 			} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {

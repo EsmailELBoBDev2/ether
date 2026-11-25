@@ -67,18 +67,18 @@ func (i *instance) serveBookFile(w http.ResponseWriter, r *http.Request, viewer 
 			http.Error(w, "Unsupported book format", http.StatusUnprocessableEntity)
 			return
 		}
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if media == nil {
-		streamError(i.protocol, w, frontend.ErrNotAvailable)
+		streamError(i.protocol, w, frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		return
 	}
 	if media.Closer != nil {
 		defer media.Closer.Close()
 	}
 	if media.ReaderAt == nil || media.Size < 0 {
-		streamError(i.protocol, w, frontend.ErrNotAvailable)
+		streamError(i.protocol, w, frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		return
 	}
 	format, mimeType, ok := reading.DetectFormat(media, detail.Title)

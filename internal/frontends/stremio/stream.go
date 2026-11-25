@@ -100,6 +100,9 @@ func (i *instance) stream(w http.ResponseWriter, r *http.Request) {
 	plan := frontend.PlanRequest{Viewer: viewer, Device: device, Protocol: "stremio", Item: key, Caps: profile.Client, Intent: frontend.PlayIntent{Options: frontend.DecideOptions{DirectPlay: true}}}
 	lazy, err := i.host.LazyStreams.Issue(ctx, credential, plan)
 	if err != nil {
+		if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+			return
+		}
 		var reqLang *frontend.RequiredAudioLanguageError
 		if errors.As(err, &reqLang) {
 			http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)

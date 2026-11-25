@@ -13,7 +13,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
-	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/resolver"
 )
 
@@ -398,9 +397,6 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 }
 
 func (r *KindResolver) startStreamingIndexerSearch(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
-	if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
-		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
-	}
 	query, category, err := r.validateIndexerSearchQuery(ctx, q)
 	if err != nil {
 		return core.SourceResolveResult{}, err

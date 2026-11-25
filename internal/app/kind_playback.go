@@ -104,7 +104,7 @@ func (a *App) kindSourceFunc() func(context.Context, *core.Viewer, core.RatingKe
 			if liveApp != "" && core.LiveApp(octx) == "" {
 				octx = core.WithLiveApp(octx, liveApp)
 			}
-			if core.IndexerPurpose(octx) == "" {
+			if core.IndexerPurpose(octx) == core.IndexerPurposeOther {
 				octx = core.WithIndexerPurpose(octx, core.IndexerPurposePlayback)
 			}
 			var media *frontend.KindMedia

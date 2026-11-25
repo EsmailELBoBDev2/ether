@@ -610,13 +610,14 @@ type IndexerRef struct {
 // (Status, Results, MS, Reason, Error) or one enabled indexer's summary on an
 // indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
-	IndexerID string `json:"indexerId"`
-	Indexer   string `json:"indexer"`
-	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
-	Results   int    `json:"results,omitempty"`
-	MS        int64  `json:"ms"`
-	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
-	Error     string `json:"error,omitempty"`
+	ConfiguredName string `json:"-"` // owner-entered display name for playback diagnostics
+	IndexerID      string `json:"indexerId"`
+	Indexer        string `json:"indexer"`
+	Status         string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
+	Results        int    `json:"results,omitempty"`
+	MS             int64  `json:"ms"`
+	Reason         string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
+	Error          string `json:"error,omitempty"`
 	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
 	// responses (never carrying API keys, URLs with secrets, or cookies).
 	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon

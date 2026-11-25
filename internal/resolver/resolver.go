@@ -2895,7 +2895,7 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 	}
 	if isEpisode {
 		releaseYear := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && (acceptYear == nil || !acceptYear(releaseYear)) {
+		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && !longRunningEpisodeYear(rel, t, sreq, releaseYear) && (acceptYear == nil || !acceptYear(releaseYear)) {
 			return "series year mismatch"
 		}
 		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !metadataMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {

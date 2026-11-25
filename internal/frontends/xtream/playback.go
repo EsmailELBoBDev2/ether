@@ -114,6 +114,9 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 func (i *instance) admit(w http.ResponseWriter, r *http.Request, l login, req frontend.PlanRequest) bool {
 	if admission, ok := i.host.LazyStreams.(frontend.AppConnectionAdmission); ok {
 		if err := admission.PrepareAppConnection(r, l.credential, req); err != nil {
+			if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+				return false
+			}
 			var reqLang *frontend.RequiredAudioLanguageError
 			if errors.As(err, &reqLang) {
 				http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)

@@ -113,7 +113,7 @@ func (i *instance) serveVideoDownload(w http.ResponseWriter, r *http.Request, ct
 			UserAgent: r.UserAgent(),
 		})
 		if err != nil {
-			writeVideoDownloadError(i.protocol, w, err)
+			writeVideoDownloadError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 			return
 		}
 		client = capability.Client
@@ -171,11 +171,11 @@ func (i *instance) serveVideoDownload(w http.ResponseWriter, r *http.Request, ct
 	// Zero uses the playback runtime's normal preparation deadline, as in Plex.
 	source, err := runtime.PrepareSource(ctx, viewer, title.Key, client, release, release != "", 0)
 	if err != nil {
-		writeVideoDownloadError(i.protocol, w, err)
+		writeVideoDownloadError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if source == nil || source.ID == "" {
-		streamError(i.protocol, w, frontend.ErrNotAvailable)
+		streamError(i.protocol, w, frontend.ErrNotAvailable, r.Header.Get("Accept-Language"))
 		return
 	}
 	if policy != nil && r.Method != http.MethodHead {
@@ -235,7 +235,7 @@ func writeDownloadLimit(w http.ResponseWriter, decision frontend.DownloadLimitDe
 	http.Error(w, frontend.DownloadLimitMessage(decision), http.StatusTooManyRequests)
 }
 
-func writeVideoDownloadError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
+func writeVideoDownloadError(protocol frontend.Protocol, w http.ResponseWriter, err error, languages ...string) {
 	switch {
 	case errors.Is(err, frontend.ErrUnauthorized):
 		http.Error(w, "Forbidden", http.StatusForbidden)
@@ -244,6 +244,6 @@ func writeVideoDownloadError(protocol frontend.Protocol, w http.ResponseWriter, 
 	case errors.Is(err, frontend.ErrPrepareSlow):
 		streamError(protocol, w, frontend.ErrPreparing)
 	default:
-		streamError(protocol, w, err)
+		streamError(protocol, w, err, languages...)
 	}
 }

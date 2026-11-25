@@ -1452,7 +1452,8 @@ type Host interface {
 	// ViewerHistory needs viewers.watch_history for that viewer.
 	ViewerGranted(ctx context.Context) (json.RawMessage, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) (json.RawMessage, error)
-	// SetWatchState needs viewers.write_watch_state; journalled.
+	// SetWatchState needs viewers.write_watch_state for the requested viewer.
+	// titleID is an owned playable item ref or a catalogue movie/episode ID.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	// CollectionsUpsert needs collections: write; journalled.
 	CollectionsUpsert(ctx context.Context, collection json.RawMessage) error

@@ -114,6 +114,27 @@ type ViewerWatchEntry struct {
 	Completed bool   `json:"completed,omitempty"`
 }
 
+// ViewerWatchEventPayload is the payload of viewer.watch.scrobbled,
+// viewer.watch.watched, viewer.watch.unwatched and viewer.watch.progress.
+type ViewerWatchEventPayload struct {
+	ViewerID   int64  `json:"viewerId,omitempty"`
+	Username   string `json:"username,omitempty"`
+	TitleKey   string `json:"titleKey"`
+	TitleName  string `json:"titleName"`
+	MediaType  string `json:"mediaType"`
+	Watched    bool   `json:"watched"`
+	State      string `json:"state"`  // watched, unwatched, or progress
+	Source     string `json:"source"` // playback, manual, plugin, or import
+	Surface    string `json:"surface,omitempty"`
+	ItemRef    string `json:"itemRef,omitempty"`
+	TMDBID     int64  `json:"tmdbId,omitempty"`
+	TVDBID     int64  `json:"tvdbId,omitempty"`
+	IMDBID     string `json:"imdbId,omitempty"`
+	Season     *int   `json:"season,omitempty"`
+	Episode    *int   `json:"episode,omitempty"`
+	PositionMS *int64 `json:"positionMs,omitempty"`
+}
+
 // Host provides access to Ether host services (KV, secrets, HTTP, catalog,
 // viewers, collections, folders, owner notifications, and logging).
 type Host interface {
@@ -126,6 +147,7 @@ type Host interface {
 	CatalogSearch(ctx context.Context, query string, limit, offset int) ([]CatalogTitleSummary, error)
 	CatalogGet(ctx context.Context, id string) (*CatalogTitleSummary, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) ([]ViewerWatchEntry, error)
+	// titleID accepts a catalogue movie/episode ID or an owned playable item ref.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	UpsertCollection(ctx context.Context, collection map[string]any) error
 	FoldersList(ctx context.Context, root, path string) ([]FolderEntry, error)

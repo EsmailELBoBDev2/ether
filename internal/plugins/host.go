@@ -652,7 +652,7 @@ func (h *host) SetWatchState(ctx context.Context, viewerID int64, titleID string
 	if h.m.deps.Backends.SetWatchState == nil {
 		return ErrUnavailable
 	}
-	prev, err := h.m.deps.Backends.SetWatchState(ctx, viewerID, titleID, watched)
+	prev, err := h.m.deps.Backends.SetWatchState(ctx, h.plugin, viewerID, titleID, watched)
 	if err != nil {
 		return err
 	}
@@ -724,7 +724,7 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 		if m.deps.Backends.SetWatchState == nil {
 			return ErrUnavailable
 		}
-		_, err := m.deps.Backends.SetWatchState(ctx, inv.ViewerID, inv.TitleID, inv.Watched)
+		_, err := m.deps.Backends.SetWatchState(ctx, e.Plugin, inv.ViewerID, inv.TitleID, inv.Watched)
 		return err
 	case "collections.upsert":
 		var inv collectionInverse

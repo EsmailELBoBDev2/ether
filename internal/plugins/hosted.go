@@ -552,11 +552,13 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		v, err := b.h.ViewerHistory(ctx, num(0), int(num(1)), int(num(2)))
 		return result(v, err)
 	case "viewers.setWatchState":
-		var watched bool
-		if len(args) > 2 {
-			_ = json.Unmarshal(args[2], &watched)
+		var viewerID int64
+		var watched *bool
+		if len(args) != 3 || json.Unmarshal(args[0], &viewerID) != nil || viewerID <= 0 ||
+			str(1) == "" || json.Unmarshal(args[2], &watched) != nil || watched == nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "viewerId, titleId and watched are required"}
 		}
-		return result(nil, b.h.SetWatchState(ctx, num(0), str(1), watched))
+		return result(nil, b.h.SetWatchState(ctx, viewerID, str(1), *watched))
 	case "collections.upsert":
 		var col json.RawMessage
 		if len(args) > 0 {

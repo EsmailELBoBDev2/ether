@@ -419,7 +419,13 @@ Live viewer grants determine identity, history, and write access. Use granted() 
 const viewers = ether.viewers.granted();
 ```
 
-The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+Declare `viewers.write_watch_state: "granted_viewers"` and grant each target viewer. Call `ether.viewers.setWatchState({viewerId, titleId, watched})` with an owned playable `pk:<pluginId>:<kind>:<externalId>` ref or a catalogue movie or episode ID. SDK clients also accept the three positional arguments.
+
+Subscribe to `viewer.watch.scrobbled` for manual marks and playback completions or use `viewer.watch.watched` and `viewer.watch.unwatched` to include imported current state. Subscribe to `viewer.watch.progress` for resume checkpoints in `positionMs`. The writer receives no echo from its own writes. Request `viewers.identity: "granted_viewers"` to receive the viewer ID for granted viewers.
+
+Payloads include `titleKey`, `watched`, `state` and `source`. Sources are `playback`, `manual`, `plugin` and `import`. The optional `surface` identifies the app or writing plugin. Only the owner receives its item's `itemRef`. Catalogue events carry available `tmdbId`, `tvdbId` and `imdbId`. For episodes these identify the series and are paired with `season` and `episode`.
+
+SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
 ## Collections
 
@@ -2111,6 +2117,37 @@ under a declared non-owner name in `permissions.secrets`, then reference them as
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
 
 
+## Sync viewer watch state
+
+Declare `ether.permissions.viewers.write_watch_state: "granted_viewers"` and
+have the owner grant the viewers your plugin may update. Send the selected
+viewer's ID, the item ID and a watched boolean. The host accepts a playable
+item reference owned by your plugin (`pk:<pluginId>:<kind>:<externalId>`) or a
+catalogue movie or episode ID returned by the host catalogue. Provider IDs
+accepted by `catalog.get` also work when they resolve to a movie or episode.
+For shows, send individual episode keys. The host checks viewer access and
+writes through Ether's shared watch state. The SDK write takes a boolean.
+
+```js
+ether.viewers.setWatchState({ viewerId, titleId: itemRef, watched: true });
+```
+
+Subscribe with the `events` capability and `contributes.events.subscribe`.
+Declare `viewers.identity: "granted_viewers"` to receive the viewer ID for
+granted viewers. The `viewer.watch.scrobbled` subscription covers explicit marks
+and playback completion. Alternatively, subscribe to `viewer.watch.watched`
+and `viewer.watch.unwatched` for separate triggers, including current-state
+updates from imports. `viewer.watch.progress` carries resume checkpoints in
+`positionMs`. A plugin's writes are skipped when dispatching back to that plugin.
+
+Events keep `titleKey` and `watched` and add `state` (`watched`, `unwatched`,
+`progress`) and `source` (`playback`, `manual`, `plugin`, `import`). The
+optional `surface` identifies the app or writing plugin. Use `itemRef` for your
+own plugin's items. Catalogue events include available `tmdbId`, `tvdbId` and
+`imdbId` fields. For episodes these are the series IDs, paired with `season`
+and `episode`. Season zero represents specials.
+
+
 ## Source: internal/config/plugins.go#OfficialCatalogueURL
 
 ``````
@@ -2814,11 +2851,11 @@ type KindBrowseRequest struct {
 	// keeps items with no value in the field, false keeps items with at
 	// least one. Counts toward neither facet value bound; unknown fields
 	// are rejected.
-	Empty        map[string]bool `json:"empty,omitempty"`
-	Query        string          `json:"query,omitempty"`
+	Empty map[string]bool `json:"empty,omitempty"`
+	Query string          `json:"query,omitempty"`
 	// ExcludeQuery drops items whose indexed text matches, using the same
 	// text matching as Query (#807).
-	ExcludeQuery string          `json:"excludeQuery,omitempty"`
+	ExcludeQuery string `json:"excludeQuery,omitempty"`
 	// Total controls whether kinds.browse computes KindPage.Total (#682):
 	//   - "" or "cheap" (default): populate Total only when O(1) (item or
 	//     field tallies, a cached exact count, or a single-page result) and
@@ -8363,7 +8400,8 @@ type Host interface {
 	// ViewerHistory needs viewers.watch_history for that viewer.
 	ViewerGranted(ctx context.Context) (json.RawMessage, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) (json.RawMessage, error)
-	// SetWatchState needs viewers.write_watch_state; journalled.
+	// SetWatchState needs viewers.write_watch_state for the requested viewer.
+	// titleID is an owned playable item ref or a catalogue movie/episode ID.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	// CollectionsUpsert needs collections: write; journalled.
 	CollectionsUpsert(ctx context.Context, collection json.RawMessage) error
@@ -9826,7 +9864,7 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 	if c, ok := LegacyToCanonicalEvent[ev.Name]; ok {
 		canonicalType = c
 	}
-	m.fanOutEvent(ctx, canonicalType, names, ev)
+	m.fanOutEvent(ctx, canonicalType, names, ev, "")
 }
 ``````
 
@@ -9900,7 +9938,7 @@ func (m *Manager) HandleBusEvent(ctx context.Context, env events.Envelope) {
 		At:       at,
 		ViewerID: viewerID,
 		Payload:  payload,
-	})
+	}, env.Source)
 }
 ``````
 
@@ -9922,7 +9960,7 @@ type eventDeliveryTarget struct {
 ## Source: internal/plugins/events.go#*Manager.fanOutEvent
 
 ``````
-func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event) {
+func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event, source string) {
 	m.mu.Lock()
 	var targets []eventDeliveryTarget
 	for _, name := range names {
@@ -9942,10 +9980,24 @@ func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names [
 		schema, hasSchema = reg.Get(canonicalType)
 	}
 
+	var producer, itemOwner string
+	switch canonicalType {
+	case events.EventViewerWatchScrobbled, events.EventViewerWatchWatched, events.EventViewerWatchUnwatched, events.EventViewerWatchProgress:
+		if id, ok := strings.CutPrefix(source, events.PluginPrefix); ok {
+			producer = id
+		}
+		var item struct {
+			Ref core.ItemRef `json:"itemRef"`
+		}
+		if json.Unmarshal(base.Payload, &item) == nil {
+			itemOwner = item.Ref.Plugin()
+		}
+	}
+
 	logged := false
 	for _, target := range targets {
 		r := target.rec
-		if !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
+		if r.ID == producer || !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
 			continue
 		}
 		sub := false
@@ -9975,6 +10027,12 @@ func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names [
 			out.ViewerID = 0
 		}
 		out.Payload = sanitizePluginEventPayload(out.Payload, schema, hasSchema, allowViewer)
+		if itemOwner != "" && itemOwner != r.ID {
+			if fields, err := (events.Envelope{Payload: out.Payload}).PayloadMap(); err == nil {
+				delete(fields, "itemRef")
+				out.Payload, _ = json.Marshal(fields)
+			}
+		}
 		dropped, err := m.store.enqueue(ctx, r.ID, out)
 		if err == nil && dropped > 0 {
 			m.healthMu.Lock()
@@ -11504,7 +11562,7 @@ func (h *host) SetWatchState(ctx context.Context, viewerID int64, titleID string
 	if h.m.deps.Backends.SetWatchState == nil {
 		return ErrUnavailable
 	}
-	prev, err := h.m.deps.Backends.SetWatchState(ctx, viewerID, titleID, watched)
+	prev, err := h.m.deps.Backends.SetWatchState(ctx, h.plugin, viewerID, titleID, watched)
 	if err != nil {
 		return err
 	}
@@ -11592,7 +11650,7 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 		if m.deps.Backends.SetWatchState == nil {
 			return ErrUnavailable
 		}
-		_, err := m.deps.Backends.SetWatchState(ctx, inv.ViewerID, inv.TitleID, inv.Watched)
+		_, err := m.deps.Backends.SetWatchState(ctx, e.Plugin, inv.ViewerID, inv.TitleID, inv.Watched)
 		return err
 	case "collections.upsert":
 		var inv collectionInverse
@@ -20118,11 +20176,13 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		v, err := b.h.ViewerHistory(ctx, num(0), int(num(1)), int(num(2)))
 		return result(v, err)
 	case "viewers.setWatchState":
-		var watched bool
-		if len(args) > 2 {
-			_ = json.Unmarshal(args[2], &watched)
+		var viewerID int64
+		var watched *bool
+		if len(args) != 3 || json.Unmarshal(args[0], &viewerID) != nil || viewerID <= 0 ||
+			str(1) == "" || json.Unmarshal(args[2], &watched) != nil || watched == nil {
+			return nil, &wasm.Fault{Code: "bad_arguments", Message: "viewerId, titleId and watched are required"}
 		}
-		return result(nil, b.h.SetWatchState(ctx, num(0), str(1), watched))
+		return result(nil, b.h.SetWatchState(ctx, viewerID, str(1), *watched))
 	case "collections.upsert":
 		var col json.RawMessage
 		if len(args) > 0 {
@@ -28522,16 +28582,16 @@ func (h *HostHandler) setWatchState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ViewerID int64  `json:"viewerId"`
 		TitleID  string `json:"titleId"`
-		Watched  bool   `json:"watched"`
+		Watched  *bool  `json:"watched"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	if body.ViewerID <= 0 || body.TitleID == "" {
-		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId and titleId are required")
+	if body.ViewerID <= 0 || body.TitleID == "" || body.Watched == nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId, titleId and watched are required")
 		return
 	}
-	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, body.Watched)) {
+	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, *body.Watched)) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -33661,7 +33721,8 @@ globalThis.ether = (() => {
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
-               setWatchState: (v) => call("viewers.setWatchState", [v]) },
+               setWatchState: (v, titleId, watched) => call("viewers.setWatchState",
+                 typeof v === "object" && v !== null ? [v.viewerId, v.titleId, v.watched] : [v, titleId, watched]) },
     collections: { upsert: (c) => call("collections.upsert", [c]) },
     screens: { invalidate: () => call("screens.invalidate", []),
                putRecords: (records) => call("screens.putRecords", [records == null ? [] : records]) },
@@ -40384,6 +40445,15 @@ be overwritten or deleted by a plugin.
 | plugin_directory | declared add-on directories | HTTPFetch |
 | frontend_adapter | authenticated protocol routes; optional `frontendAdapters[].icon` (package SVG/PNG) as its Apps page mark | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
+
+For watch sync, grant `viewers.write_watch_state: "granted_viewers"` and call
+`ether.viewers.setWatchState({viewerId, titleId, watched})` with an owned playable
+`pk:<pluginId>:<kind>:<externalId>` ref or a catalogue movie or episode ID.
+Subscribe to `viewer.watch.scrobbled` or the separate `viewer.watch.watched`
+and `viewer.watch.unwatched` events. Payloads have `state`, `source`, your
+plugin's `itemRef` where available, or catalogue provider IDs and season and
+episode numbers. A plugin's own write does not trigger its subscription.
+See [Viewers & watch state](/plugins/reference/host-viewers).
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
 ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
@@ -55342,6 +55412,53 @@ type ViewerWatchEntry struct {
 }
 ``````
 
+## Source: sdk/go/host.go#ViewerWatchEventPayload.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `viewerId` | `int64` | may be omitted (see validation for conditions) |  |
+| `username` | `string` | may be omitted (see validation for conditions) |  |
+| `titleKey` | `string` | emitted (validation may require a value) |  |
+| `titleName` | `string` | emitted (validation may require a value) |  |
+| `mediaType` | `string` | emitted (validation may require a value) |  |
+| `watched` | `bool` | emitted (validation may require a value) |  |
+| `state` | `string` | emitted (validation may require a value) | watched, unwatched, or progress |
+| `source` | `string` | emitted (validation may require a value) | playback, manual, plugin, or import |
+| `surface` | `string` | may be omitted (see validation for conditions) |  |
+| `itemRef` | `string` | may be omitted (see validation for conditions) |  |
+| `tmdbId` | `int64` | may be omitted (see validation for conditions) |  |
+| `tvdbId` | `int64` | may be omitted (see validation for conditions) |  |
+| `imdbId` | `string` | may be omitted (see validation for conditions) |  |
+| `season` | `*int` | may be omitted (see validation for conditions) |  |
+| `episode` | `*int` | may be omitted (see validation for conditions) |  |
+| `positionMs` | `*int64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/host.go#ViewerWatchEventPayload
+
+``````
+// ViewerWatchEventPayload is the payload of viewer.watch.scrobbled,
+// viewer.watch.watched, viewer.watch.unwatched and viewer.watch.progress.
+type ViewerWatchEventPayload struct {
+	ViewerID   int64  `json:"viewerId,omitempty"`
+	Username   string `json:"username,omitempty"`
+	TitleKey   string `json:"titleKey"`
+	TitleName  string `json:"titleName"`
+	MediaType  string `json:"mediaType"`
+	Watched    bool   `json:"watched"`
+	State      string `json:"state"`  // watched, unwatched, or progress
+	Source     string `json:"source"` // playback, manual, plugin, or import
+	Surface    string `json:"surface,omitempty"`
+	ItemRef    string `json:"itemRef,omitempty"`
+	TMDBID     int64  `json:"tmdbId,omitempty"`
+	TVDBID     int64  `json:"tvdbId,omitempty"`
+	IMDBID     string `json:"imdbId,omitempty"`
+	Season     *int   `json:"season,omitempty"`
+	Episode    *int   `json:"episode,omitempty"`
+	PositionMS *int64 `json:"positionMs,omitempty"`
+}
+``````
+
 ## Source: sdk/go/host.go#Host
 
 ``````
@@ -55357,6 +55474,7 @@ type Host interface {
 	CatalogSearch(ctx context.Context, query string, limit, offset int) ([]CatalogTitleSummary, error)
 	CatalogGet(ctx context.Context, id string) (*CatalogTitleSummary, error)
 	ViewerHistory(ctx context.Context, viewerID int64, limit, offset int) ([]ViewerWatchEntry, error)
+	// titleID accepts a catalogue movie/episode ID or an owned playable item ref.
 	SetWatchState(ctx context.Context, viewerID int64, titleID string, watched bool) error
 	UpsertCollection(ctx context.Context, collection map[string]any) error
 	FoldersList(ctx context.Context, root, path string) ([]FolderEntry, error)
@@ -68161,6 +68279,7 @@ class _ViewersClient:
         return list(res) if isinstance(res, list) else []
 
     def set_watch_state(self, viewer_id: int, title_id: str, watched: bool) -> None:
+        """Mark a catalogue movie/episode or an owned playable item ref."""
         self._call(
             "POST",
             "/ether/plugin-host/viewers/watch-state",
@@ -68276,6 +68395,27 @@ class FlowActionMeta(TypedDict, total=False):
     timeout: str
     params: List[FlowActionParamMeta]
     outputs: List[EventFieldMeta]
+
+
+class ViewerWatchEventPayload(TypedDict, total=False):
+    """Payload of the viewer.watch.* event subscriptions."""
+
+    viewerId: int
+    username: str
+    titleKey: str
+    titleName: str
+    mediaType: str
+    watched: bool
+    state: Literal["watched", "unwatched", "progress"]
+    source: Literal["playback", "manual", "plugin", "import"]
+    surface: str
+    itemRef: str
+    tmdbId: int
+    tvdbId: int
+    imdbId: str
+    season: int
+    episode: int
+    positionMs: int
 
 
 class EventCorrelation(TypedDict, total=False):
@@ -73057,6 +73197,7 @@ export interface EtherHost {
       limit?: number,
       offset?: number,
     ): MaybePromise<ViewerWatchEntry[]>;
+    /** Accepts a catalogue movie/episode ID or an owned playable item ref. */
     setWatchState(
       viewerId: number,
       titleId: string,
@@ -77481,7 +77622,13 @@ export type LegacyEtherEventName =
   | "collection.rebuilt"
   | "server.health_changed";
 
-export type EtherEventName = LegacyEtherEventName | (string & {});
+export type ViewerWatchEventName =
+  | "viewer.watch.scrobbled"
+  | "viewer.watch.watched"
+  | "viewer.watch.unwatched"
+  | "viewer.watch.progress";
+
+export type EtherEventName = LegacyEtherEventName | ViewerWatchEventName | (string & {});
 
 export type EventFieldType =
   | "string"
@@ -79306,6 +79453,26 @@ export interface ActionResponse {
   refresh?: boolean;
   open?: string;
   proposal?: ActionProposal;
+}
+
+/** Payload shared by the viewer.watch.* event subscriptions. */
+export interface ViewerWatchEventPayload {
+  viewerId?: number;
+  username?: string;
+  titleKey: string;
+  titleName: string;
+  mediaType: string;
+  watched: boolean;
+  state: "watched" | "unwatched" | "progress";
+  source: "playback" | "manual" | "plugin" | "import";
+  surface?: string;
+  itemRef?: string;
+  tmdbId?: number;
+  tvdbId?: number;
+  imdbId?: string;
+  season?: number;
+  episode?: number;
+  positionMs?: number;
 }
 
 export interface EtherEvent<P = Record<string, unknown>> {

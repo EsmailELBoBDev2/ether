@@ -529,6 +529,7 @@ export interface EtherHost {
       limit?: number,
       offset?: number,
     ): MaybePromise<ViewerWatchEntry[]>;
+    /** Accepts a catalogue movie/episode ID or an owned playable item ref. */
     setWatchState(
       viewerId: number,
       titleId: string,

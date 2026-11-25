@@ -810,6 +810,7 @@ class _ViewersClient:
         return list(res) if isinstance(res, list) else []
 
     def set_watch_state(self, viewer_id: int, title_id: str, watched: bool) -> None:
+        """Mark a catalogue movie/episode or an owned playable item ref."""
         self._call(
             "POST",
             "/ether/plugin-host/viewers/watch-state",
@@ -925,6 +926,27 @@ class FlowActionMeta(TypedDict, total=False):
     timeout: str
     params: List[FlowActionParamMeta]
     outputs: List[EventFieldMeta]
+
+
+class ViewerWatchEventPayload(TypedDict, total=False):
+    """Payload of the viewer.watch.* event subscriptions."""
+
+    viewerId: int
+    username: str
+    titleKey: str
+    titleName: str
+    mediaType: str
+    watched: bool
+    state: Literal["watched", "unwatched", "progress"]
+    source: Literal["playback", "manual", "plugin", "import"]
+    surface: str
+    itemRef: str
+    tmdbId: int
+    tvdbId: int
+    imdbId: str
+    season: int
+    episode: int
+    positionMs: int
 
 
 class EventCorrelation(TypedDict, total=False):

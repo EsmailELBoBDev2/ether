@@ -415,16 +415,16 @@ func (h *HostHandler) setWatchState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ViewerID int64  `json:"viewerId"`
 		TitleID  string `json:"titleId"`
-		Watched  bool   `json:"watched"`
+		Watched  *bool  `json:"watched"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	if body.ViewerID <= 0 || body.TitleID == "" {
-		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId and titleId are required")
+	if body.ViewerID <= 0 || body.TitleID == "" || body.Watched == nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", "viewerId, titleId and watched are required")
 		return
 	}
-	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, body.Watched)) {
+	if !h.finishErr(w, h.host.SetWatchState(r.Context(), pluginIDOf(r), body.ViewerID, body.TitleID, *body.Watched)) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

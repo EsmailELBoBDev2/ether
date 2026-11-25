@@ -1011,6 +1011,13 @@ func (s *surfaceExperience) ResolveRowViews(ctx context.Context, reqs []frontend
 	return s.rowViews.ResolveRowViews(ctx, reqs)
 }
 
+func (s *surfaceExperience) ValidateRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) error {
+	if s.rowViews == nil || (len(reqs) > 0 && reqs[0].Protocol != s.protocol) {
+		return core.ErrUnauthorized
+	}
+	return s.rowViews.ValidateRowViews(ctx, reqs)
+}
+
 func (s *surfaceExperience) ResolveRowView(ctx context.Context, req frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
 	if req.Protocol != s.protocol || s.rowViews == nil {
 		return frontend.RowViewPage{}, core.ErrUnauthorized

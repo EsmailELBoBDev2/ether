@@ -66,3 +66,9 @@ type RowViews interface {
 type RowViewPages interface {
 	ResolveRowViews(context.Context, []RowViewPageRequest) ([]RowViewPage, error)
 }
+
+// RowViewValidator rechecks a bounded set of published visits without
+// creating new snapshots or issuing interaction handles.
+type RowViewValidator interface {
+	ValidateRowViews(context.Context, []RowViewPageRequest) error
+}

@@ -1318,9 +1318,12 @@ Ether checks the NZB vault first. A miss uses the originating indexer's normal
 grab limits and stores the NZB in the vault. A temporary grab refusal leaves
 other candidates available. Installed plugins with `kind_resolver` and
 `permissions.sources` can request NZBs. Background requests also need the
-`+check` grant and use the background allowance. Plugin HTTP calls to configured
-indexers are refused. Existing `nzb:<download link>` sources for supported
-configured indexer endpoints still use the shared grab path.
+`+check` grant and use the background allowance. Ether refuses plugin HTTP
+calls to configured indexer hosts and keeps indexer URLs and API keys in
+server configuration. Sidecars use this same sources API. Their own HTTP
+clients run under OS or container network policy, so operators can restrict
+direct access there. Existing `nzb:<download link>` sources for configured
+indexer endpoints still use the shared grab path.
 
 Use `Context.RequestNZB` in Go, `requestNzb(ctx, ref)` in TypeScript, or
 `client.kinds.request_nzb(ref)` in Python. The SDKs also expose the
@@ -3221,13 +3224,14 @@ type IndexerRef struct {
 // (Status, Results, MS, Reason, Error) or one enabled indexer's summary on an
 // indexers listing query (Kind, MedianMS, LastMS, LastError).
 type IndexerSearchStatus struct {
-	IndexerID string `json:"indexerId"`
-	Indexer   string `json:"indexer"`
-	Status    string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
-	Results   int    `json:"results,omitempty"`
-	MS        int64  `json:"ms"`
-	Reason    string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
-	Error     string `json:"error,omitempty"`
+	ConfiguredName string `json:"-"` // owner-entered display name for playback diagnostics
+	IndexerID      string `json:"indexerId"`
+	Indexer        string `json:"indexer"`
+	Status         string `json:"status,omitempty"` // answered|pending|timed_out|skipped|error
+	Results        int    `json:"results,omitempty"`
+	MS             int64  `json:"ms"`
+	Reason         string `json:"reason,omitempty"` // populated on automatic skips (for example paused_backoff)
+	Error          string `json:"error,omitempty"`
 	// Kind, MedianMS, LastMS and LastError are populated on kind:"indexers"
 	// responses (never carrying API keys, URLs with secrets, or cookies).
 	Kind      string `json:"kind,omitempty"` // newznab|torznab|builtin|stremio|zilean|addon
@@ -18775,7 +18779,7 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			// plugin's daily background allowance.
 			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
-					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
+					return core.SourceResolveResult{Candidates: []core.SourceCandidate{pluginSourceCandidate(cand)}}, nil
 				}
 			}
 			if backends.AdmitBackgroundUsenetCheck == nil {
@@ -18790,7 +18794,7 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 						resetAt,
 					)
 				}
-				return core.SourceResolveResult{}, admitErr
+				return core.SourceResolveResult{}, pluginSourceError(admitErr)
 			}
 		} else {
 			// On-demand viewer calls never count against the daily background
@@ -18833,9 +18837,60 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 				)
 			}
 		}
-		return core.SourceResolveResult{}, rerr
+		return core.SourceResolveResult{}, pluginSourceError(rerr)
+	}
+	res.Candidates = slices.Clone(res.Candidates)
+	for i := range res.Candidates {
+		res.Candidates[i] = pluginSourceCandidate(res.Candidates[i])
 	}
 	return res, nil
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#pluginSourceCandidate
+
+``````
+// Keep indexer-owned locators on the host, including inside magnet parameters.
+// The same response boundary serves hosted, HTTP, and tunnel plugins.
+func pluginSourceCandidate(c core.SourceCandidate) core.SourceCandidate {
+	if !strings.HasPrefix(c.NZBURL, core.PluginNZBRefPrefix) {
+		c.NZBURL = ""
+	}
+	if !strings.HasPrefix(c.TorrentURL, core.PluginTorrentRefPrefix) {
+		c.TorrentURL = ""
+	}
+	if c.Magnet != "" {
+		hash := newznab.InfoHashFromMagnet(c.Magnet)
+		c.Magnet = newznab.BareMagnet(hash)
+	}
+	return c
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#pluginSourceError
+
+``````
+// Backend errors can contain an upstream response or request URL. Return
+// fixed classifications and allow structured errors produced by the host.
+func pluginSourceError(err error) error {
+	var invalid *ValidationError
+	var limit *RateLimitError
+	if errors.As(err, &invalid) {
+		return invalid
+	}
+	if errors.As(err, &limit) {
+		return limit
+	}
+	for _, public := range []error{
+		context.DeadlineExceeded, context.Canceled, ErrNotFound, ErrPermissionDenied,
+		core.ErrBudgetExhausted, core.ErrReleaseRejected, core.ErrSourceUnavailable,
+		core.ErrNotCached, core.ErrNotAvailable,
+	} {
+		if errors.Is(err, public) {
+			return public
+		}
+	}
+	return ErrUnavailable
 }
 ``````
 
@@ -41100,7 +41155,18 @@ references with an `ether-nzb:` or `ether-torrent:` prefix. Call
 `ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
 permanent vault reference. Use that reference in a release source's
 `release.nzbRef`, and use `release_files` for files inside archives.
-Configured indexer hosts reject direct plugin HTTP calls.
+Use this service for indexer search and NZB access from hosted, HTTP and
+tunnel plugins. Ether blocks its own plugin HTTP requests to configured indexer
+hosts. The indexer API URL and credentials stay in Ether's indexer settings.
+Plugin settings and secrets hold only that plugin's configuration. Do not ask
+owners to copy their indexer URLs or API keys into plugin settings. Source
+results carry opaque download references and trackerless magnets.
+
+An HTTP or tunnel sidecar runs under its own OS or container permissions.
+Ether controls what it sends to that process and requests Ether makes on its
+behalf. To enforce the same egress restriction on a sidecar's own traffic,
+restrict its outbound connections through its container network policy or
+host firewall.
 
 Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck

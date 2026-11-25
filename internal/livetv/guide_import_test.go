@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,7 +191,10 @@ func TestUnchangedGuideReimportWritesNothing(t *testing.T) {
 
 func TestGuideRefreshRetainsArchivedProgrammes(t *testing.T) {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
-	s := testService(t, Options{Now: func() time.Time { return now }})
+	// The service's background loop reads the clock too.
+	var clock atomic.Int64
+	clock.Store(now.UnixNano())
+	s := testService(t, Options{Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 	src := Source{ID: "archive-guide", Name: "Archive guide", Playlist: `#EXTM3U
 #EXTINF:-1 tvg-id="keep" catchup="append" catchup-days="2" catchup-source="?start={utc}", Keep
 https://example.invalid/keep.ts
@@ -223,6 +227,6 @@ https://example.invalid/plain.ts
 	refresh(2)
 	src.Playlist = strings.Replace(src.Playlist, `tvg-id="remove" catchup="append" catchup-days="2" catchup-source="?start={utc}"`, `tvg-id="remove"`, 1)
 	refresh(1)
-	now = now.Add(13*time.Hour + time.Millisecond)
+	clock.Store(now.Add(13*time.Hour + time.Millisecond).UnixNano())
 	refresh(0)
 }

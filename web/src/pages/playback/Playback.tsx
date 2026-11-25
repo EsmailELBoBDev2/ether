@@ -1,11 +1,10 @@
 import * as S from "../settings/schema";
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ConfigSection } from "../../components/ConfigSection";
 import { SectionHeading } from "../../components/feedback";
 import { DomainPage, useRouteTab } from "../../components/layout";
-import { localized, t, tx } from "../../i18n";
+import { localized, t } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { DeviceCapabilities } from "./Devices";
 import {
@@ -25,7 +24,8 @@ import { SubtitleTiming } from "./SubtitleTiming";
 const TABS = localized(
   () =>
     [
-      { key: "subtitles", label: t("Audio & subtitles") },
+      { key: "audio", label: t("Audio") },
+      { key: "subtitles", label: t("Subtitles") },
       { key: "transcoding", label: t("Streams & transcoding") },
       { key: "devices", label: t("App compatibility") },
       { key: "extras", label: t("Extras") },
@@ -52,7 +52,7 @@ const VIDEO_TRANSCODING_OFF_DISABLED = new Set([
 ]);
 
 /**
- * How a chosen release reaches the screen: audio and subtitles, streams and
+ * How a chosen release reaches the screen: audio, subtitles, streams and
  * transcoding, what each app can play, and what plays around the title.
  * Forms stay mounted across tabs, so edits on several tabs save together.
  */
@@ -125,21 +125,9 @@ export default function Playback() {
         groups={S.UP_NEXT}
         label={t("Up next")}
       />
+      {tab === "audio" || tab === "subtitles" ? <HouseholdAudio part={tab} /> : null}
       {tab === "subtitles" ? (
         <>
-          <HouseholdAudio />
-          <p className="max-w-3xl text-sm text-fg-muted">
-            {tx(
-              "When someone turns subtitles on and the file has none, Ether downloads them from OpenSubtitles. The account is set up in {link}.",
-              {
-                link: (
-                  <Link to="/services/overview" className="text-primary underline">
-                    {t("Integrations")}
-                  </Link>
-                ),
-              },
-            )}
-          </p>
           <SubtitleProviders />
           <SubtitleTiming />
         </>

@@ -6,7 +6,7 @@ const WAIT = { timeout: 4000 };
 
 describe("client quality rules", () => {
   it("scopes a rule to shows and filters the list by media", async () => {
-    const { fake } = renderApp("/quality/rules", {}, (f) => {
+    const { fake } = renderApp("/releases/rules", {}, (f) => {
       const profiles = f.state.config.quality.profiles!;
       profiles.push({ ...structuredClone(profiles[1]!), name: "Shows 1080p", mediaType: "tv" });
       f.state.config.quality.rules![0]!.mediaType = "movie";
@@ -41,7 +41,7 @@ describe("client quality rules", () => {
   });
 
   it("repoints unrelated dangling rules when saving a rule", async () => {
-    const { fake } = renderApp("/quality/rules", {}, (f) => {
+    const { fake } = renderApp("/releases/rules", {}, (f) => {
       f.state.config.quality.rules = [
         { product: "Plex for Apple TV", profile: "4K" },
         { product: "Roku", profile: "TRaSH UHD", maxHeight: 1080 },

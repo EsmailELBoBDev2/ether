@@ -36,7 +36,7 @@ func qualityProfilesTool(d Deps) tools.Tool {
 					"allowedQualities": p.AllowedQualities,
 				})
 			}
-			return tools.Result{Data: map[string]any{"profiles": out}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/quality/profiles"}}}, nil
+			return tools.Result{Data: map[string]any{"profiles": out}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/releases/profiles"}}}, nil
 		},
 	})
 }
@@ -89,7 +89,7 @@ func qualityOrderTool(d Deps) tools.Tool {
 					if err := d.Profiles.SetQualityOrder(ctx, profile.Name, profile.Media, order); err != nil {
 						return tools.Result{}, err
 					}
-					return tools.Result{Data: map[string]any{"updated": true, "profile": profile.Name, "media": profile.Media}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/quality/profiles"}}}, nil
+					return tools.Result{Data: map[string]any{"updated": true, "profile": profile.Name, "media": profile.Media}, Links: []tools.Link{{Label: "Open quality profiles", Route: "/releases/profiles"}}}, nil
 				}), nil
 		},
 	})

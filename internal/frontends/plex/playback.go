@@ -159,7 +159,7 @@ func writePlaybackStatus(w http.ResponseWriter, status int) {
 // notCachedMessage words a failure whose every cause is frontend.ErrNotCached:
 // the account's download limit or a refused download first (the owner can
 // act on those), then what the resolver said about the owner's setting and
-// Usenet (*frontend.UncachedError), the same reason Quality › History records.
+// Usenet (*frontend.UncachedError), the same reason Releases › History records.
 func notCachedMessage(err error) string {
 	switch {
 	case errors.Is(err, frontend.ErrDownloadPaused):

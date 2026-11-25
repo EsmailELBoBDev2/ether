@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { SubtitleCheck } from "./SubtitleCheck";
 import { AddAddonDrawer } from "../../components/addons/AddAddonDrawer";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
-import { t } from "../../i18n";
+import { t, tx } from "../../i18n";
 import { api, errorMessage } from "../../lib/api";
 import { textOf, useRegistry } from "../../lib/extend";
 import { useAsync } from "../../lib/hooks";
@@ -75,6 +75,18 @@ export function SubtitleProviders() {
       <div>
         <h2 className="text-lg font-semibold">{t("Subtitle providers")}</h2>
         <p className="text-sm text-fg-muted">
+          {tx(
+            "When someone turns subtitles on and the file has none, Ether downloads them from these providers. OpenSubtitles, SubDL and SubSource are set up in {link}.",
+            {
+              link: (
+                <Link to="/services/overview" className="text-primary underline">
+                  {t("Integrations")}
+                </Link>
+              ),
+            },
+          )}
+        </p>
+        <p className="mt-1 text-sm text-fg-muted">
           {t(
             "Every provider here is searched each time, and one failing does not stop the others. Results are ranked by language and how well they match your file; this order only breaks ties.",
           )}

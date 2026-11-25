@@ -974,7 +974,7 @@ describe("setup wizard", () => {
     expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
   });
 
-  it("deep-links Choose playback quality from the ready screen to Quality profiles", async () => {
+  it("deep-links Choose playback quality from the ready screen to Releases › Profiles", async () => {
     sessionStorage.setItem(SETUP_STEP_KEY, "6");
     renderApp(
       "/setup",
@@ -996,7 +996,7 @@ describe("setup wizard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Playback quality: 1080p at home · change" }),
     );
-    expect(await screen.findByRole("heading", { name: "Quality" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Releases" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
   });
 

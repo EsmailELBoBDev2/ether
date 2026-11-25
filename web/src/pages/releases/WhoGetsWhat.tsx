@@ -164,10 +164,10 @@ function Answer({ answer, viewer }: { answer: QualityAnswer; viewer: string }) {
                       : l.kind === "viewer-cap" || l.kind === "remote-blocked"
                         ? "/viewers"
                         : l.kind === "remote-cap"
-                          ? "/quality/profiles"
+                          ? "/releases/profiles"
                           : l.kind === "profile" && l.source !== "rule"
-                            ? "/quality/profiles"
-                            : "/quality/rules"
+                            ? "/releases/profiles"
+                            : "/releases/rules"
                   }
                 >
                   {l.decisive ? t("Edit") : t("Set limit")}

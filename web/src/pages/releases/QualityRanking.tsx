@@ -648,7 +648,7 @@ export function CustomFormatsSection({
             })}
           </p>
           <p className="px-4 pb-2 text-sm">
-            <Link to="/quality/history" className="text-primary underline">
+            <Link to="/releases/history" className="text-primary underline">
               {t("Inspect release scores and rejection reasons")}
             </Link>
           </p>

@@ -234,13 +234,14 @@ function resolveBuiltinSubparts(
       const tabLabel = resolveTab(
         tab,
         {
-          subtitles: () => t("Audio & subtitles"),
+          audio: () => t("Audio"),
+          subtitles: () => t("Subtitles"),
           transcoding: () => t("Streams & transcoding"),
           devices: () => t("App compatibility"),
           extras: () => t("Extras"),
           prerolls: () => t("Pre-rolls"),
         },
-        "subtitles",
+        "audio",
       );
       const parts = tabLabel ? [tabLabel] : [];
       if (tab === "devices") {

@@ -55,7 +55,7 @@ type qualityExplainIn struct {
 	MediaType string         `json:"mediaType,omitempty"`
 }
 
-// qualityHandler serves the Quality page's "Who gets what" checker.
+// qualityHandler serves the Releases page's "Who gets what" checker.
 func (a *App) qualityHandler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /clients", func(w http.ResponseWriter, r *http.Request) {

@@ -1151,7 +1151,7 @@ export interface ReleasePreferenceResult {
 
 // ---- Quality: "Who gets what" ------------------------------------------------
 
-/** A known app the Quality page can check (GET /quality/clients). */
+/** A known app the Releases page can check (GET /quality/clients). */
 export interface QualityClient {
   id: string;
   name: string;

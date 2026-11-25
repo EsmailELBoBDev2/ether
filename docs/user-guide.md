@@ -77,7 +77,7 @@ before it accepts a video transcode; an audio-only conversion does not count
 as a reason to switch.
 
 Jellyfin library rows list the same menu: **Auto**, then each version set under
-**Quality › Profiles › Version menu** (by default one same-quality version).
+**Releases › Profiles › Version menu** (by default one same-quality version).
 Infuse builds its movie and episode pages from those rows, so its version
 button lists them. Infuse's own **Play Version** setting (Auto, Highest
 Quality, Lowest Quality or Ask) decides whether it asks; long-press Play to
@@ -151,11 +151,11 @@ and a Newznab URL for Usenet. Finally choose a cache folder and budget.
 Out of the box there is no server quality cap, at home or away: each device
 plays the best release it can show (phones up to 1080p, TVs and streaming boxes
 up to 4K), and the app's own quality setting still applies. To limit quality,
-open **Quality › Profiles**. Edit a profile and select **Away** under **Default for** to cap people watching away
+open **Releases › Profiles**. Edit a profile and select **Away** under **Default for** to cap people watching away
 from home (for example with the 1080p profile), or set the shared **Remote bitrate
 limit** in Mbps (0 means no limit). To limit one device, app or viewer,
-add a rule under **Quality › Rules**. A rule wins over the Away profile.
-**Check quality**, its own tab under **Quality**, shows the quality a viewer gets
+add a rule under **Releases › Rules**. A rule wins over the Away profile.
+**Check quality**, its own tab under **Releases**, shows the quality a viewer gets
 in an app, at home or away, and which rule decided.
 Ether supplies no media, provider accounts or indexer access.
 
@@ -261,7 +261,7 @@ added as Torznab URLs with protocol **Torrent (Torznab)**; Ether adds `/api`.
 ### Which source plays
 
 Ether never trades quality for speed. Among releases of the same quality, it
-puts the source that starts faster first. Set this under **Quality › Profiles ›
+puts the source that starts faster first. Set this under **Releases › Profiles ›
 Which source goes first**. It applies to every profile:
 
 - **Start fastest:** once both sources have enough plays, the one with
@@ -274,7 +274,7 @@ Which source goes first**. It applies to every profile:
   when the first has nothing that plays.
 
 The best release from the other source is checked at the same time, and both
-remain available for failover. **Quality › Pinned** (when you find a title) and **History** show when
+remain available for failover. **Releases › Pinned** (when you find a title) and **History** show when
 routing moved a release, and why.
 
 ## Sites
@@ -356,7 +356,7 @@ in Ether's **Viewers** page after signing in. A viewer's page has the tabs
 **Overview**, **Home**, **Taste**, **Recent activity**, **Audio & subtitles**,
 **Limits**, **Sign-in & devices** and **Lists & alerts**. Use **Limits** for
 content and playback limits. To cap one viewer's quality, add a rule under
-**Quality › Rules**. Each viewer keeps their own history and recommendations.
+**Releases › Rules**. Each viewer keeps their own history and recommendations.
 
 ## Libraries, catalogue and Home
 
@@ -489,10 +489,10 @@ what you want to change:
 | Task | Where to look |
 | --- | --- |
 | Connect providers and indexers | **Sources** |
-| Inspect a failed source search | **Quality › History**, then open the attempt |
+| Inspect a failed source search | **Releases › History**, then open the attempt |
 | Inspect observed playback | **Activity › History** |
 | Change one viewer's track preferences | **Viewers › viewer › Audio & subtitles** |
-| Change household audio and subtitles | **Playback › Audio & subtitles** |
+| Change household audio and subtitles | **Playback › Audio** and **Playback › Subtitles** |
 | Arrange rows in Plex | **Home** |
 | Set up poster providers | **Integrations** |
 | Pick the poster source | **Metadata › Artwork** |
@@ -514,7 +514,7 @@ Detail pages can list several versions of a title, such as 4K, a
 high-compatibility 1080p release or an extended cut. Right after the automatic
 choice, other releases of the same cut, resolution and HDR type are listed,
 named by quality, audio, size and release group, so you can switch if one
-fails. **Quality › Profiles › Version menu › Same-quality versions to offer** sets
+fails. **Releases › Profiles › Version menu › Same-quality versions to offer** sets
 how many (0 to 3; 1 by default, 0 turns the extra versions off). Choose one with Plex's **Play Version**; otherwise Ether picks the
 best version for the device. Turn on **Offer alternatives at every resolution**
 to distribute that count across the available resolutions instead. With one
@@ -690,14 +690,14 @@ unknown, only the season-and-episode numbering is used.
 
 Every quality profile ranks releases for one kind of title, **Movies** or
 **Shows**, as in Radarr and Sonarr. The **Movies | Shows** picker on
-**Quality › Profiles** shows that kind's profiles with their **At home** and
+**Releases › Profiles** shows that kind's profiles with their **At home** and
 **Away** defaults, and **Add profile** creates one of the kind shown. A movie
 profile and a show profile can share a name, such as *1080p*, and still have
 different settings. A profile's **Applies to** in its editor offers **Movies**
 or **Shows**; moving a profile to the other kind takes the rules that used it
 along, and a default it can no longer serve moves to another profile.
 
-A rule under **Quality › Rules** applies to movies, to shows, or to both. A
+A rule under **Releases › Rules** applies to movies, to shows, or to both. A
 rule for both names a profile that exists for movies and for shows; movies
 then use the movie profile of that name and shows the show one.
 
@@ -714,7 +714,7 @@ profile.
 
 ## Import a quality profile
 
-Coming from Radarr, Sonarr, or another guide? Open **Quality › Profiles** and
+Coming from Radarr, Sonarr, or another guide? Open **Releases › Profiles** and
 select **Movies** or **Shows**, choose **Add profile**, then **Import a
 preset quality profile**. Movies import from Radarr's guide and shows from
 Sonarr's. Choose a profile for that media, such as
@@ -751,7 +751,7 @@ it.
 
 ### Keep imported profiles in sync
 
-**Quality › Profiles › Keep imported profiles in sync** updates profiles
+**Releases › Profiles › Keep imported profiles in sync** updates profiles
 imported from TRaSH Guides or Profilarr. Turn it on with the switch in the
 card's header, then choose how often to **Check for changes** (6 hours to 7
 days). The card shows when the last sync ran. Until you import a profile, it
@@ -798,7 +798,7 @@ log says what changed.
 
 ## Choose and fix releases
 
-**Quality** explains and overrides which release plays for each title.
+**Releases** explains and overrides which release plays for each title.
 
 - **Pinned** starts with **Find a release**: find a movie, or a show then a
   season and episode, to list every release the indexers return. Each one

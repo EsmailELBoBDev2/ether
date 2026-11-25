@@ -100,6 +100,7 @@ type sessionInput struct {
 	liveInput              bool
 	noVideoTranscode       bool
 	liveFromBacklog        bool
+	liveEndOnEOF           bool
 	inputLease             core.EncoderInputLease
 	inputHeaders           map[string]string
 	input                  string

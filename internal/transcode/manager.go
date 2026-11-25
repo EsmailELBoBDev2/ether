@@ -1390,6 +1390,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			liveInput:          req.LiveInput,
 			noVideoTranscode:   req.NoVideoTranscode,
 			liveFromBacklog:    req.LiveInput && req.LiveFromBacklog,
+			liveEndOnEOF:       req.LiveEndOnEOF,
 			loopInput:          len(slateData) > 0,
 			input:              req.InputURL,
 			inputHeaders:       inputHeaders,

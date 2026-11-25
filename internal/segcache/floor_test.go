@@ -40,11 +40,14 @@ func TestMinFreeBytes(t *testing.T) {
 }
 
 func TestFreeSpaceFloorEvictsOldestUnprotected(t *testing.T) {
-	c := openT(t, t.TempDir(), 0) // unlimited budget
-	// The evict worker reads the clock while the test advances it.
+	// Install the clock before the eviction worker starts.
 	var clock atomic.Int64
 	clock.Store(time.Unix(1_800_000_000, 0).UnixNano())
-	c.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	c, err := openLocal(t.TempDir(), 0, nil, func() time.Time { return time.Unix(0, clock.Load()) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
 	vol := &fakeVolume{total: 1000} // floor: 50 bytes
 	vol.cache = func() int64 { used, _ := c.Usage(); return used }
 	c.SetDiskUsage(vol.usage)

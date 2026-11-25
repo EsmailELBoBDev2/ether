@@ -44,6 +44,7 @@ type hlsSegment struct {
 // hlsMedia is a parsed live media playlist, kept as blocks of lines so a
 // window can be cut from it without disturbing anything else.
 type hlsMedia struct {
+	base   *url.URL
 	header []string   // lines before the first segment's tags
 	blocks [][]string // each segment's tag lines followed by its URI line
 	segs   []hlsSegment
@@ -83,7 +84,7 @@ func parseHLSPDT(raw string) (time.Time, bool) {
 }
 
 func parseHLSMedia(b []byte, base *url.URL) *hlsMedia {
-	m := &hlsMedia{}
+	m := &hlsMedia{base: base}
 	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 	var cur []string
 	inSegs := false
@@ -368,12 +369,12 @@ type hlsList struct {
 	stalled     bool
 	failed      bool
 	initialized bool
-	// cut is the provider discontinuity the reader's playlist ends before
-	// (-1 none); cutServed is set once a reader was handed that ended
-	// window. The next reader after the old one fetched up to the cut
-	// resumes exactly at it.
-	cut       int64
-	cutServed bool
+	// Keep the ended playlist fixed across reloads until the relay has
+	// drained this producer. Segment requests and playlist reloads can
+	// overlap, so neither is evidence of a new reader.
+	cut         int64
+	cutManifest hlsAlignedSnap
+	resumed     bool // resume on this floor during paired rendition alignment
 	// seqShift is added to the media sequence a reader sees. A demuxed
 	// audio rendition is renumbered onto its video's numbering at the
 	// aligned start: ffmpeg's HLS demuxer takes a live rendition whose
@@ -547,9 +548,7 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 			l.floor = m.segs[m.startFor(h.g.joinDepth())].seq
 		}
 	}
-	if reader && h.resumeAtCutLocked(l) {
-		// A new reader after the old one stopped at a program change.
-	} else if l.floor >= 0 && l.served >= 0 && l.served-1 > l.floor {
+	if l.floor >= 0 && l.served >= 0 && l.served-1 > l.floor {
 		l.floor = l.served - 1
 	}
 	l.initialized = true
@@ -559,11 +558,7 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 	floor, shift := l.floor, l.seqShift
 	var ended []byte
 	if reader && floor >= 0 && h.g.splitPrograms.Load() {
-		if cut := m.programCut(floor); cut >= 0 {
-			if ended = m.windowCut(floor, cut); ended != nil {
-				l.cut, l.cutServed = cut, true
-			}
-		}
+		ended = l.endAtProgramCut(m)
 	}
 	startPoll := reserve > 0 && !h.polling[raw]
 	if startPoll {
@@ -577,7 +572,7 @@ func (h *hlsInput) mediaFor(raw string, body []byte, base *url.URL, reader bool)
 		shift = 0
 	}
 	if ended != nil {
-		return shiftMediaSequence(ended, shift), events
+		return ended, events
 	}
 	if floor >= 0 {
 		if out := m.window(floor); out != nil {
@@ -646,16 +641,65 @@ func shiftMediaSequence(body []byte, shift int64) []byte {
 	return []byte(strings.Join(out, "\n"))
 }
 
-// resumeAtCutLocked moves l's floor to the program change its previous
-// reader was stopped before, once that reader fetched everything up to it:
-// the next reader starts on the new program's first segment, with nothing
-// repeated or skipped.
-func (h *hlsInput) resumeAtCutLocked(l *hlsList) bool {
-	if !l.cutServed || l.cut < 0 || l.served < l.cut-1 {
-		return false
+func (l *hlsList) endAtProgramCut(m *hlsMedia) []byte {
+	if l.cut < 0 {
+		cut := m.programCut(l.floor)
+		if cut >= 0 {
+			if ended := m.windowCut(l.floor, cut); ended != nil {
+				l.cut = cut
+				l.cutManifest = hlsAlignedSnap{body: shiftMediaSequence(ended, l.seqShift), base: m.base}
+			}
+		}
 	}
-	l.floor, l.cut, l.cutServed = l.cut, -1, false
-	return true
+	return l.cutManifest.body
+}
+
+func (h *hlsInput) endedManifest(raw string) (hlsAlignedSnap, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if l := h.lists[raw]; l != nil && l.cut >= 0 {
+		return l.cutManifest, true
+	}
+	return hlsAlignedSnap{}, false
+}
+
+func (h *hlsInput) programEnding() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, l := range h.lists {
+		if l.cut >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// advanceProgram is called after ingest has drained the old producer's
+// ended output. Advance all cut renditions together before opening the
+// replacement, and invalidate any aligned snapshot from the old program.
+func (h *hlsInput) advanceProgram() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	advanced := false
+	for _, l := range h.lists {
+		if l.cut >= 0 {
+			if l.served < l.cut-1 {
+				return false
+			}
+			advanced = true
+		}
+	}
+	if advanced {
+		for _, l := range h.lists {
+			if l.cut >= 0 {
+				l.floor, l.cut, l.resumed = l.cut, -1, true
+				l.cutManifest = hlsAlignedSnap{}
+			}
+		}
+		h.demux.gen++
+		h.demux.snap = nil
+	}
+	return advanced
 }
 
 // programCut is the first segment after floor that opens a new
@@ -990,13 +1034,9 @@ func (h *hlsInput) applyDemuxedPair(
 	vMaxSegs, aMaxSegs := 0, 0
 	aligned := false
 	var alignedSkew time.Duration
-	atCut := func(l *hlsList) bool { return l.cutServed && l.cut >= 0 && l.served >= l.cut-1 }
-	if atCut(vl) && atCut(al) {
-		// The previous reader drained both renditions up to the program
-		// change: start each on the new program's first segment (the
-		// provider marks the change in both at the same media time).
-		h.resumeAtCutLocked(vl)
-		h.resumeAtCutLocked(al)
+	if vl.resumed && al.resumed {
+		// Keep both renditions on the floors set by the producer handoff.
+		vl.resumed, al.resumed = false, false
 		aligned = true
 		source = "program"
 		if i := segIndex(vm, vl.floor); i >= 0 && vm.segs[i].hasPDT {
@@ -1118,6 +1158,11 @@ func (h *hlsInput) applyDemuxedPair(
 			startPolls = append(startPolls, aRaw)
 		}
 	}
+	var vEnded, aEnded []byte
+	if h.g.splitPrograms.Load() && vFloor >= 0 && aFloor >= 0 &&
+		vm.programCut(vFloor) >= 0 && am.programCut(aFloor) >= 0 {
+		vEnded, aEnded = vl.endAtProgramCut(vm), al.endAtProgramCut(am)
+	}
 	log := h.g.log
 	h.mu.Unlock()
 
@@ -1138,18 +1183,11 @@ func (h *hlsInput) applyDemuxedPair(
 			aOut = out
 		}
 	}
-	if h.g.splitPrograms.Load() && vFloor >= 0 && aFloor >= 0 {
-		vCut, aCut := vm.programCut(vFloor), am.programCut(aFloor)
-		if vCut >= 0 && aCut >= 0 {
-			v, a := vm.windowCut(vFloor, vCut), am.windowCut(aFloor, aCut)
-			if v != nil && a != nil {
-				h.mu.Lock()
-				vl.cut, vl.cutServed = vCut, true
-				al.cut, al.cutServed = aCut, true
-				h.mu.Unlock()
-				vOut, aOut = v, a
-			}
-		}
+	if vEnded != nil {
+		vOut = vEnded
+	}
+	if aEnded != nil {
+		return vOut, aEnded, events
 	}
 	return vOut, shiftMediaSequence(aOut, aShift), events
 }

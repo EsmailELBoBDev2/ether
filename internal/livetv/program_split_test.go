@@ -40,10 +40,9 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 		t.Skip("integration test (-short)")
 	}
 	if raceEnabled {
-		// The splice is a real-time race between the relay's cut and ffmpeg's
-		// live reload; the race detector slows the relay past the cut, so a
-		// -race run cannot prove it. Non-race runs (macOS CI, local) do.
-		t.Skip("real-time splice is not measurable under -race")
+		// This fixture runs an external encoder against a real-time
+		// provider window and checks uninterrupted publication.
+		t.Skip("real-time playback fixture under -race")
 	}
 	ffmpegPath, err1 := exec.LookPath("ffmpeg")
 	ffprobePath, err2 := exec.LookPath("ffprobe")
@@ -184,7 +183,8 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 			case strings.HasPrefix(line, "#EXTINF:"):
 				fmt.Sscanf(strings.TrimPrefix(line, "#EXTINF:"), "%f", &dur)
 			case line != "" && !strings.HasPrefix(line, "#"):
-				seen[line], aired[line] = dur, cur
+				name, _, _ := strings.Cut(line, "?")
+				seen[name], aired[name] = dur, cur
 			}
 		}
 		if len(inits) >= 2 && airedMedia(seen) >= 22 {
@@ -195,8 +195,9 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 	logMu.Lock()
 	logs := logBuf.String()
 	logMu.Unlock()
-	if strings.Contains(logs, "owned live timeline publishing slate") {
-		t.Fatalf("slate aired at the program change (aired %v, inits %v); logs:\n%s", seen, inits, logs)
+	if strings.Contains(logs, "owned live timeline publishing slate") ||
+		strings.Contains(logs, "owned relay switching producer to re-encode") {
+		t.Fatalf("relay fell back during the program change (inits %v); logs:\n%s", inits, logs)
 	}
 	if !strings.Contains(logs, `reason="program change"`) {
 		t.Fatalf("no program-change restart; logs:\n%s", logs)
@@ -204,14 +205,13 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 	if len(inits) < 2 {
 		t.Fatalf("inits %v: program B never aired; logs:\n%s", inits, logs)
 	}
-	// The restarted run read on from B's first segment: nothing of A was
-	// read again after it.
+	// The reserve can prefetch B before ffmpeg has drained A. Verify that
+	// B's first segment was retrieved and check the splice on published media.
 	fetchMu.Lock()
 	order := append([]string(nil), fetched...)
 	fetchMu.Unlock()
-	at := slices.Index(order, firstB)
-	if at < 0 || slices.ContainsFunc(order[at:], func(n string) bool { return strings.HasPrefix(n, "a") }) {
-		t.Fatalf("segment reads across the program change: %v", order)
+	if !slices.Contains(order, firstB) {
+		t.Fatalf("first segment of program B was never fetched: %v; logs:\n%s", order, logs)
 	}
 	// A aired once: at most the 10 s from the earliest join (A1..A5), at
 	// least its last segment before B.
@@ -222,12 +222,12 @@ func testProgramChangeSplice(t *testing.T, demuxed bool) {
 		}
 	}
 	if aSeconds < 2 || aSeconds > 10.1 {
-		t.Fatalf("program A aired %.2f s, want 2..10 (no repeat): %v", aSeconds, seen)
+		t.Fatalf("program A aired %.2f s, want 2..10: %d segments, inits %v, fetches %v; logs:\n%s", aSeconds, len(seen), inits, order, logs)
 	}
 	rec := httptest.NewRecorder()
 	s.ServeResource(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx), info.ID, inits[len(inits)-1], u)
 	if w, h := avc1Size(rec.Body.Bytes()); w != 480 || h != 270 {
-		t.Fatalf("last init is %dx%d, want program B's 480x270", w, h)
+		t.Fatalf("last init is %dx%d, want program B's 480x270: fetches %v; logs:\n%s", w, h, order, logs)
 	}
 	for _, line := range strings.Split(logs, "\n") {
 		if strings.Contains(line, "aligned demuxed") || strings.Contains(line, "restarting live encoder") || strings.Contains(line, "timeline closed") {

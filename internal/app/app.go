@@ -529,6 +529,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.log.Info("startup phase", "phase", name, "duration", time.Since(phaseStart))
 		phaseStart = time.Now()
 	}
+	a.closers = append(a.closers, func() { a.db.Close() })
 	// The rest of construction writes through the gate in startup steps
 	// (restored-dump import, credential sealing, seeding). Hold the gate
 	// in maintenance mode until New returns so anything already writing
@@ -546,7 +547,6 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.log.Info("database: using PostgreSQL", "url", dbCfg.Redacted().URL)
 		a.warnNewerSchema(ctx)
 	}
-	a.closers = append(a.closers, func() { a.db.Close() })
 	if err := a.buildCluster(dialect); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("cluster: %w", err)

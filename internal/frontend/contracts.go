@@ -1149,6 +1149,9 @@ const (
 // StreamRequest describes output, not an upstream URL or credential. The
 // broker owns the input, decision and stream grant.
 type StreamRequest struct {
+	// ExpectedOriginalRevision is set by a stable media URL resolving to a
+	// direct-file grant. Empty requires the first representation.
+	ExpectedOriginalRevision *string
 	// PrepareOnly keeps original-file delivery authorized while preparing HLS.
 	PrepareOnly bool
 
@@ -1539,6 +1542,29 @@ type FilterFacetReader interface {
 // StreamDecisionReader returns the admitted decision after an authorized restart.
 type StreamDecisionReader interface {
 	StreamDecision(context.Context, SessionAccess, string) (core.Decision, error)
+}
+
+// PlexOriginalRange associates a direct part read with its broker session.
+type PlexOriginalRange interface {
+	PlexOriginalRange(context.Context, SessionAccess, core.RatingKey, string, string, string) core.OriginalRange
+}
+
+func WithOriginalRange(ctx context.Context, request core.OriginalRange) context.Context {
+	return core.WithOriginalRange(ctx, request)
+}
+
+// OriginalPlaybackReader exposes a range-triggered original replacement or a
+// terminal loss to session-aware clients.
+type OriginalPlaybackReader interface {
+	OriginalPlaybackState(context.Context, SessionAccess, string) (OriginalPlaybackState, error)
+}
+
+type OriginalPlaybackState struct {
+	Unavailable                      bool
+	Revision, URL, ReleaseID, Origin string
+	Media                            core.MediaInfo
+	Decision                         core.Decision
+	Position                         time.Duration
 }
 
 // PlayingReleaseReader reports the release a session is reading now, after

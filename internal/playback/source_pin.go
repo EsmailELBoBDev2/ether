@@ -66,7 +66,9 @@ func (m *Manager) BindSource(id string, binding core.SourceBinding) {
 		return
 	}
 	s.mu.Lock()
-	s.binding = binding
+	if s.binding != core.SourceBindingExplicit {
+		s.binding = binding
+	}
 	s.mu.Unlock()
 }
 
@@ -76,7 +78,7 @@ func (m *Manager) BindSource(id string, binding core.SourceBinding) {
 // unpinned remembered start only when its release is proven unreadable.
 // Caller holds s.mu.
 func (s *session) replaceableLocked(unreadable bool) bool {
-	if s.sourcePins > 0 {
+	if s.sourcePins > 0 || s.originalRevision != "" {
 		return false
 	}
 	if !s.exact {

@@ -201,6 +201,14 @@ type brokerSession struct {
 	autoRelease           bool
 	sourcePinned          bool
 	sourceETag            string
+
+	originalFailure, originalReplaced bool
+	originalAwaitingProgress          bool
+	originalSubstituted               bool
+	originalPosition                  *time.Duration
+	originalResumeAt                  time.Duration
+	originalAudio, originalSubtitle   *int
+
 	// transferBarrier is this session's admission ticket. A later open of the
 	// same title, part and device reuses it. Stop drops it once no live
 	// session still holds it; an unverified retirement leaves it until the
@@ -1539,6 +1547,9 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if err := b.enrichCapabilities(ctx, &s.public); err != nil && b.deps.OnEventError != nil {
 		b.deps.OnEventError(err)
 	}
+	if (s.originalFailure || s.originalAwaitingProgress) && t.State == "stopped" {
+		return b.stopLocked(ctx, s)
+	}
 	if !s.live {
 		reportedID := t.PlaybackID
 		if reportedID == s.public.ID {
@@ -1627,6 +1638,26 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if sequenced {
 		report.outcome = frontend.ReportApplied
 	}
+	if t.State == "playing" || t.State == "paused" || t.State == "buffering" {
+		b.mu.Lock()
+		if live := b.sessions[id]; live != nil {
+			position := t.Position
+			live.originalPosition = &position
+			if t.State == "playing" {
+				live.originalAwaitingProgress = false
+			}
+			if t.AudioStreamIndex != nil {
+				index := *t.AudioStreamIndex
+				live.originalAudio = &index
+			}
+			if t.SubtitleStreamIndex != nil {
+				index := *t.SubtitleStreamIndex
+				live.originalSubtitle = &index
+			}
+		}
+		b.mu.Unlock()
+	}
+
 	if s.format != "" {
 		b.recordSourceHistory(ctx, s)
 	}

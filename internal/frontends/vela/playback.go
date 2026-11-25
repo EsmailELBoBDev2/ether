@@ -615,6 +615,7 @@ func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
+	i.pollOriginalRecovery(r.Context(), v, requestDevice(r), r.PathValue("id"), s)
 	i.refreshColdVersions(r, v, s)
 	i.pollPlayingRelease(r.Context(), v, requestDevice(r), r.PathValue("id"), s)
 	i.refreshSessionLiveEvent(r.Context(), v, s)
@@ -675,6 +676,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	}
 	s.commandMu.Lock()
 	defer s.commandMu.Unlock()
+	i.pollOriginalRecovery(r.Context(), v, requestDevice(r), r.PathValue("id"), s)
 	s.mu.Lock()
 	s.commandActive = true
 	defer func() { s.commandActive = false; s.mu.Unlock() }()
@@ -1146,6 +1148,9 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.canBurn = canBurn
 		s.qualityRungs = nil
 		s.active = planActiveVersion(plan)
+		delete(s.plan, "sourceFailure")
+		delete(s.plan, "replacementSourceId")
+		delete(s.plan, "sourceOrigin")
 		s.plan["paths"] = paths
 		s.plan["selectedPathId"] = "primary"
 		s.plan["audioTracks"] = audioTracks

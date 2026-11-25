@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"time"
@@ -235,6 +236,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 			Position:         position,
 			AllowTranscoding: s.allowTranscoding,
 			DeclaredCaps:     true,
+			ExactVersion:     !isAuto,
 		},
 	}
 	if b.deps.SelectScopedTracks != nil || b.deps.SelectTracks != nil {
@@ -342,6 +344,14 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		live.trickplay = nil
 		live.trickplayStarted = false
 		live.format = ""
+		live.originalFailure, live.originalReplaced, live.originalAwaitingProgress = false, false, false
+		live.originalPosition, live.originalAudio, live.originalSubtitle = nil, nil, nil
+		live.originalResumeAt = 0
+		// A previous original grant may already be in the decoder.
+		if oldPinned || s.originalReplaced {
+			live.grant = rand.Text()
+			live.public.MediaPath = "/sessions/media/" + sessionID + "/" + live.grant + "/file"
+		}
 	}
 	live.playID = ps.ID
 	live.caps.NoVideoTranscode = caps.NoVideoTranscode

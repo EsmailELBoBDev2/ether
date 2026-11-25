@@ -237,6 +237,9 @@ type DecideOptions struct {
 
 // PlaySession binds a user, a title and a client to a resolved, open source.
 type PlaySession struct {
+	// OriginalRevision is the revision a replanned native file URL must name.
+	OriginalRevision string `json:"-"`
+
 	Encoder       *EncoderStatus `json:"encoder,omitempty"`
 	PlaybackGroup string         `json:"playbackGroup,omitempty"`
 	// PreparedOnly marks a source reserved for planning but not opened by a
@@ -452,6 +455,34 @@ const (
 // ErrVersionUnreadable ends playback of a picked version whose release is
 // provably unreadable (corrupt or missing data on every provider).
 var ErrVersionUnreadable = fmt.Errorf("this version can't be played: the file is incomplete on your provider: %w", ErrReleaseRejected)
+
+// ErrOriginalLost means all eligible debrid accounts confirmed that the
+// same file cannot be recovered. Expired links and transient failures do not
+// establish loss.
+var ErrOriginalLost = fmt.Errorf("provider no longer has the original: %w", ErrSourceUnavailable)
+
+// OriginalRecovery replaces the current original after confirmed loss. Admit
+// scores a probed candidate between zero (incompatible) and one (best fit).
+// Direct range requests must name the new revision after replacement.
+type OriginalRecovery interface {
+	ReplaceLostOriginal(ctx context.Context, id, revision string, position time.Duration, explicit bool, admit func(*PlaySession) float64) (*PlaySession, time.Duration, error)
+}
+
+type originalRangeKey struct{}
+
+type OriginalRange struct {
+	Revision string
+	Lost     func()
+}
+
+func WithOriginalRange(ctx context.Context, request OriginalRange) context.Context {
+	return context.WithValue(ctx, originalRangeKey{}, request)
+}
+
+func OriginalRangeFrom(ctx context.Context) OriginalRange {
+	request, _ := ctx.Value(originalRangeKey{}).(OriginalRange)
+	return request
+}
 
 // SourceBinder records why an exact playback session holds its release.
 type SourceBinder interface {

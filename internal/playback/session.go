@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -63,6 +64,7 @@ type generation struct {
 	// articleMissing records that a read hit core.ErrArticleMissing.
 	articleMissing     atomic.Bool
 	backgroundFailover atomic.Bool // at most one recovery worker for this source
+	originalRejected   bool        // guarded by the failover semaphore
 	readFailure        error       // protected by mu; distinguishes transient failover from bad data
 	retryEpoch         uint64
 	retryPending       bool
@@ -265,12 +267,16 @@ type session struct {
 	// after its flight completed (see abandonFlightLocked).
 	claimed bool
 
-	mu                 sync.Mutex
-	preparedOnly       bool
-	backgroundHold     *backgroundSourceHold
-	analysisSource     bool
-	stoppedBySurface   bool
-	sourcePins         int
+	mu               sync.Mutex
+	preparedOnly     bool
+	backgroundHold   *backgroundSourceHold
+	analysisSource   bool
+	stoppedBySurface bool
+	sourcePins       int
+
+	originalRecoveryTried bool
+	originalRevision      string
+
 	cur                *generation
 	virtualGen         *generation // generation whose layout virtual mirrors
 	gens               int
@@ -556,6 +562,7 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 	caps.NoVideoTranscode = s.noVideoTranscodeActive()
 	ps := &core.PlaySession{
 		PreparedOnly:      s.preparedOnly,
+		OriginalRevision:  s.originalRevision,
 		ID:                s.id,
 		UserID:            s.ident.userID,
 		ClientID:          s.ident.clientID,
@@ -726,7 +733,7 @@ func (r *rateMeter) rate(now time.Time) int64 {
 func (g *generation) noteReadFailure(err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.readFailure == nil {
+	if g.readFailure == nil || errors.Is(err, core.ErrOriginalLost) {
 		g.readFailure = err
 	}
 }

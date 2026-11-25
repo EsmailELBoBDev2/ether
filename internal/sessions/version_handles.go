@@ -411,11 +411,12 @@ func (v *versionHandles) MatchSession(ctx context.Context, scope frontend.Versio
 	if err != nil {
 		return err
 	}
-	if s.public.Item != item || s.versionHandle != handle || s.exactRelease != release {
+	if s.public.Item != item || s.versionHandle != handle || (s.exactRelease != release && !s.autoRelease) {
 		return core.ErrNotFound
 	}
 	ps, ok := v.broker.deps.Playback.Session(s.playID)
-	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID != release {
+	// An Auto entry may already have failed over to another release.
+	if !ok || ps == nil || ps.Resolution == nil || (ps.Resolution.Release.ID != release && !s.autoRelease) {
 		return core.ErrNotAvailable
 	}
 	return nil

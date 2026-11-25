@@ -349,6 +349,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	live.decision = dec
 	live.versionHandle = normHandle
 	live.exactRelease = relID
+	live.autoRelease = !exact
 	if !sameSource {
 		live.sourcePinned = pinned
 	}

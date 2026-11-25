@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -404,6 +405,34 @@ type SurfaceScopedPlayback interface {
 type PlaybackRevisionPin interface {
 	PinSourceRevision(ctx context.Context, id, revision string) error
 	UnpinSourceRevision(id string)
+}
+
+// SourceBinding says why an exact session is held on its release, which
+// decides whether that release may still be replaced when it fails.
+type SourceBinding uint8
+
+const (
+	// SourceBindingUnspecified keeps the exact selection locked.
+	SourceBindingUnspecified SourceBinding = iota
+	// SourceBindingExplicit is a version the viewer picked. It is never
+	// replaced. A provably unreadable release ends playback with
+	// ErrVersionUnreadable instead.
+	SourceBindingExplicit
+	// SourceBindingRemembered resumes the release this viewer last played.
+	// It is replaced only when it is proven unreadable.
+	SourceBindingRemembered
+	// SourceBindingAuto is the release a client was handed as its Auto or
+	// default entry. It fails over like any automatic session.
+	SourceBindingAuto
+)
+
+// ErrVersionUnreadable ends playback of a picked version whose release is
+// provably unreadable (corrupt or missing data on every provider).
+var ErrVersionUnreadable = fmt.Errorf("this version can't be played: the file is incomplete on your provider: %w", ErrReleaseRejected)
+
+// SourceBinder records why an exact playback session holds its release.
+type SourceBinder interface {
+	BindSource(id string, binding SourceBinding)
 }
 
 // PlaybackSourceObservation contains scalar facts from one opened source

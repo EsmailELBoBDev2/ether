@@ -131,6 +131,9 @@ type brokerPlan struct {
 	versionHandle string
 	opening       bool
 	pinned        bool
+	// autoRelease: exactRelease is the client's Auto entry, which may fail
+	// over after admission like any automatic session.
+	autoRelease bool
 	// external is a Plex admission: the adapter already prepared the source.
 	external      bool
 	budgetCapKbps int
@@ -195,6 +198,7 @@ type brokerSession struct {
 	historySequence       int64
 	versionHandle         string
 	exactRelease          string
+	autoRelease           bool
 	sourcePinned          bool
 	sourceETag            string
 	// transferBarrier is this session's admission ticket. A later open of the
@@ -799,6 +803,9 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return frontend.PlayPlan{}, frontend.ErrSourceGone
 	}
 	var ps *core.PlaySession
+	// autoRelease: the handle names Auto's release, so the session may play
+	// another release in its place (a fallback now, a failover later).
+	autoRelease := ((chosen != nil && chosen.Auto) || req.Intent.AutoVersion) && !slotSelector && detail == nil
 	prepStarted := time.Now()
 	if useCachedDetail {
 		if liveness, ok := b.deps.Playback.(interface{ SessionActive(string) bool }); ok && !liveness.SessionActive(previous.ID) {
@@ -812,7 +819,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		// no ExpectedSourceETag was pinned) is no longer available or changed,
 		// fall back cleanly to the next healthy candidate instead of failing
 		// replay with "not available yet: playback: source revision changed".
-		if err != nil && detail == nil && req.ExpectedSourceETag == "" && !slotSelector && (rememberedFallback || (chosen != nil && chosen.Auto) || errors.Is(err, core.ErrSourceChanged)) {
+		if err != nil && detail == nil && req.ExpectedSourceETag == "" && !slotSelector && (rememberedFallback || autoRelease || errors.Is(err, core.ErrSourceChanged)) {
 			if fallbackPS, fallbackErr := playback.PrepareSurface(ctx, v, req.Item, req.Caps, "", false); fallbackErr == nil && fallbackPS != nil {
 				ps, err = fallbackPS, nil
 				prepareExact = false
@@ -846,6 +853,21 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	if ps == nil {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
+	}
+	// An exact start is the viewer's pick only when they chose a version.
+	// The Auto entry a client was handed (Silo's default file, Jellyfin's
+	// transcode-avoiding Auto switch) and a remembered resume open their
+	// release exactly, but must still fail over when it cannot be read.
+	if prepareExact && detail == nil {
+		binding := core.SourceBindingExplicit
+		if rememberedFallback {
+			binding = core.SourceBindingRemembered
+		} else if autoRelease {
+			binding = core.SourceBindingAuto
+		}
+		if binder, ok := b.deps.Playback.(core.SourceBinder); ok {
+			binder.BindSource(ps.ID, binding)
+		}
 	}
 	// Keep the selected source identifiable when delivery negotiation fails.
 	// In particular, an owner pin must explain why it cannot be delivered
@@ -932,7 +954,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if detail != nil {
 		exactRelease = detail.release
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
+	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, autoRelease: autoRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
 	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps != nil && ps.ID != "" {
 		constrained := ps.Info.BitrateKbps <= 0 || ps.Info.BitrateKbps > budgetCapKbps || dec.Kind == core.DecisionTranscode
 		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
@@ -1135,7 +1157,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	if deliverySession == "" {
 		deliverySession = id
 	}
-	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
+	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, autoRelease: p.autoRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
 	barrier, barrierErr := b.admitSessionBarrier(ctx, v.ID, string(req.Protocol), p.request.Device.ID, p.request.Item, ps.ID, id)
 	if barrierErr != nil {
 		if errors.Is(barrierErr, errTransferCommitUnknown) {

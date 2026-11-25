@@ -258,8 +258,8 @@ func TestSourceIPDecidesLocalityAcrossAllFrontendsAndUploadBudget(t *testing.T) 
 	if err := a.cfg.Update(func(c *config.Config) error {
 		c.Server.TrustedProxyCIDRs = []string{"172.16.50.5"}
 		c.Quality = config.Quality{
-			Profiles: []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 720}},
-			Default:  "home",
+			Profiles:    []core.QualityProfile{{Name: "home", MaxHeight: 2160}, {Name: "away", MaxHeight: 720}},
+			Default:     "home",
 			DefaultAway: "away",
 		}
 		return nil

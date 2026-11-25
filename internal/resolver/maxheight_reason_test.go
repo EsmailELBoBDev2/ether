@@ -125,9 +125,9 @@ func TestTraceAndHistoryRecordMaxHeightCeilings(t *testing.T) {
 func TestRemoteProfileCeilingRecordedInHistory(t *testing.T) {
 	cfg := testCfg()
 	q := fixtureQuality()
-	q.Default = "4K"  // 2160 configured for local/default clients
+	q.Default = "4K"       // 2160 configured for local/default clients
 	q.DefaultAway = "720p" // 720 configured for remote clients: distinct ceiling
-	q.Rules = nil     // a device rule would win over the remote profile
+	q.Rules = nil          // a device rule would win over the remote profile
 	cfg.Quality = q
 
 	// Direct selection: Remote picks q.DefaultAway and snapshots its ceiling.

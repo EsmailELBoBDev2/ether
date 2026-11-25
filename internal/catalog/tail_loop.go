@@ -58,24 +58,21 @@ func (c *Catalog) RunTail(ctx context.Context) {
 	}
 	c.loadNewestTail()
 	for ctx.Err() == nil {
-		if !c.TMDBConfigured() {
-			if !schedule.Wait(ctx, c.now, time.Minute) {
-				return
-			}
-			continue
-		}
 		if err := c.refreshTail(ctx); err != nil && ctx.Err() == nil {
 			c.log.Warn("catalog: long-tail index", "err", err)
 		}
 		c.reapTailFiles()
-		if !schedule.Wait(ctx, c.now, time.Hour) {
+		interval := time.Hour
+		if !c.TMDBConfigured() {
+			interval = time.Minute
+		}
+		if !schedule.Wait(ctx, c.now, interval) {
 			return
 		}
 	}
 }
 
-// Public exports need no API key. Only optional name/date/poster enrichment
-// uses the authenticated client; cached names remain usable without it.
+// Name, date and poster enrichment uses authenticated TMDB requests.
 func (c *Catalog) canEnrichTail() bool {
 	return c.TMDBConfigured()
 }
@@ -158,6 +155,9 @@ func (c *Catalog) reapTailFiles() {
 // refreshTail builds a new version when the export (or the names file)
 // is newer than the current index, and runs the monthly names walk.
 func (c *Catalog) refreshTail(ctx context.Context) error {
+	if !c.TMDBConfigured() {
+		return nil
+	}
 	day, err := c.tailExportDay(ctx)
 	if err != nil {
 		c.setTailError(err)

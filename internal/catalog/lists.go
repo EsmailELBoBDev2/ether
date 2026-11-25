@@ -357,6 +357,22 @@ func (c *Catalog) searchTitlesOpts(ctx, coldCtx context.Context, query string, t
 				}
 			}
 		}
+		// Resolve effective orders for stored results after selecting and
+		// hydrating the page. Provider hits can still be unopened summaries.
+		var stored []core.Title
+		var at []int
+		for i, t := range items {
+			if t.Type != core.TypeMovie && localKeys[t.Key] {
+				stored = append(stored, t)
+				at = append(at, i)
+			}
+		}
+		if err := c.ProjectEpisodeTitles(ctx, stored); err != nil {
+			return nil, err
+		}
+		for j, i := range at {
+			items[i] = stored[j]
+		}
 		// Posters last, on the final page: ranking never sees them. A long-
 		// tail hit whose poster is unknown is looked up under posterWait;
 		// one that misses it shows Ether's generated poster this time.

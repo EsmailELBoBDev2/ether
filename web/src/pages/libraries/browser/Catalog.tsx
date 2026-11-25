@@ -745,6 +745,7 @@ export function CatalogBrowser({
         <TitleInspector
           key={selected}
           titleKey={selected}
+          onMatch={(key) => update("title", key)}
           onClose={() => update("title", "")}
           onLibraryChange={() => {
             void browsed.reload();

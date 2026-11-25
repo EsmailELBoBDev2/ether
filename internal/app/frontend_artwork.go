@@ -30,7 +30,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	}
 	var images *artworkservice.RemoteCache
 	if a.images != nil {
-		images = artworkservice.NewBackedRemoteCache(128<<20, a.images)
+		images = artworkservice.NewBackedRemoteCache(a.images)
 	} else {
 		images = artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
 	}

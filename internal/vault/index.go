@@ -47,16 +47,18 @@ CREATE INDEX vault_nzb_name_size ON vault_releases(name,size) WHERE kind='usenet
 	store.Register("vault", 5, `
 CREATE INDEX vault_speed_sample ON vault_releases(added DESC, key) WHERE kind='usenet' AND dead=0 AND segments>0;
 `)
+	store.Register("vault", 6, `ALTER TABLE vault_releases ADD COLUMN owner_match INTEGER NOT NULL DEFAULT 0;`)
 }
 
-const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
+const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id,owner_match"
 
 func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	var x Entry
 	var added, used, health int64
 	var raw string
-	var private int
-	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw, &x.CacheID)
+	var private, ownerMatch int
+	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw, &x.CacheID, &ownerMatch)
+	x.OwnerMatch = ownerMatch != 0
 	if errors.Is(e, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}
@@ -122,7 +124,7 @@ func (v *library) Search(ctx context.Context, r core.SearchRequest) ([]Entry, er
 		q += " AND ((season=? AND episode=?) OR EXISTS(SELECT 1 FROM vault_members m WHERE m.key=r.key AND m.season=? AND m.episode=?))"
 		a = append(a, r.Season, r.Episode, r.Season, r.Episode)
 	} else {
-		q += " AND season=0 AND episode=0 AND (?=0 OR year=? OR (tmdb<>0 AND tmdb=?))"
+		q += " AND season=0 AND episode=0 AND NOT EXISTS(SELECT 1 FROM vault_members m WHERE m.key=r.key AND m.episode>0) AND (?=0 OR year=? OR (tmdb<>0 AND tmdb=?))"
 		a = append(a, r.Year, r.Year, r.IDs.TMDB)
 	}
 	return v.entries(ctx, q+" ORDER BY last_used DESC,key", a...)

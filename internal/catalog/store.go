@@ -830,8 +830,9 @@ type upsertOpts struct {
 	// only from TMDB's show and season payloads, so a date that is added,
 	// moved or withdrawn must replace the stored one, including on rows an
 	// earlier detail upsert marked (which otherwise keep their date).
-	airDates     bool
-	releaseDates *tmdb.ReleaseDates
+	airDates        bool
+	releaseDates    *tmdb.ReleaseDates
+	replaceMetadata bool
 	// ratingCuts, set by upsertMany, limits rating, vote and popularity
 	// wobbles to the writes rating_drift.go keeps.
 	ratingCuts *ratingCuts
@@ -1270,6 +1271,19 @@ func upsertOne(ctx context.Context, tx *sql.Tx, t core.Title, o upsertOpts, now 
 	if err != nil {
 		return fmt.Errorf("catalog: upsert %d: %w", t.Key, err)
 	}
+	if o.replaceMetadata {
+		// Ordinary summary writes preserve blank fields. An explicit provider
+		// refresh can also withdraw an overview or an image.
+		_, err = tx.ExecContext(ctx, `UPDATE catalog_titles SET tagline=?, summary=?, poster=?, backdrop=?, still=?, logo=?,
+		 child_count=?, leaf_count=?, collection_id=?, collection_name=?, fetched_at=?,
+		 detail_at=CASE WHEN ?=1 THEN ? ELSE detail_at END WHERE key=?`,
+			t.Tagline, t.Summary, t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath,
+			t.ChildCount, t.LeafCount, t.CollectionID, t.CollectionName, now, detailInt, now, int64(t.Key))
+		if err != nil {
+			return err
+		}
+	}
+
 	// TMDB's rating, votes and popularity move on nearly every sync. When
 	// nothing else changed, update only those three columns: the upsert
 	// above assigns every column, and SQLite rewrites the entry of every

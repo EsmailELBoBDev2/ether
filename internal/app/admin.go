@@ -246,6 +246,7 @@ func (a *App) buildAdmin() http.Handler {
 			return a.pluginsRT.catalogImports
 		}(),
 		CatalogHelper:      a.collections,
+		TitleManagement:    a,
 		PluginTitleDetail:  a.pluginTitleDetail,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,

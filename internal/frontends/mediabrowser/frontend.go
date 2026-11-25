@@ -98,6 +98,19 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		return nil, err
 	}
 
+	for _, route := range []struct {
+		path   string
+		handle http.HandlerFunc
+	}{
+		{"/Items/RemoteSearch/Movie", inst.searchRemoteMatch(frontend.TypeMovie)},
+		{"/Items/RemoteSearch/Series", inst.searchRemoteMatch(frontend.TypeShow)},
+		{"/Items/RemoteSearch/Apply/{itemId}", inst.applyRemoteMatch},
+	} {
+		if err := r.Handle("POST", route.path, route.handle); err != nil {
+			return nil, err
+		}
+	}
+
 	for _, method := range []string{"GET", "HEAD"} {
 		if err := r.Handle(method, "/Items/{itemId}/Images/{imageType}", http.HandlerFunc(inst.image)); err != nil {
 			return nil, err

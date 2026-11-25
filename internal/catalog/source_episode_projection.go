@@ -285,6 +285,12 @@ func (c *Catalog) orderForParent(ctx context.Context, key core.RatingKey) (*core
 	if err != nil {
 		return nil, nil, core.EpisodeOrder{}, err
 	}
+	// Parent reads use the same guard as batch projection. In a catalogue
+	// without stored alternate orders, only the library default can apply.
+	if !c.canProjectAlternateOrders() {
+		selected, err := c.episodeLibraryDefault(ctx, show)
+		return parent, show, selected.LibraryDefault, err
+	}
 	effective, err := c.effectiveEpisodeOrder(ctx, show)
 	return parent, show, effective.Order, err
 }

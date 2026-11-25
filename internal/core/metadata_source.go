@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 type MetadataSourceID string
@@ -63,6 +64,7 @@ type SeasonSummary struct {
 }
 
 type EpisodeDetail struct {
+	Aired           *EpisodeNumber
 	Ref             ProviderRef
 	IDs             IDs
 	Season, Episode int
@@ -81,6 +83,8 @@ type MetadataSearch struct {
 }
 
 type MetadataHit struct {
+	Released   time.Time
+	Adult      bool
 	Ref        ProviderRef
 	IDs        IDs
 	Title      string

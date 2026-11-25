@@ -1,0 +1,245 @@
+package catalog
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
+)
+
+func init() {
+	store.Register("catalog", 80, `
+CREATE TABLE catalog_identity (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ kind INTEGER NOT NULL,
+ provider TEXT NOT NULL,
+ provider_id TEXT NOT NULL,
+ key INTEGER NOT NULL,
+ created INTEGER NOT NULL,
+ UNIQUE(kind,provider,provider_id)
+);
+CREATE INDEX catalog_identity_key ON catalog_identity(key,seq);
+`)
+}
+
+func (c *Catalog) MetadataSources() *core.MetadataSources { return c.metadataSources }
+
+type identityDB interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func sourceIdentity(ctx context.Context, db identityDB, kind core.KeyKind, source core.MetadataSourceID, id string) (core.RatingKey, error) {
+	var key core.RatingKey
+	err := db.QueryRowContext(ctx, `SELECT key FROM catalog_identity WHERE kind=? AND provider=? AND provider_id=?`, kind, source, id).Scan(&key)
+	return key, err
+}
+
+// putSourceIdentity must run in a write transaction. The unique remote reference
+// serializes concurrent allocation, and every committed row has a stable key.
+func putSourceIdentity(ctx context.Context, tx *sql.Tx, kind core.KeyKind, source core.MetadataSourceID, id string, preferred core.RatingKey, now int64) (core.RatingKey, error) {
+	var seq int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO catalog_identity(kind,provider,provider_id,key,created) VALUES (?,?,?,?,?)
+ ON CONFLICT(kind,provider,provider_id) DO NOTHING RETURNING seq`, kind, source, id, preferred, now).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sourceIdentity(ctx, tx, kind, source, id)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if preferred != 0 {
+		return preferred, nil
+	}
+	key, ok := core.AllocatedKey(kind, seq)
+	if !ok {
+		return 0, fmt.Errorf("catalog: allocated rating key range exhausted for kind %d", kind)
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE catalog_identity SET key=? WHERE seq=?`, key, seq)
+	return key, err
+}
+
+// AllocateIdentity reserves a stable key for a provider item.
+func (c *Catalog) AllocateIdentity(ctx context.Context, kind core.KeyKind, source core.MetadataSourceID, id string) (core.RatingKey, error) {
+	if source == "" || strings.TrimSpace(id) == "" || kind < core.KindMovie || kind > core.KindEpisode {
+		return 0, core.ErrNotFound
+	}
+	key, err := sourceIdentity(ctx, c.db, kind, source, id)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return key, err
+	}
+	return c.saveSourceIdentity(ctx, kind, source, id, 0)
+}
+
+func (c *Catalog) saveSourceIdentity(ctx context.Context, kind core.KeyKind, source core.MetadataSourceID, id string, preferred core.RatingKey) (core.RatingKey, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	key, err := putSourceIdentity(ctx, tx, kind, source, id, preferred, c.now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return key, nil
+}
+
+func sourceTitleKind(typ core.MediaType) core.KeyKind {
+	switch typ {
+	case core.TypeMovie:
+		return core.KindMovie
+	case core.TypeShow:
+		return core.KindShow
+	}
+	return 0
+}
+
+func (c *Catalog) sourceTitleKey(ctx context.Context, ref core.ProviderRef, ids core.IDs) (core.RatingKey, error) {
+	kind := sourceTitleKind(ref.Type)
+	if kind == 0 || ref.Source == "" || strings.TrimSpace(ref.ID) == "" {
+		return 0, core.ErrNotFound
+	}
+	if ref.Source == core.MetadataTMDB {
+		var err error
+		ids.TMDB, err = tmdbRefID(ref)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if ref.Source == core.MetadataTVDB && ids.TVDB == 0 {
+		ids.TVDB, _ = strconv.ParseInt(ref.ID, 10, 64)
+	}
+	canonical := core.RatingKey(0)
+	if ids.TMDB > 0 {
+		canonical = core.ShowKey(ids.TMDB)
+		if kind == core.KindMovie {
+			canonical = core.MovieKey(ids.TMDB)
+		}
+	}
+	if ref.Source == core.MetadataTMDB && ids.TVDB == 0 && ids.IMDB == "" {
+		return canonical, nil
+	}
+	key, err := sourceIdentity(ctx, c.db, kind, ref.Source, ref.ID)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return key, err
+	}
+	if canonical != 0 {
+		err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key=?`, canonical).Scan(&key)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+	}
+	if key == 0 {
+		for _, external := range []struct {
+			column  string
+			value   any
+			present bool
+		}{
+			{"tmdb_id", ids.TMDB, ids.TMDB > 0}, {"tvdb", ids.TVDB, ids.TVDB > 0}, {"imdb", ids.IMDB, ids.IMDB != ""}} {
+			if !external.present {
+				continue
+			}
+			var candidate core.RatingKey
+			err = c.db.QueryRowContext(ctx, `SELECT MIN(key) FROM catalog_titles WHERE `+external.column+`=? AND type=? HAVING COUNT(*)=1`, external.value, ref.Type).Scan(&candidate)
+			if err == nil {
+				key = candidate
+				break
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return 0, err
+			}
+		}
+	}
+	if key == 0 {
+		key = canonical
+	}
+	return c.saveSourceIdentity(ctx, kind, ref.Source, ref.ID, key)
+}
+
+// SourceSummary assigns the identity of a hit without fetching or persisting title details.
+func (c *Catalog) SourceSummary(ctx context.Context, hit core.MetadataHit) (core.Title, error) {
+	if hit.Adult {
+		return core.Title{}, core.ErrNotFound
+	}
+	key, err := c.sourceTitleKey(ctx, hit.Ref, hit.IDs)
+	if err != nil {
+		return core.Title{}, err
+	}
+	return core.Title{Key: key, Type: hit.Ref.Type, IDs: hit.IDs, Title: hit.Title, Summary: hit.Summary,
+		PosterPath: hit.PosterPath, Year: hit.Year, Released: hit.Released, SortTitle: sortTitle(hit.Title)}, nil
+}
+
+// MaterializeSourceTitle fetches details for an explicitly opened provider reference.
+func (c *Catalog) MaterializeSourceTitle(ctx context.Context, ref core.ProviderRef) (*core.Title, error) {
+	source := c.metadataSources.Get(ref.Source)
+	if source == nil || !source.Configured() {
+		return nil, core.ErrUnsupported
+	}
+	t, err := source.Lookup(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil || t.Adult || t.Type != ref.Type {
+		return nil, core.ErrNotFound
+	}
+	key, err := c.sourceTitleKey(ctx, ref, t.IDs)
+	if err != nil {
+		return nil, err
+	}
+	t.Key = key
+	if old, err := c.loadByKey(ctx, key); err == nil {
+		t.IDs = mergeSourceIDs(t.IDs, old.t.IDs)
+	} else if !errors.Is(err, core.ErrNotFound) {
+		return nil, err
+	}
+	if err := c.upsert(ctx, *t, upsertOpts{browsable: t.IsReleased(c.now()), detail: true}); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func mergeSourceIDs(ids, more core.IDs) core.IDs {
+	if ids.TMDB == 0 {
+		ids.TMDB = more.TMDB
+	}
+	if ids.TVDB == 0 {
+		ids.TVDB = more.TVDB
+	}
+	if ids.IMDB == "" {
+		ids.IMDB = more.IMDB
+	}
+	return ids
+}
+
+func (c *Catalog) openSourceTitle(ctx context.Context, key core.RatingKey, typ core.MediaType) (*core.Title, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT provider,provider_id FROM catalog_identity WHERE key=? ORDER BY seq`, key)
+	if err != nil {
+		return nil, err
+	}
+	var refs []core.ProviderRef
+	for rows.Next() {
+		ref := core.ProviderRef{Type: typ}
+		if err := rows.Scan(&ref.Source, &ref.ID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range refs {
+		if source := c.metadataSources.Get(ref.Source); source != nil && source.Configured() {
+			return c.MaterializeSourceTitle(ctx, ref)
+		}
+	}
+	return nil, core.ErrNotFound
+}

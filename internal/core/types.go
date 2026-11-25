@@ -127,15 +127,17 @@ type Title struct {
 	MediaFacts   []TitleFact   `json:"-"` // plain label/value detail facts
 
 	// Seasons and episodes.
-	ShowKey           RatingKey `json:"showKey,omitempty"`
-	ShowIDs           IDs       `json:"showIds,omitempty"`
-	ShowTitle         string    `json:"showTitle,omitempty"`
-	ShowOriginalTitle string    `json:"showOriginalTitle,omitempty"` // canonical original series name, distinct from episode title
-	ShowEnglishTitle  string    `json:"-"`                           // canonical en-US series name when catalogue language is non-English; release matching only
-	ShowYear          int       `json:"showYear,omitempty"`          // series premiere year, distinct from episode air year
-	SeasonTitle       string    `json:"seasonTitle,omitempty"`
-	Season            int       `json:"season,omitempty"`
-	Episode           int       `json:"episode,omitempty"`
+	EpisodeOrder      EpisodeOrder `json:"-"`
+	EpisodeAirDate    time.Time    `json:"-"`
+	ShowKey           RatingKey    `json:"showKey,omitempty"`
+	ShowIDs           IDs          `json:"showIds,omitempty"`
+	ShowTitle         string       `json:"showTitle,omitempty"`
+	ShowOriginalTitle string       `json:"showOriginalTitle,omitempty"` // canonical original series name, distinct from episode title
+	ShowEnglishTitle  string       `json:"-"`                           // canonical en-US series name when catalogue language is non-English; release matching only
+	ShowYear          int          `json:"showYear,omitempty"`          // series premiere year, distinct from episode air year
+	SeasonTitle       string       `json:"seasonTitle,omitempty"`
+	Season            int          `json:"season,omitempty"`
+	Episode           int          `json:"episode,omitempty"`
 	// AbsoluteEpisode counts an episode from the series start across its
 	// regular seasons; 0 when an earlier season's size is unknown (additive).
 	AbsoluteEpisode int `json:"absoluteEpisode,omitempty"`

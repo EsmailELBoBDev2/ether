@@ -1582,6 +1582,7 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 		}
 		if s.allowedProgramme(ctx, u, c, current) {
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			out = append(out, s.personalChannel(ctx, c, u))
 		}
@@ -1645,6 +1646,7 @@ func (s *Service) allowedChannelRecord(ctx context.Context, u *core.User, c Chan
 		return Channel{}, core.ErrNotFound
 	}
 	c.StreamURL = ""
+	c.redactArchiveSource()
 	c.StreamSources = nil
 	return c, nil
 }
@@ -2200,6 +2202,7 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 				continue
 			}
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			channels = append(channels, s.personalChannel(ctx, c, u))
 			programmes = append(programmes, ps...)
@@ -2492,7 +2495,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	src.PlaylistGuide = false
 	// Account and groups are what this fetch reports; a source body from the
 	// owner API carries stale read-only copies.
-	src.Account, src.Groups = nil, nil
+	src.Account, src.Groups, src.ArchiveTimezone = nil, nil, ""
 	fetched, err := kind.Fetch(ctx, s, &src)
 	if err != nil {
 		return src, err
@@ -2583,6 +2586,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		for _, c := range cs {
 			if !fetched.cachedLineup {
 				c.ProviderGuideID = c.GuideID
+				if err := s.sealArchive(&c, oldByID[c.ID]); err != nil {
+					return src, err
+				}
 			}
 			if previous, ok := oldByID[c.ID]; ok {
 				if _, keep := keepNumber[c.ID]; keep {

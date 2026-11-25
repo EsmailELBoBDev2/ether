@@ -176,15 +176,16 @@ func (h liveTVHost) Channels(ctx context.Context, v *core.Viewer) ([]frontend.Li
 	out := make([]frontend.LiveChannel, len(cs))
 	for i, c := range cs {
 		out[i] = frontend.LiveChannel{
-			ID:       c.ID,
-			Number:   c.Number,
-			Name:     c.Name,
-			Kind:     c.Kind,
-			Logo:     c.Logo,
-			Rating:   c.Rating,
-			Group:    c.Group,
-			Favorite: c.Favorite,
-			Groups:   idx.memberships(c.SourceID, c.Group, c.ID),
+			ArchiveDays: c.ArchiveDays(),
+			ID:          c.ID,
+			Number:      c.Number,
+			Name:        c.Name,
+			Kind:        c.Kind,
+			Logo:        c.Logo,
+			Rating:      c.Rating,
+			Group:       c.Group,
+			Favorite:    c.Favorite,
+			Groups:      idx.memberships(c.SourceID, c.Group, c.ID),
 		}
 	}
 	return out, nil

@@ -1028,6 +1028,7 @@ func (s *Service) searchAllowedChannelsWithPolicy(ctx context.Context, viewer *c
 		}
 		if ok {
 			c.StreamURL = ""
+			c.redactArchiveSource()
 			c.StreamSources = nil
 			out = append(out, c)
 		}

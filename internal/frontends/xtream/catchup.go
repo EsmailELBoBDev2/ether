@@ -1,30 +1,14 @@
 package xtream
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/caps"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/xtreamplayback"
 )
-
-func archiveStart(text string) (time.Time, error) {
-	if epoch, err := strconv.ParseInt(text, 10, 64); err == nil {
-		return time.Unix(epoch, 0).UTC(), nil
-	}
-	for _, layout := range []string{"2006-01-02:15-04", "2006-01-02:15:04", "2006-01-02 15:04:05"} {
-		if start, err := time.Parse(layout, text); err == nil {
-			return start, nil
-		}
-	}
-	return time.Time{}, frontend.ErrInvalidCatchUpRange
-}
 
 func (i *instance) catchUp(w http.ResponseWriter, r *http.Request, l login) {
 	host, ok := i.host.LiveTV.(frontend.LiveCatchUp)
@@ -32,27 +16,9 @@ func (i *instance) catchUp(w http.ResponseWriter, r *http.Request, l login) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	file, duration, start := r.PathValue("file"), r.PathValue("duration"), r.PathValue("start")
-	if duration == "" {
-		query := r.URL.Query()
-		file, duration, start = query.Get("stream"), query.Get("duration"), query.Get("start")
-		if file == "" {
-			file = query.Get("stream_id")
-		}
-	}
-	id, ext, hasExtension := strings.Cut(file, ".")
-	if hasExtension && ext != "ts" {
-		http.NotFound(w, r)
-		return
-	}
-	minutes, err := strconv.Atoi(duration)
-	if err != nil || minutes <= 0 || minutes > 30*24*60 {
-		http.Error(w, "Invalid archive range", 400)
-		return
-	}
-	at, err := archiveStart(start)
-	if err != nil {
-		http.Error(w, "Invalid archive range", 400)
+	id, at, duration, status := xtreamplayback.ArchiveRange(r)
+	if status != 0 {
+		http.Error(w, http.StatusText(status), status)
 		return
 	}
 	channel, ok := i.findChannel(r, l, id)
@@ -79,42 +45,10 @@ func (i *instance) catchUp(w http.ResponseWriter, r *http.Request, l login) {
 	}
 	client := profile.Client
 	client.HLSContainers = []string{"mpegts"}
-	req := frontend.CatchUpRequest{ChannelID: channel.ID, Start: at, Duration: time.Duration(minutes) * time.Minute}
+	req := frontend.CatchUpRequest{ChannelID: channel.ID, Start: at, Duration: duration}
 	admission := frontend.PlanRequest{Viewer: l.viewer, Device: device, Protocol: "xtream", Channel: "archive/" + channel.ID, Caps: client}
 	if !i.admit(w, r.WithContext(ctx), l, admission) {
 		return
 	}
-	if renewal, ok := i.host.LazyStreams.(frontend.AppConnectionRenewal); ok {
-		streamCtx, release, err := renewal.RenewAppConnection(r.WithContext(ctx), l.credential, admission)
-		if err != nil {
-			status := http.StatusServiceUnavailable
-			if errors.Is(err, frontend.ErrStreamLimit) {
-				status = http.StatusTooManyRequests
-			}
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-		defer release()
-		ctx = streamCtx
-	}
-	info, err := host.StartCatchUp(ctx, l.viewer, req, client, device.ID)
-	if err != nil {
-		var archive *frontend.CatchUpError
-		status := http.StatusServiceUnavailable
-		switch {
-		case errors.Is(err, frontend.ErrNotFound), errors.Is(err, frontend.ErrUnauthorized):
-			status = http.StatusNotFound
-		case errors.Is(err, frontend.ErrStreamLimit):
-			status = http.StatusTooManyRequests
-		case errors.As(err, &archive):
-			status = http.StatusConflict
-			if archive.Code == "catchup_unavailable" {
-				status = http.StatusBadGateway
-			}
-		}
-		http.Error(w, http.StatusText(status), status)
-		return
-	}
-	defer i.host.LiveTV.Stop(context.WithoutCancel(ctx), info.ID, l.viewer)
-	host.ServeCatchUpTS(w, r.WithContext(ctx), info.ID, l.viewer)
+	xtreamplayback.ServeArchive(w, r.WithContext(ctx), i.host, host, l.credential, req, admission)
 }

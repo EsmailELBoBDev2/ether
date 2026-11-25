@@ -207,6 +207,21 @@ func TestClientBitrateCapSelectsConvertedAndKeepsOriginalChoice(t *testing.T) {
 }
 
 // Contract 1 for plugin VOD (planKind): mirrors catalogue VOD behaviour.
+func TestOriginalChoiceKeepsTitleRuleAboveClientPreset(t *testing.T) {
+	b, _ := capBroker(t, 0)
+	b.deps.ApplyRuleLimits = func(_ context.Context, caps core.ClientCaps, _ *core.Viewer, title *core.Title) core.ClientCaps {
+		if title != nil {
+			caps.MaxBitrateKbps = stricterLimit(caps.MaxBitrateKbps, 16000)
+		}
+		return caps
+	}
+	req := capRequest(8_000_000, 1920, 1080)
+	plan, err := b.Plan(context.Background(), req)
+	if err != nil || plan.OriginalOverClientCap != nil || plan.Decision.Kind != core.DecisionTranscode {
+		t.Fatalf("expected a converted path within the rule: %+v, %v", plan.Decision, err)
+	}
+}
+
 func TestClientBitrateCapPluginKindVOD(t *testing.T) {
 	ctx := context.Background()
 	key := core.PluginKey(42)

@@ -210,7 +210,8 @@ type App struct {
 	draining atomic.Bool
 
 	tmdb      *tmdb.Client
-	libraries *libraries.Service
+	libraries   *libraries.Service
+	libProfiles *libraryProfiles
 	catalog   *catalog.Catalog
 	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
 	titleRefresh     *titleRefresher
@@ -688,6 +689,11 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	if a.safety, err = safety.New(ctx, a.db); err != nil {
 		return fmt.Errorf("safety: %w", err)
 	}
+	if err := a.migrateQualityRules(ctx); err != nil {
+		return err
+	}
+	cfg = a.cfg.Get()
+	cfg.Cache = cfg.EffectiveCache()
 	// Identity precedes model construction: background builders receive a fully
 	// initialized auth service. Scorer consumers are built inside the model's
 	// dependency phase before its workers start.

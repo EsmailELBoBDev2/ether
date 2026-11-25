@@ -252,9 +252,8 @@ export function settingsIndex(): SettingHit[] {
       "site-definitions",
     ),
     // Releases
-    ...rows("/releases/profiles", `${releases} › ${away}`, [["bitrate-limit", t("Bitrate limit")]]),
     ...rows("/releases/profiles", releases, [["source-order", t("Source order")]]),
-    ...rows("/releases/check", releases, [["check-quality", t("Check quality")]]),
+    ...rows("/releases/check", releases, [["check-quality", t("Who gets what")]]),
     ...groupHits(S.PLAY_VERSIONS, "/releases/profiles", releases),
     ...rows("/releases/searching", `${releases} › ${t("Start speed")}`, [
       ["start-before-the-health-check-finishes", t("Start before the health check finishes")],

@@ -483,15 +483,17 @@ export interface EtherConfig {
   };
   quality: {
     profiles: QualityProfile[] | null;
+    /** The ordered rule list: the only place that decides who gets which profile. */
     rules: QualityRule[] | null;
+    /** The profile when no rule picks one. */
     default: string;
-    remote: string;
-    /** Media-specific defaults; absent falls back to default/remote. */
-    defaultMovie?: string;
-    defaultTv?: string;
-    remoteMovie?: string;
-    remoteTv?: string;
+    /** The profile away from home when no rule picks one; "" is the same as at home. */
+    defaultAway?: string;
+    databases?: ProfileDatabase[] | null;
     sync?: QualitySync;
+    migratedRules?: number;
+    /** Shown once on the Rules page after the one-time move into rules. */
+    rulesMigrationNote?: boolean;
   };
   transcode: {
     videoTranscoding?: "on" | "off";
@@ -624,10 +626,19 @@ export interface CustomFormatDefinition {
 }
 
 /** Where an imported profile came from and when it last synced. */
+export interface ProfileDatabase {
+  id: string;
+  name: string;
+  repo: string;
+  branch?: string;
+}
+
 export interface ProfileImport {
   source: string;
   app: "radarr" | "sonarr" | string;
   profile: string;
+  database?: string;
+  noSync?: boolean;
   trashId?: string;
   scoreSet?: string;
   groups?: string[] | null;
@@ -644,8 +655,6 @@ export interface QualitySync {
 }
 
 export interface QualityProfile {
-  /** "", "movie" or "tv"; absent/"" applies to both. */
-  mediaType?: string;
   /** Set on imported profiles that automatic sync updates in place. */
   import?: ProfileImport;
   releaseRules?: ReleaseRule[] | null;
@@ -696,17 +705,47 @@ export interface QualityItem {
   qualities: string[];
 }
 
+/**
+ * One device condition of a rule. Exactly one of group, type, app, client or
+ * contains is set, holding an id from GET /quality/devices.
+ */
+export interface DeviceMatch {
+  /** "tv", "mobile" or "computer". */
+  group?: string;
+  /** A device type, e.g. Apple TV. */
+  type?: string;
+  /** An app, e.g. Infuse. */
+  app?: string;
+  /** One exact device the server has seen. */
+  client?: string;
+  /** Product or platform contains this text (migrated rules). */
+  contains?: string;
+  /** The name shown to the owner, captured when picked. */
+  label?: string;
+}
+
+/**
+ * One rule of the ordered list. Every condition is optional: an empty list
+ * means any, and its except flag inverts the list. The first matching rule
+ * with a profile picks the profile; every matching rule's limits apply.
+ */
 export interface QualityRule {
-  protocol?: string;
-  product?: string;
-  platform?: string;
-  userId?: number;
-  /** "", "movie" or "tv"; absent/"" matches both. */
-  mediaType?: string;
-  profile: string;
-  /** Caps this device below the profile. 0 or absent means the profile's ceiling. */
+  /** Assigned by the server; "" on a rule not saved yet. */
+  id: string;
+  name?: string;
+  libraries?: number[] | null;
+  exceptLibraries?: boolean;
+  viewers?: number[] | null;
+  exceptViewers?: boolean;
+  devices?: DeviceMatch[] | null;
+  exceptDevices?: boolean;
+  where?: "" | "home" | "away";
+  kind?: "" | "movie" | "episode";
+  /** "" or absent: no change, the rule only sets limits. */
+  profile?: string;
   maxHeight?: number;
-  convertSurroundAudio?: boolean;
+  maxBitrateKbps?: number;
+  stereoAudio?: boolean;
 }
 
 interface SetupStep {
@@ -1160,25 +1199,84 @@ export interface QualityClient {
   device?: string;
 }
 
-/** One viewer on one app, at home or away (POST /quality/explain). */
+/**
+ * What a rule's Device condition can match (GET /quality/devices). Ids are
+ * opaque server strings; a rule stores the id and the name shown when picked.
+ */
+export interface QualityDevices {
+  /** Kinds of device: "tv", "mobile", "computer". */
+  groups: { id: string; name: string }[] | null;
+  types: { id: string; name: string; group: string }[] | null;
+  apps: { id: string; name: string; protocol?: string }[] | null;
+  /** Devices the server has seen. */
+  clients:
+    | {
+        id: string;
+        name: string;
+        group?: string;
+        type?: string;
+        app?: string;
+        viewer?: string;
+        lastSeen?: string;
+      }[]
+    | null;
+}
+
+export type QualityDecisionSource = "rule" | "default" | "defaultAway" | "plugin";
+
+export interface QualitySummaryCell {
+  profile: string;
+  source: QualityDecisionSource;
+  profileRuleId?: string;
+  maxHeight: number;
+  maxBitrateKbps: number;
+  stereo: boolean;
+  limitRuleIds: string[];
+  partialRuleIds: string[];
+}
+
+export interface QualitySummaryCellPair {
+  kind: "" | "movie" | "episode";
+  home: QualitySummaryCell;
+  away: QualitySummaryCell;
+}
+
+export interface QualitySummaryException {
+  ruleId: string;
+  profile: string;
+  maxHeight: number;
+  maxBitrateKbps: number;
+  stereo: boolean;
+}
+
+export interface QualitySummaryRow {
+  libraryId: number;
+  library: string;
+  plugin: string;
+  chosenByPlugin: boolean;
+  cells: QualitySummaryCellPair[];
+  exceptions: QualitySummaryException[];
+}
+
+/** Symbolic per-library rule evaluation (GET /quality/summary). */
+export interface QualitySummary {
+  rows: QualitySummaryRow[];
+}
+
+/** One viewer on one device or app, at home or away (POST /quality/explain). */
 export interface QualityQuestion {
   userId: number;
   clientId?: string;
+  libraryId?: number;
   titleKey?: string;
-  /** "movie" or "tv"; sent when no title is picked. */
-  mediaType?: string;
+  /** "movie" or "episode"; sent when no title is picked. */
+  kind?: "movie" | "episode" | "";
   client?: { product: string; platform?: string; device?: string };
   remote: boolean;
 }
 
-type QualityLayerKind =
-  | "profile"
-  | "device"
-  | "rule-height"
-  | "android-lift"
-  | "remote-cap"
-  | "viewer-cap"
-  | "remote-blocked";
+export type QualityLayerKind =
+  "profile" | "rule-limit" | "device" | "android-lift" | "remote-blocked";
 
 /** One layer that took part in a quality answer, in the order playback applies them. */
 export interface QualityLayer {
@@ -1186,35 +1284,39 @@ export interface QualityLayer {
   /** Plain English from the server; the console renders its own translated copy. */
   reason: string;
   profile?: string;
-  source?: "rule" | "remote" | "default" | "first" | "builtin";
+  source?: QualityDecisionSource;
   /** 1-based quality rule number. */
   rule?: number;
-  ruleUserId?: number;
-  /** A rule won over the Away profile. */
-  beatsRemote?: boolean;
+  ruleId?: string;
+  ruleName?: string;
   /** Ceiling this layer sets; absent or 0 = none. */
   maxHeight?: number;
   hdr?: boolean;
   dolbyVision?: boolean;
   bitrateKbps?: number;
+  stereo?: boolean;
   /** An App compatibility edit changed this device. */
   edited?: boolean;
   /** The layer had a setting that did not apply. */
   ignored?: boolean;
-  /** Set the final resolution ceiling, the final bitrate cap, or blocked playback. */
+  /** Set the final resolution ceiling, the final bitrate cap, stereo, or blocked playback. */
   decisive: boolean;
 }
 
 export interface QualityAnswer {
   profile: string;
-  /** "movie" or "tv" when the answer is scoped to one media. */
-  mediaType?: string;
+  /** "movie" or "episode" when the answer is scoped to one kind. */
+  kind?: string;
+  profileSource: QualityDecisionSource;
+  profileRuleId?: string;
+  limitRuleIds: string[];
   /** 0 = no ceiling. */
   maxHeight: number;
   hdr: boolean;
   dolbyVision: boolean;
   /** 0 = no cap. */
   bitrateKbps: number;
+  stereo?: boolean;
   blocked: boolean;
   layers: QualityLayer[];
 }

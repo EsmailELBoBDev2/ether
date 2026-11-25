@@ -32,6 +32,7 @@ type Identity struct {
 type Result struct {
 	ID                  string
 	Family              string
+	Class               string
 	Notes               string
 	Video               []string
 	Audio               []string
@@ -149,9 +150,12 @@ type definition struct {
 	HDR10               *bool    `json:"hdr10"`
 	DolbyVision         *bool    `json:"dolbyVision"`
 	Quirks              []string `json:"quirks"`
-	PatchHeight         *int     `json:"patchHeight"`
-	PatchHDR10          *bool    `json:"patchHdr10"`
-	Match               Match    `json:"match"`
+	// Class is the kind of device a policy or playback record describes:
+	// "tv", "mobile" or "computer" (rule device groups).
+	Class       string `json:"class"`
+	PatchHeight *int   `json:"patchHeight"`
+	PatchHDR10  *bool  `json:"patchHdr10"`
+	Match       Match  `json:"match"`
 }
 
 // Match is one rule. A leaf compares Field. All, Any and None combine rules.
@@ -342,6 +346,7 @@ func (d definition) result() Result {
 	out := Result{
 		ID:                  d.ID,
 		Family:              base.Family,
+		Class:               d.Class,
 		Notes:               base.Notes,
 		Video:               slices.Clone(base.Video),
 		Audio:               slices.Clone(base.Audio),

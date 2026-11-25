@@ -372,7 +372,6 @@ function defaultConfig(): EtherConfig {
       profiles: [
         {
           name: "4K",
-          mediaType: "movie",
           maxHeight: 2160,
           minHeight: 1080,
           allowHdr: true,
@@ -397,40 +396,14 @@ function defaultConfig(): EtherConfig {
           },
           minSizeMbPerMin: 15,
           maxSizeMbPerMin: 1000,
+          episodeMinSizeMbPerMin: 0,
+          episodeMaxSizeMbPerMin: 0,
           preferredLanguages: null,
           audioLanguageMode: "preferred",
           allowCam: false,
         },
         {
           name: "1080p",
-          mediaType: "movie",
-          maxHeight: 1080,
-          minHeight: 720,
-          allowHdr: false,
-          allowDolbyVision: false,
-          qualityOrder: resolutionGroups(1080, 720),
-          customFormatScores: {
-            "ether:viewer-language": 10000,
-            "ether:viewer-subtitles": 15,
-            "ether:webdl": 2000,
-            "ether:bluray": 1000,
-            "ether:codec-h264": 12,
-            "ether:codec-hevc": 6,
-            "ether:audio-eac3": 12,
-            "ether:audio-ac3": 8,
-            "ether:audio-aac": 4,
-            "ether:audio-direct": 10,
-            "ether:audio-transcode": -15,
-          },
-          minSizeMbPerMin: 5,
-          maxSizeMbPerMin: 150,
-          preferredLanguages: null,
-          audioLanguageMode: "preferred",
-          allowCam: false,
-        },
-        {
-          name: "1080p",
-          mediaType: "tv",
           maxHeight: 1080,
           minHeight: 720,
           allowHdr: false,
@@ -452,14 +425,23 @@ function defaultConfig(): EtherConfig {
           },
           minSizeMbPerMin: 5,
           maxSizeMbPerMin: 150,
+          episodeMinSizeMbPerMin: 0,
+          episodeMaxSizeMbPerMin: 0,
           preferredLanguages: null,
           audioLanguageMode: "preferred",
           allowCam: false,
         },
       ],
-      rules: [{ product: "Plex for Apple TV", mediaType: "movie", profile: "4K" }],
+      rules: [
+        {
+          id: "r_appletv1",
+          name: "Living room Apple TV",
+          devices: [{ app: "plex:Plex for Apple TV", label: "Plex for Apple TV" }],
+          profile: "4K",
+        },
+      ],
       default: "1080p",
-      remote: "1080p",
+      defaultAway: "",
       sync: { enabled: false, interval: "24h0m0s" },
     },
     transcode: {
@@ -3364,7 +3346,33 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const tr = trash.handle(method, seg, body, state.config);
     if (tr) return json(tr.body, tr.status);
 
-    const qm = qualityMock.handle(method, seg, body, state.config, (id) => safetyPolicies.get(id));
+    const qm = qualityMock.handle(
+      method,
+      seg,
+      q,
+      body,
+      state.config,
+      mockLibs.map((l) => ({
+        id: Number(l.id),
+        name: String(l.name ?? ""),
+        source: String(l.source ?? "builtin"),
+        mediaType: l.mediaType ? String(l.mediaType) : undefined,
+        pluginId: l.pluginId ? String(l.pluginId) : undefined,
+        pluginName: l.pluginName ? String(l.pluginName) : undefined,
+        sort: Number(l.sort ?? 0),
+        hidden: Boolean(l.hidden),
+      })),
+      (id) => safetyPolicies.get(id),
+      (key) => {
+        const hit = byKey.get(key);
+        if (!hit) return null;
+        const isEpisode = hit.type === "episode" || hit.type === "show";
+        return {
+          kind: isEpisode ? "episode" : "movie",
+          libraryIds: isEpisode ? [2] : [1, 4],
+        };
+      },
+    );
     if (qm) return json(qm.body, qm.status);
 
     const rc = releaseConsole.handle(method, seg, q, body);
@@ -6427,6 +6435,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
         (body as { claimed?: boolean }).claimed === false
       ) {
         value = { ...(value as Record<string, unknown>), token: "" };
+      }
+      if (key === "quality" && value && typeof value === "object" && !Array.isArray(value)) {
+        const q = value as { rules?: { id?: string }[] | null };
+        if (Array.isArray(q.rules)) {
+          let seq = q.rules.length;
+          q.rules = q.rules.map((r) =>
+            r.id ? r : { ...r, id: `r_${(++seq).toString(36).padStart(8, "0")}` },
+          );
+        }
       }
       (state.config as unknown as Record<string, unknown>)[key] = value;
       return json({ section: key, value });

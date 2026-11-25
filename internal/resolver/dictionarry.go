@@ -67,6 +67,7 @@ type Dictionarry struct {
 	cached *dictionarryCatalog
 	at     time.Time
 	flight flight.Group[struct{}, *dictionarryCatalog]
+	forks  map[string]*Dictionarry
 }
 
 type dictionarryCatalog struct {
@@ -94,6 +95,29 @@ func NewDictionarry(o DictionarryOptions) *Dictionarry {
 		o.Now = time.Now
 	}
 	return &Dictionarry{o: o}
+}
+
+// ForArchive returns a cached Dictionarry client for a custom database archive
+// URL, sharing this client's HTTP settings and TTL so the last good catalogue
+// survives temporary GitHub outages.
+func (d *Dictionarry) ForArchive(archiveURL string) *Dictionarry {
+	u := strings.TrimSpace(archiveURL)
+	if u == "" || u == d.o.ArchiveURL {
+		return d
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.forks == nil {
+		d.forks = map[string]*Dictionarry{}
+	}
+	if existing, ok := d.forks[u]; ok {
+		return existing
+	}
+	opts := d.o
+	opts.ArchiveURL = u
+	child := NewDictionarry(opts)
+	d.forks[u] = child
+	return child
 }
 
 // Profiles lists app's Dictionarry quality profiles.

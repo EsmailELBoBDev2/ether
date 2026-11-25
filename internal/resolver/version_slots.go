@@ -124,9 +124,9 @@ func (s *Service) versionSlotsWithResults(ctx context.Context, req core.ResolveR
 		return nil, nil
 	}
 	q := s.qualityCfg()
-	lib := s.libProfileForTitle(ctx, req.Title)
-	req.Client, _ = applyClientRules(q, req.Client, req.User, titleMedia(req.Title), lib)
-	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, lib)
+	dec := decideProfile(q, req.Client, req.User, titleTarget(req.Title, s.membershipFor(ctx, req.Title)))
+	req.Client = dec.caps
+	profile := dec.profile
 	slots := s.configuredSlots(profile, req.Client, limit)
 	var candidates []candidate
 	var auto core.Release

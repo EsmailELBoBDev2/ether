@@ -348,11 +348,8 @@ function QualityProfileRow({
   onChange: (value: string) => void;
 }) {
   const { quality } = useQuality();
-  const media = library.mediaType === "show" ? "show" : "movie";
-  const profileMedia = media === "show" ? "tv" : "movie";
-  const names = (quality?.profiles ?? [])
-    .filter((p) => !p.mediaType || p.mediaType === profileMedia)
-    .map((p) => p.name);
+  void library;
+  const names = (quality?.profiles ?? []).map((p) => p.name);
   const current = value && names.includes(value) ? value : "";
 
   return (

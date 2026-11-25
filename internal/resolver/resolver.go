@@ -74,13 +74,11 @@ type AnimeCour interface {
 	LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error)
 }
 
-// LibraryProfiles answers which library a title belongs to and the quality
-// profile set on it (spec §419: a quality profile per library). A filter
-// library wins over the built-in Movies/TV Shows library; the lowest
-// library id breaks a tie between filter libraries. An empty name means the
-// library set no profile, so today's home/away defaults apply.
+// LibraryProfiles answers library membership for quality rules: whether a
+// title is in a library a rule names. Implementations cache per title and
+// read only the libraries asked about (one indexed read each on a miss).
 type LibraryProfiles interface {
-	QualityProfileForTitle(ctx context.Context, t *core.Title) string
+	InLibrary(ctx context.Context, t *core.Title, id core.LibraryID) bool
 }
 
 // Options tunes a Service. Zero values get sensible defaults.
@@ -179,6 +177,9 @@ type Trace struct {
 	TitleKey                  core.RatingKey   `json:"titleKey"`
 	TitleName                 string           `json:"titleName"`
 	Profile                   string           `json:"profile"`
+	ProfileSource             ProfileSource    `json:"profileSource,omitempty"`
+	ProfileRuleID             string           `json:"profileRuleId,omitempty"`
+	LimitRuleIDs              []string         `json:"limitRuleIds,omitempty"`
 	At                        time.Time        `json:"at"`
 	Candidates                []CandidateTrace `json:"candidates"`
 	Winner                    string           `json:"winner,omitempty"` // release id
@@ -893,11 +894,11 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	if s.indexer == nil {
 		return nil, fmt.Errorf("resolver: no indexer configured")
 	}
-	media := titleMedia(req.Title)
 	q := s.qualityCfg()
-	libProfile := s.libProfileForTitle(ctx, req.Title)
-	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
-	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
+	inLib := s.membershipFor(ctx, req.Title)
+	dec := decideProfile(q, req.Client, req.User, titleTarget(req.Title, inLib))
+	req.Client = dec.caps
+	profile := dec.profile
 	videoOff, _ := s.transcodeSettingsFor(req.Client)
 	key := fmt.Sprintf("%s|pin:%s|vc:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), s.viewerChoiceFlightKey(req), videoOff)
 	if channelAvailabilityCheck(ctx) {
@@ -931,7 +932,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 		s.flightMu.Unlock()
 
 		ctx = context.WithValue(ctx, observationTitleKey{}, req.Title)
-		res, err := s.resolve(ctx, req, profile)
+		res, err := s.resolve(ctx, req, profile, q, dec)
 		f.res, f.err, f.abandoned = res, err, err != nil && ctx.Err() != nil
 		s.flightMu.Lock()
 		delete(s.flights, key)
@@ -941,7 +942,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	}
 }
 
-func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile) (resolved *core.Resolution, resolveErr error) {
+func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile core.QualityProfile, q config.Quality, dec profileDecision) (resolved *core.Resolution, resolveErr error) {
 	var fp string
 	if s.vault != nil {
 		fp = ProfileFingerprint(profile, wantedAudio(profile, req.User, s.catalogLanguage()))
@@ -985,7 +986,10 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	ctx, queryLog := core.WithSearchLog(ctx)
 	t := req.Title
 	hasExclude := len(req.Exclude) > 0 || len(req.ExcludeReleases) > 0
-	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name, At: s.now(), Failover: hasExclude,
+	profSource, profRuleID, limitRuleIDs := dec.ruleDecision(q)
+	trace := Trace{TitleKey: t.Key, TitleName: consoleTitleName(t), Profile: profile.Name,
+		ProfileSource: profSource, ProfileRuleID: profRuleID, LimitRuleIDs: limitRuleIDs,
+		At: s.now(), Failover: hasExclude,
 		ClientID: req.Client.ClientID, Speculative: core.IsSpeculative(ctx) || core.SpeculativeIndexerWork(ctx)}
 	if req.User != nil {
 		trace.UserID = req.User.ID

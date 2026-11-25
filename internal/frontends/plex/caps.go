@@ -145,7 +145,7 @@ func (s *Server) declaredCaps(pr *Request) frontend.ClientCaps {
 	if pr == nil {
 		return frontend.ClientCaps{}
 	}
-	return pr.ClientCapsWith(s.cfg().Transcode.RemoteMaxBitrateKbps, s.cfg().Clients.Overrides)
+	return pr.ClientCapsWith(0, s.cfg().Clients.Overrides)
 }
 
 // profileExtraEvidence records affirmative codec/HDR claims and HDR denials

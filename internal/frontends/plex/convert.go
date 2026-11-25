@@ -29,6 +29,9 @@ type renderOpts struct {
 	detailEpisodes bool
 	// guids adds the external Guid children (related hubs, like PMS).
 	guids bool
+	// searchIdentity gives the leading search results a chance to carry the
+	// canonical Plex GUID in the same response.
+	searchIdentity bool
 	// state holds the user's watch status for the rendered keys.
 	state map[frontend.RatingKey]frontend.WatchStatus
 	// skipLeafCounts skips applyListLeafCounts when the caller calls applyLeafCounts itself.
@@ -1812,6 +1815,9 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	guidSrc := s.libraryGUIDs()
 	if guidSrc != nil {
 		guids = guidSrc.CachedMany(ctx, lookup)
+		if o.searchIdentity {
+			guids = resolveSearchGUIDs(ctx, guidSrc, ts, guids)
+		}
 	}
 	ctx = s.withPlexMeta(ctx, lookup, guids, !o.storedOnly)
 	ctx = s.withPlexCredits(ctx, lookup, guids, o.detail && !o.storedOnly)

@@ -61,18 +61,11 @@ func OpenLibraryCatchUp(ctx context.Context, live LiveTV, archive LiveCatchUp, v
 		info, reused = finder.FindCatchUp(ctx, viewer, req, caps, session)
 	}
 	if !reused {
-		var err error
-		info, err = archive.StartCatchUp(ctx, viewer, req, caps, session)
-		if err != nil {
-			return CatchUpInfo{}, err
-		}
+		req.InitialOffset = position
+		return archive.StartCatchUp(ctx, viewer, req, caps, session)
 	}
 	if position == info.Origin {
 		return info, nil
 	}
-	sought, err := archive.SeekCatchUp(ctx, viewer, info.ID, position)
-	if err != nil && !reused {
-		_ = live.Stop(context.WithoutCancel(ctx), info.ID, viewer)
-	}
-	return sought, err
+	return archive.SeekCatchUp(ctx, viewer, info.ID, position)
 }

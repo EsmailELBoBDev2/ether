@@ -14,12 +14,16 @@ type CatchUpRequest struct {
 	Duration               time.Duration
 	StartOver              bool
 	ClampStart             bool
+	// DASH selects a finite DASH presentation for native Plex playback.
+	DASH bool
+	// InitialOffset starts a finite playback inside the selected range.
+	InitialOffset time.Duration
 }
 
 type CatchUpInfo struct {
 	ID, ChannelID, ProgrammeID, Title string
 	Start, End, ProgrammeEnd          time.Time
-	StartOver                         bool
+	StartOver, DASH                   bool
 	Origin                            time.Duration
 	MediaGeneration                   string
 	Decision                          Decision

@@ -49,6 +49,11 @@ func TestCatchUpLibraryWindowAndAccess(t *testing.T) {
 	if err != nil || len(episodes.Items) != 2 || !episodes.Items[0].Programme.Start.Equal(now.Add(-3*time.Hour)) {
 		t.Fatalf("archive window or order: %d, %v", len(episodes.Items), err)
 	}
+	guid := frontend.CatchUpGUID(episodes.Items[0])
+	item, err := h.CatchUpItem(t.Context(), owner, guid)
+	if err != nil || item.ID != episodes.Items[0].ID {
+		t.Fatalf("GUID lookup: %v", err)
+	}
 	denied := &core.User{ID: 2}
 	if visible, err := h.CatchUpLibraryVisible(t.Context(), denied); err != nil || visible {
 		t.Fatalf("restricted viewer can see library: %v, %v", visible, err)

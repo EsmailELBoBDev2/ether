@@ -2372,8 +2372,8 @@ func (s *Server) handleTranscodeStop(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if s.liveTVEnabled() && pr.User != nil && id != "" {
-			if liveID, le, ok := s.liveManifests.lookup(id); ok && le.userID == pr.User.ID {
+		if s.svc().liveTV != nil && pr.User != nil && id != "" {
+			if liveID, le, ok := s.liveManifests.lookup(id); ok && le.userID == pr.User.ID && (s.liveTVEnabled() || s.isCatchUpSession(pr.User, liveID)) {
 				s.liveManifests.dropByID(liveID)
 				_ = s.svc().liveTV.Stop(r.Context(), liveID, pr.User)
 				w.WriteHeader(http.StatusOK)

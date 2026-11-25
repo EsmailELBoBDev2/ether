@@ -1422,11 +1422,18 @@ func (s *Service) allowedWithLookupOpts(ctx context.Context, u *core.User, c Cha
 	if !u.IsOwner && !pol.Permits(c.ID, c.Private) {
 		return false
 	}
+	var rating string
+	if u.MaxContentRating != "" || pol.MaxRating != "" {
+		rating = s.channelContentRating(ctx, c, p)
+	}
+	return s.allowedProgrammeContent(ctx, u, c, p, pol, rating, lookup, strict)
+}
+
+func (s *Service) allowedProgrammeContent(ctx context.Context, u *core.User, c Channel, p *Programme, pol Policy, rating string, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
 	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && contentrating.EnforceLevelOf(p.Item.Rating) == contentrating.Unrated && (u.MaxContentRating != "" || pol.MaxRating != "") {
 		return false
 	}
 	if u.MaxContentRating != "" || pol.MaxRating != "" {
-		rating := s.channelContentRating(ctx, c, p)
 		if p != nil && p.Item.EnforcementRating != "" && (p.Item.EnforcementRating == contentrating.UncertifiedAdult || contentrating.EnforceLevelOf(p.Item.EnforcementRating) > contentrating.EnforceLevelOf(rating)) {
 			rating = p.Item.EnforcementRating
 		}

@@ -48,6 +48,23 @@ func (*catchUpTestLive) ServePlaylist(w http.ResponseWriter, _ *http.Request, _ 
 	_, _ = w.Write([]byte("#EXTM3U\n#EXTINF:4,\n0.ts\n#EXT-X-ENDLIST\n"))
 }
 
+func (f *catchUpTestLive) LibraryCatchUpSession(access frontend.SessionAccess, id string) (frontend.CatchUpInfo, bool) {
+	return frontend.CatchUpInfo{ID: id}, access.Viewer != nil && access.Protocol == "plex" && id == "archive-session" && f.opened.ProgrammeID != ""
+}
+func (*catchUpTestLive) ServeResource(w http.ResponseWriter, _ *http.Request, _, file string, _ *frontend.User) {
+	if file != "0.ts" {
+		http.NotFound(w, nil)
+		return
+	}
+	_, _ = w.Write([]byte("segment"))
+}
+
+func (*catchUpTestLive) ServeDASH(w http.ResponseWriter, _ *http.Request, _ string, _ *frontend.User) error {
+	w.Header().Set("Content-Type", "application/dash+xml")
+	_, _ = w.Write([]byte(`<MPD type="static"/>`))
+	return nil
+}
+
 func TestCatchUpSectionPlayback(t *testing.T) {
 	f := newFixture()
 	t.Cleanup(func() { _ = f.srv.Close() })
@@ -74,6 +91,20 @@ func TestCatchUpSectionPlayback(t *testing.T) {
 	if got.Code != 200 || !strings.Contains(got.Body.String(), "#EXT-X-ENDLIST") || live.opened.ChannelID != "channel" || live.opened.ProgrammeID != programme {
 		t.Fatalf("catch-up start: %d", got.Code)
 	}
+	for _, line := range strings.Split(got.Body.String(), "\n") {
+		if strings.HasPrefix(line, "/livetv/sessions/") {
+			segment := f.request(t, "GET", line, nil)
+			if segment.Code != http.StatusOK || segment.Body.String() != "segment" {
+				t.Fatalf("catch-up segment: %d", segment.Code)
+			}
+			break
+		}
+	}
+	got = f.request(t, "GET", "/video/:/transcode/universal/start.mpd?"+path, nil)
+	if got.Code != 200 || !strings.Contains(got.Body.String(), `type="static"`) || !live.opened.DASH || live.opened.ProgrammeID != programme {
+		t.Fatalf("catch-up DASH start: %d", got.Code)
+	}
+
 }
 
 func (*catchUpTestLive) NoteClientActivity() {}

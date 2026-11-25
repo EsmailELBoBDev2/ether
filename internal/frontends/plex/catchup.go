@@ -137,7 +137,8 @@ func (s *Server) catchUpArt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCatchUpPlayback(w http.ResponseWriter, r *http.Request) bool {
-	id, ok := strings.CutPrefix(r.URL.Query().Get("path"), catchUpMetadataPrefix)
+	path, _, _ := strings.Cut(r.URL.Query().Get("path"), "?")
+	id, ok := strings.CutPrefix(path, catchUpMetadataPrefix)
 	if !ok || !frontend.IsCatchUpID(id) {
 		return false
 	}
@@ -162,15 +163,17 @@ func (s *Server) handleCatchUpPlayback(w http.ResponseWriter, r *http.Request) b
 		s.writeErr(w, r, err)
 		return true
 	}
+	dash := strings.HasSuffix(r.URL.Path, "/start.mpd") || r.URL.Query().Get("protocol") == "dash"
 	if strings.HasSuffix(r.URL.Path, "/decision") {
 		md := catchUpMetadata(Section{ID: catchUpSectionID, Title: frontend.CatchUpLibraryName}, item)
 		md.Media[0].Part[0].Decision = "transcode"
+		if dash {
+			md.Media[0].Protocol, md.Media[0].Part[0].Protocol = "dash", "dash"
+			md.Media[0].Container, md.Media[0].Part[0].Container = "mp4", "mp4"
+			md.Media[0].Part[0].Key = strings.Replace(md.Media[0].Part[0].Key, "/start.m3u8?", "/start.mpd?", 1)
+		}
 		s.write(w, r, &model.MediaContainer{Size: 1, Identifier: model.LibraryIdentifier, Metadata: []model.Metadata{md},
 			Extra: []model.Attr{model.A("generalDecisionCode", 1001), model.A("transcodeDecisionCode", 1001)}})
-		return true
-	}
-	if strings.HasSuffix(r.URL.Path, "/start.mpd") {
-		writeHTTPError(w, http.StatusNotAcceptable)
 		return true
 	}
 	off, err := strconv.ParseFloat(r.URL.Query().Get("offset"), 64)
@@ -189,12 +192,19 @@ func (s *Server) handleCatchUpPlayback(w http.ResponseWriter, r *http.Request) b
 		return true
 	}
 	defer unlock()
+	req.DASH = dash
 	info, err := frontend.OpenLibraryCatchUp(r.Context(), live, archive, pr.User, req, s.clientCaps(pr), session, time.Duration(off*float64(time.Second)))
 	if err != nil {
 		s.writeErr(w, r, err)
 		return true
 	}
 	s.noteLiveSessionAlias(r, info.ID, pr)
+	if dash {
+		if err := live.ServeDASH(w, r, info.ID, pr.User); err != nil {
+			s.writeErr(w, r, err)
+		}
+		return true
+	}
 	frontend.ServeCatchUpPlaylist(w, r, live, info.ID, pr.User, func(name string) string {
 		path := "/livetv/sessions/" + info.ID + "/0/resource/" + name
 		if pr.Token != "" {
@@ -277,4 +287,18 @@ func (s *Server) writeCatchUpQueue(w http.ResponseWriter, r *http.Request, pq pl
 		Extra: []model.Attr{model.A("playQueueID", pq.ID), model.A("playQueueSelectedItemID", pq.Items[0].ID),
 			model.A("playQueueSelectedItemOffset", 0), model.A("playQueueShuffled", false), model.A("playQueueSourceURI", pq.SourceURI),
 			model.A("playQueueTotalCount", 1), model.A("playQueueVersion", pq.Version)}})
+}
+
+func (s *Server) isCatchUpSession(user *frontend.User, id string) bool {
+	reader, ok := s.svc().liveTV.(frontend.CatchUpSessionReader)
+	if !ok {
+		return false
+	}
+	_, ok = reader.LibraryCatchUpSession(frontend.SessionAccess{Viewer: user, Protocol: "plex"}, id)
+	return ok
+}
+
+func (s *Server) isCatchUpMediaRequest(r *http.Request, pr *Request) bool {
+	id := chi.URLParam(r, "session")
+	return id != "" && (chi.URLParam(r, "resource") != "" || chi.URLParam(r, "part") != "") && s.isCatchUpSession(pr.User, id)
 }

@@ -138,7 +138,8 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	guard := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(r.Context(), FromContext(r.Context()).User) {
+			pr := FromContext(r.Context())
+			if !(s.liveTVEnabled() || s.isCatchUpMediaRequest(r, pr)) || !s.svc().liveTV.VisibleTo(r.Context(), pr.User) {
 				writeHTTPError(w, 404)
 				return
 			}
@@ -146,7 +147,6 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 				writeHTTPError(w, 404)
 				return
 			}
-			pr := FromContext(r.Context())
 			if p, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !p.CanPlay(pr.User, pr.Remote, s.now()) {
 				writeHTTPError(w, 403)
 				return

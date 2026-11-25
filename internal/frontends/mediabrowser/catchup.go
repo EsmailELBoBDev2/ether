@@ -153,10 +153,14 @@ func (i *instance) catchUpPlaybackInfo(w http.ResponseWriter, r *http.Request, v
 		i.liveTuneError(w, err)
 		return
 	}
-	mediaURL := "/Videos/" + wireID + "/CatchUp/" + info.ID + "/index.m3u8"
-	if token != "" {
-		mediaURL += "?" + url.Values{"api_key": {token}}.Encode()
+	query := url.Values{"StartTimeTicks": {strconv.FormatInt(info.Origin.Nanoseconds()/100, 10)}}
+	if info.MediaGeneration != "" {
+		query.Set("archive", info.MediaGeneration)
 	}
+	if token != "" {
+		query.Set("api_key", token)
+	}
+	mediaURL := "/Videos/" + wireID + "/CatchUp/" + info.ID + "/index.m3u8?" + query.Encode()
 	media := catchUpMediaSource(wireID, p)
 	media["TranscodingUrl"] = mediaURL
 	media["TranscodingContainer"], media["TranscodingSubProtocol"] = "ts", "hls"

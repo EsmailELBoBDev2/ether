@@ -145,11 +145,27 @@ func (h liveTVHost) catchUpItems(ctx context.Context, u *core.User, q frontend.C
 	limit = min(limit, 1000)
 	now := h.s.clockNow()
 	seen := map[string]bool{}
+	_, policy, err := h.s.withPolicy(ctx, u)
+	if err != nil {
+		return out, err
+	}
+	maxDays := 0
+	ratings := make(map[string]string)
+	for _, ch := range channels {
+		if ch.GuideID == "" {
+			continue
+		}
+		maxDays = max(maxDays, ch.ArchiveDays())
+		if u.MaxContentRating != "" || policy.MaxRating != "" {
+			ratings[ch.ID] = h.s.channelContentRating(ctx, ch, nil)
+		}
+	}
+	earliest := now.Add(-time.Duration(maxDays) * 24 * time.Hour)
 	// Each batch is a disjoint start-time interval. Process the newest
 	// interval first so small pages do not read the entire archive.
-	for until := now.Add(time.Millisecond); until.After(now.Add(-30 * 24 * time.Hour)); {
+	for until := now.Add(time.Millisecond); maxDays > 0 && until.After(earliest); {
 		from := until.Add(-12 * time.Hour)
-		rows, err := h.s.catchUpWindow(ctx, u, channels, from, until, now)
+		rows, err := h.s.catchUpWindow(ctx, u, policy, channels, ratings, from, until, now)
 		if err != nil {
 			return frontend.CatchUpPage{}, err
 		}
@@ -179,12 +195,12 @@ func (h liveTVHost) catchUpItems(ctx context.Context, u *core.User, q frontend.C
 	return out, nil
 }
 
-func (s *Service) catchUpWindow(ctx context.Context, u *core.User, channels []Channel, from, until, now time.Time) ([]Programme, error) {
+func (s *Service) catchUpWindow(ctx context.Context, u *core.User, policy Policy, channels []Channel, ratings map[string]string, from, until, now time.Time) ([]Programme, error) {
 	var out []Programme
+	byID := make(map[string]Channel, len(channels))
 	for batch := range slices.Chunk(channels, 100) {
 		values := make([]string, 0, len(batch))
 		args := make([]any, 0, 4*len(batch)+2)
-		byID := make(map[string]Channel, len(batch))
 		for _, ch := range batch {
 			earliest := now.Add(-time.Duration(ch.ArchiveDays()) * 24 * time.Hour)
 			if ch.GuideID == "" || !earliest.Before(until) {
@@ -231,19 +247,16 @@ func (s *Service) catchUpWindow(ctx context.Context, u *core.User, channels []Ch
 		if err != nil {
 			return nil, err
 		}
-		// Imported guide rows carry their own rating facts. A catalog-linked
-		// row requires the normal policy check and is resolved separately.
-		out = slices.DeleteFunc(out, func(p Programme) bool {
-			ch, ok := byID[p.ChannelID]
-			if !ok {
-				return false
-			}
-			if p.Item.Key != 0 {
-				return !s.allowedProgramme(ctx, u, ch, &p)
-			}
-			return !s.allowedWithLookup(ctx, u, ch, &p, nil, false)
-		})
 	}
+	lookup, err := s.catchUpTitleFacts(ctx, out)
+	if err != nil {
+		return nil, err
+	}
+	out = slices.DeleteFunc(out, func(p Programme) bool {
+		ch := byID[p.ChannelID]
+		rating := resolveChannelRating(ch, &p, "", ratings[ch.ID], false)
+		return !s.allowedProgrammeContent(ctx, u, ch, &p, policy, rating, lookup, s.o.Catalog != nil)
+	})
 	slices.SortFunc(out, func(a, b Programme) int {
 		if n := b.Start.Compare(a.Start); n != 0 {
 			return n
@@ -251,6 +264,61 @@ func (s *Service) catchUpWindow(ctx context.Context, u *core.User, channels []Ch
 		return cmp.Compare(a.ID, b.ID)
 	})
 	return out, nil
+}
+
+// Imported airings carry their own policy facts. A linked airing also needs
+// its local title and parent facts, loaded in batches for the current window.
+func (s *Service) catchUpTitleFacts(ctx context.Context, programmes []Programme) (func(context.Context, core.RatingKey) (*core.Title, error), error) {
+	catalog, ok := s.o.Catalog.(interface {
+		CachedGetMany(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	var keys []core.RatingKey
+	seen := make(map[core.RatingKey]bool)
+	for _, p := range programmes {
+		if p.Item.Key != 0 && !seen[p.Item.Key] {
+			keys = append(keys, p.Item.Key)
+			seen[p.Item.Key] = true
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	titles := make(map[core.RatingKey]core.Title, len(keys))
+	fill := func(keys []core.RatingKey) error {
+		for batch := range slices.Chunk(keys, 200) {
+			found, err := catalog.CachedGetMany(ctx, batch)
+			if err != nil {
+				return err
+			}
+			for key, title := range found {
+				titles[key] = title
+			}
+		}
+		return nil
+	}
+	if err := fill(keys); err != nil {
+		return nil, err
+	}
+	var parents []core.RatingKey
+	for _, title := range titles {
+		if title.ShowKey != 0 && !seen[title.ShowKey] {
+			parents = append(parents, title.ShowKey)
+			seen[title.ShowKey] = true
+		}
+	}
+	if err := fill(parents); err != nil {
+		return nil, err
+	}
+	return func(_ context.Context, key core.RatingKey) (*core.Title, error) {
+		title, ok := titles[key]
+		if !ok {
+			return nil, core.ErrNotFound
+		}
+		return &title, nil
+	}, nil
 }
 
 func (h liveTVHost) FindCatchUp(ctx context.Context, viewer *frontend.Viewer, req CatchUpRequest, caps frontend.ClientCaps, clientSession string) (CatchUpInfo, bool) {
@@ -264,7 +332,7 @@ func (h liveTVHost) FindCatchUp(ctx context.Context, viewer *frontend.Viewer, re
 		if !ss.closed && ss.catchUp != nil && ss.info.UserID == viewer.ID &&
 			ss.info.ClientSessionID == clientSession && ss.caps.ClientID == caps.ClientID && ss.caps.Protocol == caps.Protocol {
 			info := ss.catchUp.info
-			if info.ChannelID == req.ChannelID && info.ProgrammeID == req.ProgrammeID && !info.StartOver {
+			if info.ChannelID == req.ChannelID && info.ProgrammeID == req.ProgrammeID && info.DASH == req.DASH && !info.StartOver {
 				candidate = info
 			}
 		}

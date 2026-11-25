@@ -127,13 +127,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		rules = append(rules, cfg.Quality.Rules...)
 	}
 	if mig != nil {
+		var legacy []config.QualityRule
 		for _, lr := range mig.Rules {
 			if !legacyRuleHasMatcher(lr) {
 				notes = append(notes, "dropped legacy quality rule with no matcher")
 				continue
 			}
-			// In 0.3.20 a rule only took effect if its named profile existed.
-			if lr.Profile != "" && !validProfile(lr.Profile) {
+			// In 0.3.20 a rule only took effect if its named profile existed
+			// (a rule with no profile never matched, so its limits never
+			// applied either).
+			if !validProfile(lr.Profile) {
 				notes = append(notes, fmt.Sprintf("dropped legacy quality rule naming missing profile %q", lr.Profile))
 				continue
 			}
@@ -161,7 +164,23 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 
 			if lr.MaxHeight > 0 {
 				ceiling := legacyDeviceRegistryCeiling(lr)
-				if ceiling > 0 && lr.MaxHeight > ceiling {
+				if ceiling > 0 && lr.MaxHeight > ceiling && len(rule.Devices) > 0 && legacyAndroidMobileRule(lr) {
+					// An Android phone's 1080p ceiling: the engine lifts it to
+					// the profile for a device rule (N4), scoped to this
+					// rule's viewer and media and with the HDR enable, exactly
+					// as 0.3.20 did. A device-wide override would lift every
+					// title and lock the registry height. Keep the rule's
+					// height only where it is below that lift.
+					prof, _ := core.FindProfile(profiles, lr.Profile)
+					lift := prof.MaxHeight
+					if lift <= 0 {
+						lift = 2160
+					}
+					if lr.MaxHeight < lift {
+						rule.MaxHeight = normalizeMigratedHeight(lr.MaxHeight)
+					}
+					notes = append(notes, fmt.Sprintf("kept legacy maxHeight=%dp Android phone lift on its rule", lr.MaxHeight))
+				} else if ceiling > 0 && lr.MaxHeight > ceiling {
 					// 0.3.20 maxHeight lifted above the registry ceiling: move
 					// the lift to Playback › Devices overrides because rules
 					// now only lower.
@@ -173,9 +192,12 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 				}
 			}
 
-			if rule.Profile == "" && !rule.HasLimits() {
-				continue
-			}
+			legacy = append(legacy, rule)
+		}
+		// 0.3.20 applied only the first matching rule; limits now add up
+		// over every matching rule. Keep each later rule's limits off the
+		// plays an earlier rule decided.
+		for _, rule := range excludeEarlierLegacyMatches(legacy, &notes) {
 			rules = append(rules, rule)
 			notes = append(notes, fmt.Sprintf("migrated legacy client rule to rule %d", len(rules)))
 		}
@@ -342,11 +364,17 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 
 	// Step 5: Media defaults.
 	if homeTV != "" && homeTV != homeMovie && validProfile(homeTV) {
-		rules = append(rules, config.QualityRule{
+		rule := config.QualityRule{
 			From:    &config.QualityRuleOrigin{Kind: "tvDefault"},
 			Kind:    config.KindEpisode,
 			Profile: homeTV,
-		})
+		}
+		// 0.3.20 put Away above the media defaults. With a shared Away in
+		// Default away the TV default must not outrank it away from home.
+		if defaultAway != "" {
+			rule.Where = config.WhereHome
+		}
+		rules = append(rules, rule)
 		notes = append(notes, fmt.Sprintf("migrated TV default (%q) to final rule %d", homeTV, len(rules)))
 	}
 
@@ -504,6 +532,248 @@ func exactRegistryDeviceType(name string) (clientreg.DeviceTypeInfo, bool) {
 		}
 	}
 	return clientreg.DeviceTypeInfo{}, false
+}
+
+func legacyAndroidMobileRule(lr config.LegacyQualityRule) bool {
+	if strings.TrimSpace(lr.Product) == "" && strings.TrimSpace(lr.Platform) == "" {
+		return false
+	}
+	return clientreg.HasQuirk(clientreg.Identity{
+		Product:  strings.TrimSpace(lr.Product),
+		Platform: strings.TrimSpace(lr.Platform),
+	}, "android-mobile-ceiling")
+}
+
+// excludeEarlierLegacyMatches narrows any later migrated legacy rule that sets
+// limits so it does not also match plays already decided by an earlier legacy
+// rule (0.3.20 stopped at the first matching rule; the new rules engine adds up
+// limits from every matching rule).
+func excludeEarlierLegacyMatches(legacy []config.QualityRule, notes *[]string) []config.QualityRule {
+	out := make([]config.QualityRule, 0, len(legacy))
+	for j, rule := range legacy {
+		if !rule.HasLimits() || j == 0 {
+			out = append(out, rule)
+			continue
+		}
+		parts := []config.QualityRule{rule}
+		narrowed := false
+		for i := 0; i < j; i++ {
+			prev := legacy[i]
+			var next []config.QualityRule
+			for _, part := range parts {
+				sub, changed := subtractLegacyRule(part, prev, notes)
+				if changed {
+					narrowed = true
+				}
+				next = append(next, sub...)
+			}
+			parts = next
+			if len(parts) == 0 {
+				break
+			}
+		}
+		if narrowed && notes != nil {
+			*notes = append(*notes, fmt.Sprintf("narrowed legacy rule %d to preserve first-match limits", j+1))
+		}
+		out = append(out, parts...)
+	}
+	return out
+}
+
+func cloneQualityRule(r config.QualityRule) config.QualityRule {
+	cp := r
+	cp.Libraries = slices.Clone(r.Libraries)
+	cp.Viewers = slices.Clone(r.Viewers)
+	cp.Devices = slices.Clone(r.Devices)
+	if r.From != nil {
+		from := *r.From
+		cp.From = &from
+	}
+	return cp
+}
+
+func oppositeRuleKind(kind string) string {
+	switch kind {
+	case config.KindMovie:
+		return config.KindEpisode
+	case config.KindEpisode:
+		return config.KindMovie
+	default:
+		return ""
+	}
+}
+
+// subtractLegacyRule returns a disjoint set of rules covering (r \ prev) where
+// prev is an earlier migrated legacy rule (positive Viewers/Devices/Kind only).
+func subtractLegacyRule(r, prev config.QualityRule, notes *[]string) ([]config.QualityRule, bool) {
+	// Fast-path disjointness checks across all three legacy dimensions.
+	if prev.Kind != "" && r.Kind != "" && prev.Kind != r.Kind {
+		return []config.QualityRule{r}, false
+	}
+	if len(prev.Viewers) > 0 && len(r.Viewers) > 0 {
+		if !r.ExceptViewers {
+			overlap := false
+			for _, v := range prev.Viewers {
+				if slices.Contains(r.Viewers, v) {
+					overlap = true
+					break
+				}
+			}
+			if !overlap {
+				return []config.QualityRule{r}, false
+			}
+		} else {
+			allExcluded := true
+			for _, v := range prev.Viewers {
+				if !slices.Contains(r.Viewers, v) {
+					allExcluded = false
+					break
+				}
+			}
+			if allExcluded {
+				return []config.QualityRule{r}, false
+			}
+		}
+	}
+	if len(prev.Devices) > 0 && len(r.Devices) > 0 {
+		if !r.ExceptDevices {
+			if deviceMatchesDisjoint(prev.Devices, r.Devices) {
+				return []config.QualityRule{r}, false
+			}
+		} else if deviceMatchesCover(r.Devices, prev.Devices) {
+			return []config.QualityRule{r}, false
+		}
+	}
+
+	var out []config.QualityRule
+	rem := cloneQualityRule(r)
+
+	// Peel off Viewers.
+	if len(prev.Viewers) > 0 {
+		switch {
+		case len(rem.Viewers) == 0:
+			outside := cloneQualityRule(rem)
+			outside.Viewers = slices.Clone(prev.Viewers)
+			outside.ExceptViewers = true
+			out = append(out, outside)
+			rem.Viewers = slices.Clone(prev.Viewers)
+			rem.ExceptViewers = false
+		case !rem.ExceptViewers:
+			var outsideV, insideV []int64
+			for _, v := range rem.Viewers {
+				if slices.Contains(prev.Viewers, v) {
+					insideV = append(insideV, v)
+				} else {
+					outsideV = append(outsideV, v)
+				}
+			}
+			if len(outsideV) > 0 {
+				outside := cloneQualityRule(rem)
+				outside.Viewers = outsideV
+				out = append(out, outside)
+			}
+			rem.Viewers = insideV
+		default: // rem.ExceptViewers
+			var missing []int64
+			for _, v := range prev.Viewers {
+				if !slices.Contains(rem.Viewers, v) {
+					missing = append(missing, v)
+				}
+			}
+			outside := cloneQualityRule(rem)
+			outside.Viewers = append(slices.Clone(rem.Viewers), missing...)
+			outside.ExceptViewers = true
+			out = append(out, outside)
+			rem.Viewers = missing
+			rem.ExceptViewers = false
+		}
+	}
+
+	// Peel off Kind.
+	if prev.Kind != "" && rem.Kind == "" {
+		outside := cloneQualityRule(rem)
+		outside.Kind = oppositeRuleKind(prev.Kind)
+		out = append(out, outside)
+		rem.Kind = prev.Kind
+	}
+
+	// Peel off Devices.
+	if len(prev.Devices) > 0 {
+		switch {
+		case len(rem.Devices) == 0:
+			outside := cloneQualityRule(rem)
+			outside.Devices = slices.Clone(prev.Devices)
+			outside.ExceptDevices = true
+			out = append(out, outside)
+		case rem.ExceptDevices:
+			outside := cloneQualityRule(rem)
+			for _, d := range prev.Devices {
+				if !deviceMatchesContain(outside.Devices, d) {
+					outside.Devices = append(outside.Devices, d)
+				}
+			}
+			out = append(out, outside)
+		case deviceMatchesCover(prev.Devices, rem.Devices):
+			// rem is fully covered by prev; drop it.
+		default:
+			// Overlapping positive device matchers cannot be expressed as a
+			// single rule with both Devices and ExceptDevices; keep rem so no
+			// legitimate device match is dropped.
+			out = append(out, rem)
+			if notes != nil {
+				*notes = append(*notes, "kept overlapping legacy device rule (cannot exclude one positive device matcher from another)")
+			}
+		}
+	}
+
+	return out, true
+}
+
+func deviceMatchEqual(a, b config.DeviceMatch) bool {
+	fa, va := a.Field()
+	fb, vb := b.Field()
+	return fa == fb && strings.EqualFold(va, vb)
+}
+
+func deviceMatchesContain(list []config.DeviceMatch, want config.DeviceMatch) bool {
+	for _, d := range list {
+		if deviceMatchEqual(d, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func deviceMatchesCover(outer, inner []config.DeviceMatch) bool {
+	for _, b := range inner {
+		if !deviceMatchesContain(outer, b) {
+			return false
+		}
+	}
+	return true
+}
+
+func deviceMatchesDisjoint(a, b []config.DeviceMatch) bool {
+	for _, da := range a {
+		for _, db := range b {
+			if !deviceMatchPairDisjoint(da, db) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func deviceMatchPairDisjoint(a, b config.DeviceMatch) bool {
+	fa, va := a.Field()
+	fb, vb := b.Field()
+	if fa == "" || fb == "" || fa == "contains" || fb == "contains" {
+		return false
+	}
+	if fa == fb {
+		return !strings.EqualFold(va, vb)
+	}
+	return false
 }
 
 func legacyDeviceRegistryCeiling(lr config.LegacyQualityRule) int {

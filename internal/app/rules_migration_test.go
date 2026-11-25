@@ -216,12 +216,11 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	if _, ok := core.FindProfile(q.Profiles, "1080p (TV)"); ok {
 		t.Fatalf("identical 1080p twin should have merged, not renamed: %+v", q.Profiles)
 	}
-	// Android maxHeight=2160 lift (above 1080p registry ceiling) must have moved to Clients.Overrides.
-	hasAndroidLift := slices.ContainsFunc(gotCfg.Clients.Overrides, func(o core.ClientCapabilityOverride) bool {
-		return o.MaxHeight == 2160
-	})
-	if !hasAndroidLift {
-		t.Fatalf("expected Android maxHeight=2160 lift in Clients.Overrides: %+v", gotCfg.Clients.Overrides)
+	// Android mobile maxHeight=2160 lift stays on its rule (handled by N4
+	// android-mobile-ceiling lift with HDR) rather than becoming a device-wide
+	// Clients.Overrides entry.
+	if len(gotCfg.Clients.Overrides) != 0 {
+		t.Fatalf("expected Android mobile lift to stay on its rule, not Clients.Overrides: %+v", gotCfg.Clients.Overrides)
 	}
 
 	// Verify exact playback choices across representative plays!

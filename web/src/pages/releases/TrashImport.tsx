@@ -293,7 +293,15 @@ export function TrashImport({
   const [dbCheckedCount, setDbCheckedCount] = useState<number | null>(null);
 
   // Selection / preview state
-  const [presetName, setPresetName] = useState("");
+  const [presetName, setPresetNameState] = useState("");
+  // The default-preset effect below can run after a click has already
+  // queued a pick (its render closure is stale then), so it reads the
+  // latest pick from this ref instead of from state.
+  const presetPick = useRef("");
+  const setPresetName = (value: string) => {
+    presetPick.current = value;
+    setPresetNameState(value);
+  };
   const [profileId, setProfileId] = useState("");
   const [pasted, setPasted] = useState("");
   const [plan, setPlan] = useState<QualityImportPlan | null>(null);
@@ -352,7 +360,8 @@ export function TrashImport({
 
   useEffect(() => {
     if (step !== "preset" || !presets.length) return;
-    if (!presetName || !presets.some((p) => p.name === presetName)) {
+    const picked = presetPick.current;
+    if (!picked || !presets.some((p) => p.name === picked)) {
       const first = presets[0]!;
       setPresetName(first.name);
       setName(uniqueProfileName(first.name, existingProfiles));

@@ -91,12 +91,9 @@ func (c *KindCatalog) kickDeferredExpansions() {
 		delete(q.pending, b.key)
 		q.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		started, _ := c.expandContainer(ctx, b.d.rec, b.d.lib, b.d.container, false)
+		// Still busy (expandContainer queues it again) or fresh now.
+		_, _ = c.expandContainer(ctx, b.d.rec, b.d.lib, b.d.container, false)
 		cancel()
-		if !started {
-			// Still busy (it was queued again by expandContainer) or fresh now.
-			continue
-		}
 	}
 }
 

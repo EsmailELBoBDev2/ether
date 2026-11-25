@@ -53,8 +53,6 @@ type rule struct {
 	row     *core.Row
 }
 
-func (r *rule) hidesWatched() bool { return r != nil && r.Look.HideWatched }
-
 type pagePlan struct {
 	key     core.PageKey
 	page    core.RowPage // effective page (variant mode/length applied)

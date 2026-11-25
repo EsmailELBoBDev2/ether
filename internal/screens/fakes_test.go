@@ -68,25 +68,3 @@ func (f *fakeHub) Entities(_ context.Context, _ *core.User, q EntityQuery) ([]co
 	}
 	return out, nil
 }
-
-// fakeWatch and fakeFavs are hub-side fakes shared by the document tests.
-type fakeWatch struct {
-	targets map[string][]core.LiveEventWatchTarget
-	calls   int
-}
-
-func (w *fakeWatch) WatchTargets(_ context.Context, _ *core.User, ev core.LiveEvent) ([]core.LiveEventWatchTarget, error) {
-	w.calls++
-	return w.targets[ev.ID], nil
-}
-
-type fakeFavs struct {
-	byViewer map[int64][]string
-}
-
-func (f fakeFavs) ListEntityKeys(_ context.Context, v *core.User) ([]string, error) {
-	if v == nil {
-		return nil, nil
-	}
-	return f.byViewer[v.ID], nil
-}

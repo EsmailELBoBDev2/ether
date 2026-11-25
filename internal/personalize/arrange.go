@@ -246,10 +246,8 @@ func arrangeCurated(rows []core.HomeRow, pl *pagePlan, user int64, hc core.HubCo
 		row = resetPlacement(row)
 		p := pl.match(row)
 		if p == nil {
-			if isAppAnchor(row) && !pl.listed[KindContinue] {
-				// An app's own anchor row (Continue Watching) the page
-				// doesn't list stays off a Curated page.
-			}
+			// An app's own anchor row (Continue Watching) the page doesn't
+			// list stays off the page like any other unlisted row.
 			row.Hidden, row.HiddenCode, row.HiddenReason = true, "not_on_page", "Not on this page"
 			if !pl.suppressed(row) {
 				hidden = append(hidden, row)
@@ -807,7 +805,7 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 		row := core.HomeRow{HubID: id, RowID: r.RowID, Kind: SourceSurface, Title: title, Source: core.RowSourceOwner,
 			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Why: r.why(r.Slot), Hub: core.Hub{ID: id, Title: title},
 			Present: core.RowPresentation{RowID: r.RowID, Surface: &core.RowSurface{Plugin: info.Plugin, PluginName: info.PluginName, Surface: info.WireID}}}
-		at := len(rows)
+		var at int
 		switch {
 		case pl.curated:
 			at = 0

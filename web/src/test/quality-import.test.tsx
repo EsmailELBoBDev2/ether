@@ -31,7 +31,7 @@ describe("Unified Add profile drawer", () => {
 
     fireEvent.click(within(drawer).getByRole("button", { name: /Ether preset/ }));
     fireEvent.click(await within(drawer).findByRole("radio", { name: /^720p / }, WAIT));
-    expect(within(drawer).getByLabelText("Name")).toHaveValue("720p");
+    await waitFor(() => expect(within(drawer).getByLabelText("Name")).toHaveValue("720p"), WAIT);
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Add profile" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);

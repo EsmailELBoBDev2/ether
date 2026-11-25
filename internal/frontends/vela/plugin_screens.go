@@ -15,8 +15,8 @@ import (
 // Vela routes and authenticates; the app's PluginScreens does the rest.
 
 func (i *instance) pluginScreens() (frontend.PluginScreens, bool) {
-	ps, ok := i.host.Screens.(frontend.PluginScreens)
-	return ps, ok && ps != nil
+	ps := i.host.Screens
+	return ps, ps != nil
 }
 
 // previewExpired answers 403 preview_expired when a request carries a Studio

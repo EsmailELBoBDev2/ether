@@ -44,6 +44,9 @@ func TestDirectPlayReopenOfSameSourceKeepsSession(t *testing.T) {
 	}
 	second, _ := open(2)
 	url2, err := b.StartStream(ctx, a, second.ID, frontend.StreamRequest{Format: frontend.StreamDirect, Position: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if second.ID != first.ID || url1 != url2 {
 		t.Fatal("track switch replaced the playing direct session")
 	}

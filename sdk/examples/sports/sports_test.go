@@ -290,12 +290,13 @@ func TestScreenDocumentsInstall(t *testing.T) {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if strings.HasPrefix(p, "screens/") || strings.HasPrefix(p, "surfaces/") || strings.HasPrefix(p, "assets/") || strings.HasPrefix(p, "i18n/") {
+		rel := filepath.ToSlash(p)
+		if strings.HasPrefix(rel, "screens/") || strings.HasPrefix(rel, "surfaces/") || strings.HasPrefix(rel, "assets/") || strings.HasPrefix(rel, "i18n/") {
 			b, err := os.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			files[filepath.ToSlash(p)] = b
+			files[rel] = b
 		}
 		return nil
 	})

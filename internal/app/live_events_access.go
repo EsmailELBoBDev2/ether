@@ -30,28 +30,6 @@ func liveEventIDPlugin(id string) string {
 	return pluginID
 }
 
-// allowedLiveEventIDs keeps the ids whose plugin viewer may see, deciding once
-// per plugin.
-func (a *App) allowedLiveEventIDs(ctx context.Context, viewer *core.User, ids []string) []string {
-	if len(ids) == 0 {
-		return ids
-	}
-	decided := map[string]bool{}
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		pluginID := liveEventIDPlugin(id)
-		ok, seen := decided[pluginID]
-		if !seen {
-			ok = a.liveEventPluginAllowed(ctx, viewer, pluginID)
-			decided[pluginID] = ok
-		}
-		if ok {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 // grantedFavoriteEntities drops entity favourites whose plugin the viewer may
 // no longer see, so alerts (in-app, push and Flows) and the alert scheduler
 // never act on them. Viewers and plugin decisions are looked up once per call.

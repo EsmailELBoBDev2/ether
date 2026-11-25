@@ -69,6 +69,9 @@ type Options struct {
 	// 0 = DefaultMinIdle; negative disables. A provider's own
 	// config.UsenetProvider.MinIdle overrides it.
 	MinIdle int
+	// Balanced puts every primary (non-backfill) provider in one tier,
+	// whatever its Priority, so they share load (config.Usenet.LoadMode).
+	Balanced bool
 	// IdleTimeout closes excess connections unused for this long.
 	IdleTimeout time.Duration
 	// KeepAlive pings (DATE) connections idle for this long so servers do not
@@ -175,7 +178,7 @@ func (o *Options) withDefaults() {
 //
 // Ordering: non-backfill providers are tried in ascending Priority; providers
 // sharing a Priority form a tier and share load (the least busy is tried
-// first). Only when every non-backfill provider answered 430 are backfill
+// first). In balanced mode every non-backfill provider is one tier. Only when every non-backfill provider answered 430 are backfill
 // (block) providers tried, in the same way. Transient errors are retried on
 // fresh connections and then on the next provider. A live fetch that stalls
 // is raced by one duplicate on spare capacity (see hedge.go).
@@ -198,6 +201,9 @@ type Fetcher struct {
 	// minIdle is the fetcher-wide warm floor (already defaulted);
 	// UpdateConfig changes it live.
 	minIdle atomic.Int32
+	// balanced merges the primaries into one tier (Options.Balanced);
+	// UpdateConfig changes it live.
+	balanced atomic.Bool
 
 	misses *missCache
 	// live tracks live BODY fetches for head-of-line hedging (hedge.go).
@@ -219,6 +225,7 @@ func New(providers []config.UsenetProvider, opts Options) *Fetcher {
 		live:    newLiveHedger(),
 	}
 	f.minIdle.Store(int32(opts.MinIdle))
+	f.balanced.Store(opts.Balanced)
 	f.Update(providers)
 	return f
 }
@@ -245,7 +252,8 @@ func (f *Fetcher) Redial() {
 }
 
 // UpdateConfig applies an edited Usenet config: the provider list (see
-// Update) and the MinIdle warm floor, live and without a restart.
+// Update), the load mode and the MinIdle warm floor, live and without a
+// restart.
 // MinIdle 0 takes the default; negative disables the floor.
 func (f *Fetcher) UpdateConfig(u config.Usenet) {
 	n := u.MinIdle
@@ -253,6 +261,7 @@ func (f *Fetcher) UpdateConfig(u config.Usenet) {
 		n = DefaultMinIdle
 	}
 	f.minIdle.Store(int32(n))
+	f.balanced.Store(u.Balanced())
 	f.Update(u.Providers)
 	// Reused pools pick up the new floor here; newly created ones read
 	// f.minIdle in Update. Either way, nudge the janitor so a raised
@@ -317,7 +326,7 @@ func (f *Fetcher) Update(providers []config.UsenetProvider) {
 		}
 	}
 	f.pools = next
-	f.tiers = buildTiers(next)
+	f.tiers = buildTiers(next, f.balanced.Load())
 	if f.changed != nil {
 		close(f.changed)
 		f.changed = make(chan struct{})
@@ -335,7 +344,17 @@ func (f *Fetcher) Update(providers []config.UsenetProvider) {
 	}
 }
 
-func buildTiers(pools []*pool) [][]*pool {
+// buildTiers groups pools into try-order tiers and records each pool's tier
+// rank (pool.tier). balanced puts every non-backfill pool in one tier; inside
+// it they keep Priority order, which only seeds the rotation in order().
+func buildTiers(pools []*pool, balanced bool) [][]*pool {
+	for _, p := range pools {
+		rank := p.cfg.Priority
+		if balanced && !p.cfg.Backfill {
+			rank = 0
+		}
+		p.tier.Store(int64(rank))
+	}
 	sorted := slices.Clone(pools)
 	slices.SortStableFunc(sorted, func(a, b *pool) int {
 		if a.cfg.Backfill != b.cfg.Backfill {
@@ -344,13 +363,13 @@ func buildTiers(pools []*pool) [][]*pool {
 			}
 			return -1
 		}
-		return cmp.Compare(a.cfg.Priority, b.cfg.Priority)
+		return cmp.Or(cmp.Compare(a.tier.Load(), b.tier.Load()), cmp.Compare(a.cfg.Priority, b.cfg.Priority))
 	})
 	var tiers [][]*pool
 	for i, p := range sorted {
 		if i > 0 {
 			q := sorted[i-1]
-			if q.cfg.Backfill == p.cfg.Backfill && q.cfg.Priority == p.cfg.Priority {
+			if q.cfg.Backfill == p.cfg.Backfill && q.tier.Load() == p.tier.Load() {
 				tiers[len(tiers)-1] = append(tiers[len(tiers)-1], p)
 				continue
 			}
@@ -816,6 +835,7 @@ func (f *Fetcher) each(ctx context.Context, id, kind string, req routeReq, op fu
 // *swapped when a pool turned out to be closed by a concurrent Update.
 func (f *Fetcher) eachOnce(ctx context.Context, id, kind string, req routeReq, op func(context.Context, *pool) error, swapped *bool) error {
 	known := f.misses.get(id)
+	hint := core.ProviderMissHintFrom(ctx)
 	pools, spill := f.route(ctx, req, known)
 	if len(pools) == 0 {
 		return ErrNoProviders
@@ -845,6 +865,9 @@ func (f *Fetcher) eachOnce(ctx context.Context, id, kind string, req routeReq, o
 		for attempt := 0; attempt <= f.o.Retries; attempt++ {
 			err := op(ctx, p)
 			if err == nil {
+				if hint != nil {
+					hint.Hit(p.providerID())
+				}
 				if p == spill {
 					p.spillovers.Add(1)
 				}
@@ -863,6 +886,9 @@ func (f *Fetcher) eachOnce(ctx context.Context, id, kind string, req routeReq, o
 				missing++
 				lastMissing = err
 				f.misses.add(id, p.key)
+				if hint != nil {
+					hint.Miss(p.providerID())
+				}
 				break attempts
 			case errors.Is(err, ErrInvalidMessageID):
 				return err
@@ -976,7 +1002,7 @@ func (f *Fetcher) ReadAheadConnections() int {
 	f.mu.RLock()
 	tiers := f.tiers
 	f.mu.RUnlock()
-	headPrio := 0
+	var headPrio int64
 	haveHead := false
 	total := 0
 	for _, tier := range tiers {
@@ -989,10 +1015,10 @@ func (f *Fetcher) ReadAheadConnections() int {
 				continue
 			}
 			if !haveHead {
-				headPrio = p.cfg.Priority
+				headPrio = p.tier.Load()
 				haveHead = true
 			}
-			if p.cfg.Priority == headPrio {
+			if p.tier.Load() == headPrio {
 				if ss.Size >= 2 {
 					total += ss.Size - 1
 				} else {

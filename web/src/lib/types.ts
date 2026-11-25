@@ -385,6 +385,8 @@ export interface EtherConfig {
   };
   usenet: {
     providers: UsenetProvider[] | null;
+    /** How primary (non-backfill) providers share requests; "" is inOrder. */
+    loadMode?: "" | "inOrder" | "balanced";
     repair?: {
       enabled: boolean;
       wholeSlices?: boolean;

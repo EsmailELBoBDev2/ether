@@ -598,6 +598,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio c
 	}
 	defer release()
 	started := fo.meter.begin()
+	ctx = core.WithProviderMissHint(ctx, &pf.misses)
 	if burst, ok := e.fetcher.(core.BurstArticleFetcher); ok && time.Now().Before(fo.burstUntil) {
 		data, part, err = burst.BodyPartBurst(ctx, id, pf.groups, prio, fo.burstUntil)
 	} else {

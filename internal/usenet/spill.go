@@ -99,7 +99,7 @@ type routeReq struct {
 // and providers that cannot serve are not considered usable.
 func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pools []*pool, spill *pool) {
 	prio := req.prio
-	pools = f.order()
+	pools = demoteMissed(ctx, f.order())
 	if req.health {
 		pools = demoteUntrustedStatPools(pools)
 	}
@@ -142,7 +142,7 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 		if req.health && !first.statTrust.isUntrusted() && p.statTrust.isUntrusted() {
 			continue
 		}
-		sameTier := p.cfg.Priority == first.cfg.Priority && (!req.health || p.statTrust.isUntrusted() == first.statTrust.isUntrusted())
+		sameTier := p.tier.Load() == first.tier.Load() && (!req.health || p.statTrust.isUntrusted() == first.statTrust.isUntrusted())
 		ok := p.spare(prio, until) > 0
 		if !sameTier && prio != core.PriorityLive {
 			ok = p.quiet(prio, until)

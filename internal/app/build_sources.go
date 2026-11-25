@@ -33,7 +33,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	var err error
 	// Usenet, cache, stream engine. The dialer reads the live proxy policy.
 	a.applyOutbound(cfg)
-	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, DialContext: egress.Dial, OnStateChange: a.publishDashboard, Events: a.eventBus})
+	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, Balanced: cfg.Usenet.Balanced(), DialContext: egress.Dial, OnStateChange: a.publishDashboard, Events: a.eventBus})
 	a.closers = append(a.closers, func() { a.fetcher.Close() })
 	if cfg.Cache.Storage == "shared" {
 		if cfg.SharedCache == nil {

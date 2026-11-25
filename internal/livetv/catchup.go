@@ -8,12 +8,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-
-	"github.com/braedonsaunders/ether/internal/transcode"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/transcode"
 )
 
 type CatchUpRequest = frontend.CatchUpRequest

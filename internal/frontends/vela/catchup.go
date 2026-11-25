@@ -20,10 +20,10 @@ func (i *instance) catchUpNow() time.Time {
 	return time.Now().UTC()
 }
 
-func archiveFlagFingerprint(programmes []frontend.LiveProgramme, now time.Time) []byte {
+func archiveFlagFingerprint(programmes []frontend.LiveProgramme, channelDays int, now time.Time) []byte {
 	flags := make([]byte, len(programmes))
 	for n, p := range programmes {
-		ended, airing := frontend.ArchiveFlags(p.ArchiveDays, p.Start, p.End, now)
+		ended, airing := frontend.ArchiveFlags(max(channelDays, p.ArchiveDays), p.Start, p.End, now)
 		switch {
 		case ended:
 			flags[n] = 1

@@ -186,7 +186,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		programmes.Snapshot,
 		programmes.More,
 		programmes.Items,
-		archiveFlagFingerprint(programmes.Items, now),
+		archiveFlagFingerprint(programmes.Items, 0, now),
 	})
 	if liveNotModified(w, r, tag) {
 		return
@@ -425,7 +425,7 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 	now := i.catchUpNow()
 	flags := make([][]byte, len(window.Channels))
 	for index, ch := range window.Channels {
-		flags[index] = archiveFlagFingerprint(ch.Programmes, now)
+		flags[index] = archiveFlagFingerprint(ch.Programmes, ch.ArchiveDays, now)
 	}
 	tag := i.liveETag(r, []any{
 		"guide-window",

@@ -80,8 +80,22 @@ func (i *instance) catchUp(w http.ResponseWriter, r *http.Request, l login) {
 	client := profile.Client
 	client.HLSContainers = []string{"mpegts"}
 	req := frontend.CatchUpRequest{ChannelID: channel.ID, Start: at, Duration: time.Duration(minutes) * time.Minute}
-	if !i.admit(w, r.WithContext(ctx), l, frontend.PlanRequest{Viewer: l.viewer, Device: device, Protocol: "xtream", Channel: channel.ID, Caps: client}) {
+	admission := frontend.PlanRequest{Viewer: l.viewer, Device: device, Protocol: "xtream", Channel: "archive/" + channel.ID, Caps: client}
+	if !i.admit(w, r.WithContext(ctx), l, admission) {
 		return
+	}
+	if renewal, ok := i.host.LazyStreams.(frontend.AppConnectionRenewal); ok {
+		streamCtx, release, err := renewal.RenewAppConnection(r.WithContext(ctx), l.credential, admission)
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, frontend.ErrStreamLimit) {
+				status = http.StatusTooManyRequests
+			}
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+		defer release()
+		ctx = streamCtx
 	}
 	info, err := host.StartCatchUp(ctx, l.viewer, req, client, device.ID)
 	if err != nil {

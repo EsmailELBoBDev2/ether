@@ -53,7 +53,7 @@ func (r *KindResolver) requestPluginNZB(ctx context.Context, q core.SourceQuery)
 	}
 	files := make([]core.ReleaseFile, 0, min(len(doc.Files), 2000))
 	for i, file := range doc.Files[:cap(files)] {
-		files = append(files, core.ReleaseFile{Index: i, Path: file.Name, Size: file.Bytes()})
+		files = append(files, core.ReleaseFile{Index: i, Path: file.StableName(), Size: file.EstimatedDecodedBytes(), SizeApproximate: true})
 	}
 	return []core.SourceCandidate{{NZBRef: storeRef, Files: files, FileCount: len(doc.Files)}}, nil
 }

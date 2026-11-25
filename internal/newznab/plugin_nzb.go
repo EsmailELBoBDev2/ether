@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/vault"
 )
 
@@ -23,12 +26,22 @@ var errPluginNZB = fmt.Errorf("indexer NZB unavailable: %w", core.ErrSourceUnava
 // IsIndexerHost is evaluated against the current configuration on every call.
 func (m *Manager) IsIndexerHost(host string) bool {
 	for _, c := range m.Clients() {
-		u, err := url.Parse(c.Config().URL)
+		cfg := c.Config()
+		if cfg.IsAddon() || cfg.IsStremio() {
+			continue
+		}
+		u, err := url.Parse(cfg.URL)
 		if err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, ".")) {
 			return true
 		}
 	}
 	return false
+}
+
+type pluginNZBContextKey struct{}
+
+func isPluginNZB(ctx context.Context) bool {
+	return ctx.Value(pluginNZBContextKey{}) != nil
 }
 
 type pluginNZBReference struct {
@@ -61,7 +74,7 @@ func (m *Manager) sealNZBReference(ref pluginNZBReference) string {
 // PluginNZBReference issues a portable, authenticated reference from a real
 // search result. Credential-bearing links stay inside the sealed envelope.
 func (m *Manager) PluginNZBReference(r core.Release) string {
-	if r.Protocol == core.ProtocolTorrent || r.Protocol == core.ProtocolHTTP {
+	if (r.Protocol != "" && r.Protocol != core.ProtocolUsenet) || r.InfoHash != "" || r.MagnetURL != "" {
 		return ""
 	}
 	key := vault.KeyOf(r)
@@ -118,12 +131,19 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 			key = ""
 		}
 	}
+	if err == nil && key == "" && hint.ID == "" {
+		return nil, "", errPluginNZB
+	}
 	if err == nil && key != "" {
 		data, err = m.FetchNZB(ctx, core.Release{IndexerID: vault.IndexerID, GUID: "vault:" + string(key)})
 	} else if err == nil {
-		data, err = m.FetchNZB(ctx, hint)
+		data, err = m.FetchNZB(context.WithValue(ctx, pluginNZBContextKey{}, true), hint)
 	}
 	if err != nil {
+		var refusal *GrabRefusal
+		if errors.As(err, &refusal) {
+			return nil, "", refusal
+		}
 		// Keep classifications used for scheduling and fallback, without
 		// returning indexer errors, identifiers, or URLs to a plugin.
 		for _, public := range []error{context.Canceled, context.DeadlineExceeded, core.ErrBudgetExhausted, core.ErrReleaseRejected} {
@@ -155,7 +175,8 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 }
 
 func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
-	u, err := url.Parse(hint.NZBURL)
+	raw := strings.TrimPrefix(strings.TrimSpace(hint.NZBURL), "nzb:")
+	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.Fragment != "" || u.Host == "" {
 		return core.Release{}, errPluginNZB
 	}
@@ -173,25 +194,35 @@ func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
 		if err != nil {
 			continue
 		}
-		root := strings.TrimRight(strings.TrimSuffix(base.Path, "/api"), "/")
+		basePath := strings.TrimRight(base.Path, "/")
+		root := strings.TrimSuffix(strings.TrimSuffix(basePath, "/api/newznab"), "/api")
 		var guid string
-		var link string
+		downloadParams := url.Values{}
 		switch {
-		case (u.Path == root+"/api" || u.Path == root+"/api/newznab") && strings.EqualFold(q.Get("t"), "get"):
+		case (u.Path == endpointPathFor(basePath, false) || u.Path == endpointPathFor(basePath, true)) && strings.EqualFold(q.Get("t"), "get"):
 			guid = q.Get("id")
-			link = c.StripLinkAuth(u.String())
+			downloadParams.Set("t", "get")
+			downloadParams.Set("id", guid)
 		case u.Path == root+"/download":
 			guid = q.Get("guid")
-			if guid == "" && strings.HasPrefix(cfg.ID, "prowlarr-") {
+			if guid != "" {
+				downloadParams.Set("guid", guid)
+			} else if strings.HasPrefix(cfg.ID, "prowlarr-") {
 				if _, err := strconv.Atoi(path.Base(root)); err == nil {
 					guid = q.Get("link")
+					downloadParams.Set("link", guid)
+					if file := q.Get("file"); file != "" {
+						downloadParams.Set("file", file)
+					}
 				}
 			}
-			link = c.StripLinkAuth(u.String())
-		case strings.HasPrefix(u.Path, root+"/getnzb/") && path.Dir(u.Path) == root+"/getnzb":
+		case path.Dir(u.Path) == root+"/getnzb", path.Dir(u.Path) == root+"/nzb", path.Dir(u.Path) == root+"/download":
 			guid = strings.TrimSuffix(path.Base(u.Path), ".nzb")
-			link = c.StripLinkAuth(u.String())
 		}
+		download := *u
+		download.RawPath = ""
+		download.RawQuery = downloadParams.Encode()
+		link := download.String()
 		if guid == "" || len(guid) > 4096 {
 			continue
 		}
@@ -231,28 +262,100 @@ func (c *Client) nzbLinkAlias(link string) string {
 	return fmt.Sprintf("link:%x", sha256.Sum256([]byte(u.String())))
 }
 
-func (c *Client) nzbRefusal(r core.Release) error {
+func (c *Client) nzbIdentities(r core.Release) []string {
+	ids := []string{r.ID}
+	if alias := c.nzbLinkAlias(r.NZBURL); alias != "" {
+		ids = append(ids, alias)
+	}
+	if r.GUID != "" {
+		ids = append(ids, releaseID(c.indexerID(), r.GUID, ""))
+	}
+	return ids
+}
+
+func (c *Client) nzbRefusal(ctx context.Context, r core.Release) error {
+	ids := c.nzbIdentities(r)
+	now := c.now()
+	if c.db != nil {
+		var params [3]string
+		copy(params[:], ids)
+		var until int64
+		err := c.db.QueryRowContext(ctx, `SELECT COALESCE(max(retry_at),0)
+			FROM newznab_nzb_refusals WHERE indexer_id=? AND release_id IN (?,?,?)`,
+			c.indexerID(), params[0], params[1], params[2]).Scan(&until)
+		if err != nil {
+			return err
+		}
+		if now.Before(time.Unix(until, 0)) {
+			return &GrabRefusal{RetryAt: time.Unix(until, 0)}
+		}
+	}
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
-	for _, id := range []string{r.ID, c.nzbLinkAlias(r.NZBURL)} {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
 		if _, blocked := c.nzbStoreFailures[id]; blocked {
 			return vault.ErrPayloadMissing
 		}
-	}
-	if c.nzbRefusalDay == c.today() {
-		return c.nzbRefusals[r.ID]
+		if until := c.nzbRefusals[id]; now.Before(until) {
+			return &GrabRefusal{RetryAt: until}
+		}
 	}
 	return nil
 }
 
-func (c *Client) rememberNZBRefusal(id string, err error) {
+func (c *Client) rememberNZBRefusal(ctx context.Context, r core.Release, until time.Time) {
+	ids := c.nzbIdentities(r)
+	now := c.now()
+	if c.db != nil {
+		_, _ = c.db.ExecContext(ctx, `DELETE FROM newznab_nzb_refusals WHERE retry_at<=?`, now.Unix())
+		for _, id := range ids {
+			if id != "" {
+				_, _ = c.db.ExecContext(ctx, `INSERT INTO newznab_nzb_refusals(indexer_id, release_id, retry_at)
+					VALUES (?,?,?) ON CONFLICT(indexer_id,release_id) DO UPDATE SET retry_at=excluded.retry_at
+					WHERE excluded.retry_at>newznab_nzb_refusals.retry_at`, c.indexerID(), id, until.Unix())
+			}
+		}
+	}
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
-	if today := c.today(); c.nzbRefusalDay != today {
-		c.nzbRefusalDay = today
-		c.nzbRefusals = make(map[string]error)
+	if c.nzbRefusals == nil {
+		c.nzbRefusals = make(map[string]time.Time)
 	}
-	c.nzbRefusals[id] = err
+	if len(c.nzbRefusals) >= 4096 {
+		maps.DeleteFunc(c.nzbRefusals, func(_ string, deadline time.Time) bool { return !now.Before(deadline) })
+	}
+	for _, id := range ids {
+		if id != "" && until.After(c.nzbRefusals[id]) {
+			c.nzbRefusals[id] = until
+		}
+	}
+}
+
+// Leave most of the PostgreSQL pool available for vault writes and budget
+// accounting while a session connection is reserved during the network call.
+var nzbSessionSlots = make(chan struct{}, 4)
+
+func (c *Client) lockNZBGrab(ctx context.Context, id string) (func(), error) {
+	if c.db == nil || c.vault == nil || store.DialectOf(c.db) != store.Postgres {
+		return nil, nil
+	}
+	select {
+	case nzbSessionSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	unlock, err := store.SessionLock(ctx, c.db, "nzb-grab:"+c.indexerID()+":"+id)
+	if err != nil {
+		<-nzbSessionSlots
+		return nil, err
+	}
+	return func() {
+		unlock()
+		<-nzbSessionSlots
+	}, nil
 }
 
 const pluginTorrentSeal = "plugin-indexer-torrent/v1"

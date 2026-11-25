@@ -67,7 +67,8 @@ type Options struct {
 	UncachedTTL time.Duration // known-uncached memory, 0 = 30m
 	// DirectGuard guards direct HTTP stream requests (tests map fake public
 	// hosts onto local servers); nil uses a zero safefetch.Guard.
-	DirectGuard *safefetch.Guard
+	DirectGuard   *safefetch.Guard
+	IsIndexerHost func(string) bool
 	// OnChange is notified when provider configuration or breaker state changes.
 	OnChange func()
 	// Events receives non-blocking provider.* domain events when set.

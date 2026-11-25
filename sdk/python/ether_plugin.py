@@ -4286,6 +4286,8 @@ class ReleaseHint(TypedDict, total=False):
 
     fileIndex: int
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     magnet: str
     infoHash: str
     torrentUrl: str

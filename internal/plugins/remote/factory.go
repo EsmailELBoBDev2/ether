@@ -34,6 +34,7 @@ type Factory struct {
 	TrustedLAN func(pluginID string) bool
 	// LocalHosts returns the owner-granted local network hosts for one plugin.
 	LocalHosts func(pluginID string) []string
+	CheckHost  func(string) error
 	// Credential returns the credential Ether presents to the plugin
 	// on URL calls, or "" for none (plain Stremio add-ons).
 	Credential func(pluginID string) string
@@ -73,6 +74,7 @@ func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 		case endpointURL:
 			opts := URLOptions{
 				Base:                 base,
+				CheckHost:            f.CheckHost,
 				AllowPublicRedirects: inst.Manifest.IsStremioOnly(),
 				Plain:                inst.Manifest.IsStremioOnly(),
 				Guard:                f.Guard,

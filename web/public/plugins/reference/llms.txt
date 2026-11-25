@@ -646,6 +646,13 @@ timeout, permission, redirect, size, or transport failure. Canceling the parent
 request or exceeding its deadline aborts all in-flight batch fetches promptly
 without consuming extra WASM pool lanes.
 
+Indexer search results give you `nzbRef` for Usenet and `torrentRef` when a
+torrent needs a descriptor lookup. Call
+`ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
+permanent vault reference. Use that reference in a release source's
+`release.nzbRef`, and use `release_files` for files inside archives.
+Configured indexer hosts reject direct plugin HTTP calls.
+
 Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck
 live network permissions on every hop and keep credentials/caller headers only

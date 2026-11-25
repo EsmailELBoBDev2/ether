@@ -129,6 +129,8 @@ export async function requestNzb<S = Record<string, unknown>>(
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentRef) return `torrentref:${c.torrentRef}`;
+  if (c.nzbRef) return `nzbref:${c.nzbRef}`;
   if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";

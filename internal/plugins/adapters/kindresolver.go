@@ -3729,9 +3729,9 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 }
 
 func releaseIDWithTarget(rel core.Release) string {
-	identity := firstNonEmpty(rel.InfoHash, rel.MagnetURL, rel.GUID)
-	if identity == "" {
-		identity = fmt.Sprintf("%x", sha256.Sum256([]byte(firstNonEmpty(rel.NZBRef, rel.TorrentRef, rel.NZBURL))))
+	identity := firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
+	if ref := firstNonEmpty(rel.NZBRef, rel.TorrentRef); identity == "" && ref != "" {
+		identity = fmt.Sprintf("%x", sha256.Sum256([]byte(ref)))
 	}
 	id := "kind:" + identity
 	if rel.Target != nil {
@@ -4193,7 +4193,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		return ms, nil
 	}
 	if rel.NZBURL != "" || rel.NZBRef != "" {
-		if r.indexer == nil {
+		if r.indexer == nil && r.pluginNZBs == nil {
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolUsenet

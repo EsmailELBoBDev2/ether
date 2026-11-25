@@ -882,7 +882,8 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}); err != nil {
 		return core.SourceResolveResult{}, err
 	}
-	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	nzbQuery := q.Kind == "usenet_check" || q.Kind == "nzb_request"
+	bgUsenetCheck := nzbQuery && isBackgroundCall(ctx)
 	if bgUsenetCheck {
 		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
 			return core.SourceResolveResult{}, err
@@ -895,11 +896,11 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	callCtx := ctx
 	var refundCheck func()
 	var resetAt time.Time
-	if q.Kind == "usenet_check" {
+	if nzbQuery {
 		if bgUsenetCheck {
 			// Reuse a live verdict from the shared cache before spending the
 			// plugin's daily background allowance.
-			if backends.PeekUsenetCheck != nil {
+			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
 					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
 				}

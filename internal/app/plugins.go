@@ -67,10 +67,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	var busyAt time.Time
 	var busyValue bool
 	mgr, err := plugins.New(plugins.Deps{
-		EventBus: a.EventBus(),
-		IsIndexerHost: func(host string) bool {
-			return (a.indexers != nil && a.indexers.IsIndexerHost(host)) || configuredProwlarrHost(a.cfg.Read().Prowlarr.URL, host)
-		},
+		EventBus:          a.EventBus(),
+		IsIndexerHost:     a.isConfiguredIndexerHost,
 		EventRegistry:     a.EventRegistry(),
 		FlowActions:       a.FlowsActions(),
 		ReadRuntimeConfig: func() config.Plugins { return a.cfg.Read().Plugins },
@@ -325,7 +323,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	log := a.log.With("component", "plugins-remote")
 	tunnel := remote.NewTunnelServer(remote.TunnelOptions{Auth: auth, Logger: log})
-	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), Logger: log}
+	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), CheckHost: mgr.CheckIndexerNetwork, Logger: log}
 	mgr.RegisterRuntime("remote", factory.RuntimeFactory())
 	mgr.SetSidecarState(factory.SidecarState)
 	// A sidecar that (re)connects is checked at once, so the console does
@@ -471,7 +469,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		probeStream = a.sourceProber.Probe
 	}
 	var pluginNZBs adapters.PluginNZBStore
-	if a.indexers != nil {
+	if a.indexers != nil && a.opts.FixtureMedia == nil {
 		pluginNZBs = a.indexers
 	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
@@ -824,8 +822,44 @@ func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.Kin
 	return &t, nil
 }
 
-// Prowlarr's API is reserved even when it has no imported indexer rows.
-func configuredProwlarrHost(rawURL, host string) bool {
+// isConfiguredIndexerHost reserves plugin egress to configured API hosts.
+func (a *App) isConfiguredIndexerHost(host string) bool {
+	if a.cfg == nil {
+		return false
+	}
+	if matchesIndexerHost(a.cfg.Read().Prowlarr.URL, host) {
+		return true
+	}
+	if a.indexers == nil {
+		return false
+	}
+	if a.indexers.IsIndexerHost(host) {
+		return true
+	}
+	if a.sites == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	for _, client := range a.indexers.Clients() {
+		cfg := client.Config()
+		if !cfg.IsBuiltin() {
+			continue
+		}
+		site, err := a.sites.Definition(ctx, cfg.Definition)
+		if err != nil {
+			continue
+		}
+		for _, link := range site.Links {
+			if matchesIndexerHost(link, host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchesIndexerHost(rawURL, host string) bool {
 	u, err := url.Parse(rawURL)
-	return err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
+	return err == nil && u.Hostname() != "" && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }

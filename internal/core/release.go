@@ -155,6 +155,7 @@ type Release struct {
 	// the addon answered with; it and StreamHeaders (request headers the
 	// addon requires) can carry the addon's credentials, so they never
 	// leave the server. StreamOrigin is the owner-configured addon origin
+	PluginStream bool `json:"-"` // direct HTTP link supplied by an Ether plugin
 	// (scheme://host:port), the only private address the URL may reach.
 	StreamProvider string            `json:"streamProvider,omitempty"` // stored provider connection budget
 	StreamURL      string            `json:"streamUrl,omitempty"`

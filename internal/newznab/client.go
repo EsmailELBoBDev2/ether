@@ -11,9 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/logredact"
-	"github.com/braedonsaunders/ether/internal/nzb"
-	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,8 +32,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/events"
+	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/safefetch"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 const (
@@ -162,8 +162,7 @@ type Client struct {
 	// racing warm-up, playback and validation spend one grab.
 	nzbFlightMu      sync.Mutex
 	nzbFlights       map[string]*nzbFlight
-	nzbRefusals      map[string]error
-	nzbRefusalDay    string
+	nzbRefusals      map[string]time.Time
 	nzbStoreFailures map[string]struct{}
 
 	cfgMu            sync.RWMutex
@@ -188,6 +187,7 @@ type nzbFlight struct {
 	body       []byte
 	err        error
 	cached     bool
+	keep       bool // a plugin caller needs the grab persisted even if it leaves
 	background bool // started by a background check (smaller grab share)
 	waiters    int
 	readers    int
@@ -2177,9 +2177,7 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 		select {
 		case <-f.done:
 		case <-ctx.Done():
-			// The shared fetch carries on for the other callers; once
-			// none is left it is cancelled (a losing health check must
-			// not finish a grab nobody will read).
+			// An abandoned plugin grab can still reach the vault for its retry.
 			c.leaveNZB(r.ID, f)
 			return nil, leader, ctx.Err()
 		}
@@ -2221,7 +2219,7 @@ func (c *Client) leaveNZB(id string, f *nzbFlight) {
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
 	f.readers--
-	if f.readers > 0 {
+	if f.readers > 0 || f.keep {
 		return
 	}
 	select {
@@ -2237,13 +2235,14 @@ func (c *Client) leaveNZB(id string, f *nzbFlight) {
 
 // joinNZBFlight attaches to the in-flight fetch for r.ID, or starts one.
 // The shared fetch keeps ctx's values (budget class, trust) but not its
-// cancellation: it ends when the last caller leaves (leaveNZB), and is
-// bounded by nzbFlightTimeout. The flight is forgotten as soon as it ends,
-// so errors are not cached past it.
+// cancellation. Plugin grabs can finish after the last caller leaves.
+// Every fetch is bounded by nzbFlightTimeout.
 func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight, bool) {
+	id := r.ID
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
-	if f, ok := c.nzbFlights[r.ID]; ok {
+	if f, ok := c.nzbFlights[id]; ok {
+		f.keep = f.keep || isPluginNZB(ctx)
 		f.waiters++
 		f.readers++
 		return f, false
@@ -2252,41 +2251,69 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 		c.nzbFlights = map[string]*nzbFlight{}
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nzbFlightTimeout)
-	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), waiters: 1, readers: 1, cancel: cancel}
-	c.nzbFlights[r.ID] = f
+	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), keep: isPluginNZB(ctx), waiters: 1, readers: 1, cancel: cancel}
+	c.nzbFlights[id] = f
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
 				f.err = fmt.Errorf("newznab: fetch NZB panic: %v", p)
 			}
 			c.nzbFlightMu.Lock()
-			if c.nzbFlights[r.ID] == f {
-				delete(c.nzbFlights, r.ID)
+			if c.nzbFlights[id] == f {
+				delete(c.nzbFlights, id)
 			}
 			c.nzbFlightMu.Unlock()
 			close(f.done)
 			cancel()
 		}()
-		started := time.Now()
-		var reserved bool
-		if body, err := c.keptNZB(fctx, r); err != nil || body != nil {
+		// A known vault hit never waits for another indexer grab.
+		loadKept := func() bool {
+			body, err := c.keptNZB(fctx, r)
+			if body == nil && err == nil {
+				return false
+			}
 			f.body, f.cached, f.err = body, body != nil, err
 			if body != nil {
 				c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
 			}
+			return true
+		}
+		if loadKept() {
 			return
 		}
-		if f.err = c.nzbRefusal(r); f.err != nil {
+		// Recheck after taking the shared lock. Another node may have
+		// saved the release while this caller waited.
+		unlock, err := c.lockNZBGrab(fctx, id)
+		if err != nil {
+			f.err = err
+			return
+		}
+		if unlock != nil {
+			defer unlock()
+			if loadKept() {
+				return
+			}
+		}
+		started := time.Now()
+		var reserved bool
+
+		if f.err = c.nzbRefusal(fctx, r); f.err != nil {
 			return
 		}
 		f.body, reserved, f.err = c.fetchNZB(fctx, r)
 		c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		now := c.now()
+		refusal := ClassifyGrabRefusal(f.err, now)
 		var apiErr *APIError
-		if errors.As(f.err, &apiErr) && apiErr.Code == http.StatusConflict {
+		if refusal == nil && isPluginNZB(fctx) && errors.As(f.err, &apiErr) && apiErr.Code == http.StatusConflict {
+			refusal = &GrabRefusal{RetryAt: now.Add(defaultRateLimitPause)}
+		}
+		if refusal != nil {
 			f.body, f.err = c.keptNZB(fctx, r)
+			f.cached = f.body != nil
 			if f.body == nil && f.err == nil {
-				f.err = core.ErrReleaseRejected
-				c.rememberNZBRefusal(r.ID, f.err)
+				f.err = refusal
+				c.rememberNZBRefusal(fctx, r, refusal.RetryAt)
 			}
 		}
 	}()
@@ -2662,21 +2689,21 @@ func (c *Client) keptNZB(ctx context.Context, r core.Release) ([]byte, error) {
 		}
 		return read(key)
 	}
-	guidID := ""
-	if r.GUID != "" {
-		guidID = releaseID(c.indexerID(), r.GUID, "")
+	ids := []string{r.ID}
+	if isPluginNZB(ctx) {
+		ids = c.nzbIdentities(r)
 	}
-	for _, id := range []string{r.ID, guidID, c.nzbLinkAlias(r.NZBURL)} {
+	for _, id := range ids {
 		if body, err := lookup(c.indexerID(), id); body != nil || err != nil {
 			return body, err
 		}
 	}
-	if strings.HasPrefix(r.ContentID, nzb.ContentIDPrefix) {
+	if isPluginNZB(ctx) && strings.HasPrefix(r.ContentID, nzb.ContentIDPrefix) {
 		if body, err := read(vault.Key(r.ContentID)); !errors.Is(err, vault.ErrNotFound) {
 			return body, err
 		}
 	}
-	if names, ok := c.vault.(vault.NZBIdentityLookup); ok && r.Name != "" && r.Size > 0 {
+	if names, ok := c.vault.(vault.NZBIdentityLookup); ok && isPluginNZB(ctx) && r.Name != "" && r.Size > 0 {
 		key, found, err := names.ByNZBName(ctx, r.Name, r.Size)
 		if err != nil {
 			return nil, err
@@ -2704,13 +2731,7 @@ func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
 	}
 	r.IndexerID = c.indexerID()
 	private := c.publicIndexer == nil || !c.publicIndexer(ctx, c.Config())
-	var aliases []string
-	if alias := c.nzbLinkAlias(r.NZBURL); alias != "" {
-		aliases = append(aliases, alias)
-	}
-	if r.GUID != "" {
-		aliases = append(aliases, releaseID(r.IndexerID, r.GUID, ""))
-	}
+	aliases := c.nzbIdentities(r)[1:]
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	if _, err := c.vault.Put(writeCtx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body, Aliases: aliases}); err != nil {

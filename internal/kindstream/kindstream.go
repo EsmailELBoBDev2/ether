@@ -259,6 +259,7 @@ func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSo
 }
 
 func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool {
+	cand = NormalizeNZBSource(cand)
 	if strings.TrimSpace(cand.BlobRef) != "" {
 		return false
 	}

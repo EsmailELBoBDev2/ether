@@ -482,6 +482,10 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentRef != "":
+		return "torrentref:" + c.TorrentRef
+	case c.NZBRef != "":
+		return "nzbref:" + c.NZBRef
 	case c.TorrentURL != "":
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":

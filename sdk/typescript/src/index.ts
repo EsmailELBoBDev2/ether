@@ -139,6 +139,7 @@ export {
 } from "./testing.ts";
 export {
   candidateRef,
+  requestNzb,
   streamUrl,
   kindsVisible,
   kindsBrowse,

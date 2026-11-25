@@ -1236,8 +1236,13 @@ export interface QualityDevices {
   /** Kinds of device: "tv", "mobile", "computer". `aliases` are extra search words ("iPad", "Shield"). */
   groups: { id: string; name: string; aliases?: string[] }[] | null;
   types: { id: string; name: string; group: string; aliases?: string[] }[] | null;
-  /** `aliases`: the devices an app runs on and their other names. */
-  apps: { id: string; name: string; protocol?: string; aliases?: string[] }[] | null;
+  /**
+   * devices: the device types the app runs on. aliases: those devices and
+   * their other names, for search ("iPad" finds Swiftfin).
+   */
+  apps:
+    | { id: string; name: string; protocol?: string; devices?: string[]; aliases?: string[] }[]
+    | null;
   /** Devices the server has seen. */
   clients:
     | {

@@ -673,9 +673,9 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 }
 
 // KindVersions lists the playable version menu of a plugin kind item in the
-// same W152 shape catalogue VersionSlots uses: index 0 is the synthetic Auto
-// slot (backed by the viewer's remembered choice when matched, else the
-// plugin's first source), followed by the remaining distinct /resolve sources.
+// W152 shape: index 0 is the synthetic Auto slot (backed by the viewer's
+// remembered choice when matched, else the plugin's first source), followed by
+// every distinct /resolve source as an explicit row, Auto's pick included.
 // When allowResolve is false or ctx carries LocalResponse, only cached
 // candidates are inspected and the plugin's /resolve endpoint is never called.
 func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey, accept []string, allowResolve bool) ([]core.ReleaseVariant, error) {
@@ -788,7 +788,7 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 	if lbl := strings.TrimSpace(autoEntry.Label); lbl != "" {
 		autoLabel = "Auto · " + lbl
 	}
-	capLen := min(len(entries), core.MaxVariants)
+	capLen := min(len(entries)+1, core.MaxVariants)
 	variants := make([]core.ReleaseVariant, 0, capLen)
 	variants = append(variants, core.ReleaseVariant{
 		ID:               core.KindAutoVersionID,
@@ -801,14 +801,18 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 		Release:          autoEntry.Release,
 		Info:             autoEntry.Info,
 	})
-	for i, e := range entries {
-		if i == autoIdx {
-			continue
-		}
+	// Every source, Auto's current pick included, stays its own explicit
+	// row: picking it forces that release, while Auto keeps failing over
+	// (a 4K pick whose articles are gone must not hide the 4K choice).
+	for _, e := range entries {
 		if len(variants) >= core.MaxVariants {
 			break
 		}
 		variants = append(variants, e.variant)
+	}
+	if autoIdx >= len(variants)-1 && len(variants) == core.MaxVariants {
+		// A remembered pick past the menu bound keeps its explicit row.
+		variants[len(variants)-1] = entries[autoIdx].variant
 	}
 	return variants, nil
 }

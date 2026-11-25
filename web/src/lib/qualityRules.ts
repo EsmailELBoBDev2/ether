@@ -1,4 +1,5 @@
 import { t } from "../i18n";
+import { formatNumber } from "./format";
 import type { DeviceMatch, EtherConfig, QualityDevices, QualityLimits, QualityRule } from "./types";
 
 type Quality = EtherConfig["quality"];
@@ -36,6 +37,9 @@ export const resolutionName = (height: number) => (height >= 2160 ? "4K" : `${he
 /** Kbps as Mbps with at most one decimal. */
 export const mbps = (kbps: number) => Math.round(kbps / 100) / 10;
 
+/** Kbps as Mbps text with the active language's decimal separator: "4,9" in pt-BR. */
+export const mbpsText = (kbps: number) => formatNumber(mbps(kbps), 1);
+
 export function ruleHasLimits(r: QualityLimits): boolean {
   return Boolean(r.maxHeight || r.maxBitrateKbps || r.stereoAudio);
 }
@@ -53,7 +57,7 @@ export function tidyLimits(l: QualityLimits | null | undefined): QualityLimits {
 export function ruleLimits(r: QualityLimits): string[] {
   return [
     r.maxHeight ? `≤ ${resolutionName(r.maxHeight)}` : "",
-    r.maxBitrateKbps ? t("≤ {n} Mbps", { n: mbps(r.maxBitrateKbps) }) : "",
+    r.maxBitrateKbps ? t("≤ {n} Mbps", { n: mbpsText(r.maxBitrateKbps) }) : "",
     r.stereoAudio ? t("Stereo") : "",
   ].filter(Boolean);
 }
@@ -207,7 +211,88 @@ function deviceKeyWithin(outer: string, inner: string, devices: QualityDevices |
         (client.app && outer === `app:${client.app}`)),
     );
   }
+  if (field === "app") {
+    // An app is inside a device type or kind when every device it runs on is.
+    const reach = deviceReach(inner, devices);
+    const [of] = splitKey(outer);
+    if (of === "type") return reach.types?.size === 1 && outer === `type:${[...reach.types][0]}`;
+    if (of === "group")
+      return reach.groups?.size === 1 && outer === `group:${[...reach.groups][0]}`;
+  }
   return false;
+}
+
+function splitKey(key: string): [field: string, id: string] {
+  const at = key.indexOf(":");
+  return [key.slice(0, at), key.slice(at + 1)];
+}
+
+/**
+ * Where a device condition can match: the apps, device types and kinds of
+ * device it is limited to. null is "not limited" (or not known).
+ */
+interface DeviceReach {
+  client?: string;
+  apps: Set<string> | null;
+  types: Set<string> | null;
+  groups: Set<string> | null;
+}
+
+function groupsOfTypes(types: Set<string> | null, devices: QualityDevices | null) {
+  if (!types) return null;
+  const groups = new Set<string>();
+  for (const id of types) {
+    const group = devices?.types?.find((x) => x.id === id)?.group;
+    if (!group) return null;
+    groups.add(group);
+  }
+  return groups;
+}
+
+function deviceReach(key: string, devices: QualityDevices | null): DeviceReach {
+  const [field, id] = splitKey(key);
+  const any: DeviceReach = { apps: null, types: null, groups: null };
+  if (field === "group") return { ...any, groups: new Set([id]) };
+  if (field === "type") {
+    const types = new Set([id]);
+    return { ...any, types, groups: groupsOfTypes(types, devices) };
+  }
+  if (field === "app") {
+    const runsOn = devices?.apps?.find((x) => x.id === id)?.devices;
+    const types = runsOn?.length ? new Set(runsOn) : null;
+    return { apps: new Set([id]), types, groups: groupsOfTypes(types, devices) };
+  }
+  if (field === "client") {
+    const client = devices?.clients?.find((x) => x.id === id);
+    return {
+      client: id,
+      apps: client?.app ? new Set([client.app]) : null,
+      types: client?.type ? new Set([client.type]) : null,
+      groups: client?.group ? new Set([client.group]) : null,
+    };
+  }
+  return any;
+}
+
+/**
+ * The catalogue entries a "name contains" match (from a 0.3.20 rule) stands
+ * for: a device type it names, or the apps whose name contains it. Empty
+ * when it names nothing the catalogue knows, so it may match anything.
+ */
+function containsStandsFor(text: string, devices: QualityDevices | null): string[] {
+  const want = text.trim().toLowerCase();
+  if (!want) return [];
+  const type = devices?.types?.find(
+    (x) => x.id.toLowerCase() === want || x.name.toLowerCase() === want,
+  );
+  const apps = (devices?.apps ?? [])
+    .filter((x) => x.name.toLowerCase().includes(want))
+    .map((x) => `app:${x.id}`);
+  return type ? [`type:${type.id}`, ...apps] : apps;
+}
+
+function disjoint(a: Set<string> | null, b: Set<string> | null): boolean {
+  return Boolean(a && b && ![...a].some((v) => b.has(v)));
 }
 
 /** Whether rule a matches every play rule b matches. Unsure counts as no. */
@@ -259,17 +344,26 @@ function listOverlaps(a: string[], aExcept: boolean, b: string[], bExcept: boole
   return a.some((v) => !b.includes(v));
 }
 
+/** Whether two device conditions can both match one device. Unsure counts as yes. */
 function deviceKeyOverlaps(a: string, b: string, devices: QualityDevices | null): boolean {
-  if (deviceKeyWithin(a, b, devices) || deviceKeyWithin(b, a, devices)) return true;
-  const [af, aid] = [a.slice(0, a.indexOf(":")), a.slice(a.indexOf(":") + 1)];
-  const [bf, bid] = [b.slice(0, b.indexOf(":")), b.slice(b.indexOf(":") + 1)];
-  if (af === "contains" || bf === "contains") return true;
-  // Two distinct groups, types, or exact clients don't overlap; an app can run on many device types/groups.
-  if (af === "app" || bf === "app") {
-    if (af === "app" && bf === "app") return aid === bid;
-    return true;
+  if (a === b) return true;
+  for (const [text, other] of [
+    [a, b],
+    [b, a],
+  ] as const) {
+    if (!text.startsWith("contains:")) continue;
+    const stands = containsStandsFor(text.slice("contains:".length), devices);
+    if (!stands.length) return true;
+    return stands.some((key) => deviceKeyOverlaps(key, other, devices));
   }
-  return false;
+  const ra = deviceReach(a, devices);
+  const rb = deviceReach(b, devices);
+  if (ra.client && rb.client) return false;
+  return !(
+    disjoint(ra.apps, rb.apps) ||
+    disjoint(ra.types, rb.types) ||
+    disjoint(ra.groups, rb.groups)
+  );
 }
 
 function devicesOverlap(
@@ -291,7 +385,7 @@ function devicesOverlap(
 }
 
 /** Whether rules a and b can match the same play. */
-function overlaps(a: QualityRule, b: QualityRule, devices: QualityDevices | null): boolean {
+function rulesOverlap(a: QualityRule, b: QualityRule, devices: QualityDevices | null): boolean {
   if (a.where && b.where && a.where !== b.where) return false;
   if (a.kind && b.kind && a.kind !== b.kind) return false;
   const ids = (list: number[] | null | undefined) => (list ?? []).map(String);
@@ -320,46 +414,87 @@ function overlaps(a: QualityRule, b: QualityRule, devices: QualityDevices | null
   );
 }
 
+const WHERES = ["home", "away"] as const;
+const KINDS = ["movie", "episode"] as const;
+
 /**
- * The 0-based position of an earlier rule whose profile always wins over
- * this rule's, or -1. Such a rule never picks a profile; its limits still apply.
+ * The earlier rules that between them pick the profile for every play this
+ * rule matches, as 0-based positions in `earlier`; empty when the rule can
+ * still pick one. Several rules can do it together: a Movies rule and an
+ * Episodes rule above leave nothing for a rule that covers both.
  */
-export function shadowedBy(
-  rules: QualityRule[],
-  index: number,
+function winners(
+  earlier: QualityRule[],
+  rule: QualityRule,
   devices: QualityDevices | null,
-  draft?: QualityRule,
-): number {
-  const rule = draft ?? rules[index];
-  if (!rule?.profile) return -1;
-  for (let i = 0; i < Math.min(index, rules.length); i++) {
-    const earlier = rules[i]!;
-    if (earlier.profile && covers(earlier, rule, devices)) return i;
+): number[] {
+  const out = new Set<number>();
+  for (const where of rule.where ? [rule.where] : WHERES) {
+    for (const kind of rule.kind ? [rule.kind] : KINDS) {
+      const part = { ...rule, where, kind };
+      const first = earlier.findIndex((e) => Boolean(e.profile) && covers(e, part, devices));
+      if (first < 0) return [];
+      out.add(first);
+    }
   }
-  return -1;
+  return [...out].sort((x, y) => x - y);
+}
+
+/** How a rule stands against the rules above it. Positions are 0-based in `earlier`. */
+export interface RuleStanding {
+  /**
+   * The earlier rules that pick the profile for every play this rule
+   * matches. Not empty: this rule never picks a profile (its limits still apply).
+   */
+  shadowedBy: number[];
+  /** Earlier rules that pick a different profile for some of its plays. */
+  overlaps: number[];
 }
 
 /**
- * Earlier rules with a profile that overlap this rule (so they decide first
- * for some or all plays this rule matches).
+ * Which rules above a rule decide before it does. Only rules that can match
+ * the same plays and give a different result count: a rule for other
+ * devices, or one that itself never gets to pick, is left out.
  */
-export function overlappingRules(
+export function ruleStanding(
+  earlier: QualityRule[],
+  rule: QualityRule | undefined,
+  devices: QualityDevices | null,
+): RuleStanding {
+  if (!rule?.profile) return { shadowedBy: [], overlaps: [] };
+  const shadowedBy = winners(earlier, rule, devices);
+  // Above a rule that always wins, an overlap still matters once this rule moves up.
+  const limit = shadowedBy.length ? shadowedBy[0]! : earlier.length;
+  const overlaps: number[] = [];
+  for (let i = 0; i < limit; i++) {
+    const e = earlier[i]!;
+    if (!e.profile || e.profile === rule.profile) continue;
+    if (!rulesOverlap(e, rule, devices)) continue;
+    if (winners(earlier.slice(0, i), e, devices).length) continue;
+    overlaps.push(i);
+  }
+  return { shadowedBy, overlaps };
+}
+
+/** Whether a rule in the list never picks a profile because rules above it always do first. */
+export function neverPicksProfile(
   rules: QualityRule[],
   index: number,
   devices: QualityDevices | null,
-  draft?: QualityRule,
-): { index: number; rule: QualityRule; coversAll: boolean }[] {
-  const rule = draft ?? rules[index];
-  if (!rule?.profile) return [];
-  const out: { index: number; rule: QualityRule; coversAll: boolean }[] = [];
-  for (let i = 0; i < Math.min(index, rules.length); i++) {
-    const earlier = rules[i]!;
-    if (!earlier.profile) continue;
-    if (overlaps(earlier, rule, devices)) {
-      out.push({ index: i, rule: earlier, coversAll: covers(earlier, rule, devices) });
-    }
-  }
-  return out;
+): boolean {
+  const rule = rules[index];
+  return Boolean(rule?.profile) && winners(rules.slice(0, index), rule!, devices).length > 0;
+}
+
+/**
+ * Where a new rule goes: above the first rule that picks a profile for
+ * anyone on any device (a library, Movies or Away rule). Below such a
+ * catch-all a new rule would never pick a profile. With none, it goes last,
+ * just above the two fallback rows.
+ */
+export function defaultRulePosition(rules: QualityRule[]): number {
+  const broad = rules.findIndex((r) => r.profile && !r.viewers?.length && !r.devices?.length);
+  return broad >= 0 ? broad : rules.length;
 }
 
 /** The two rows fixed at the bottom of the rule list. */

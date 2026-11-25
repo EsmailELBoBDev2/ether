@@ -22,6 +22,7 @@ import { relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import {
   awaySameAsHome,
+  defaultRulePosition,
   deviceFromKey,
   deviceKey,
   deviceLabel,
@@ -29,10 +30,10 @@ import {
   fallbackTitle,
   matchesSummary,
   mbps,
-  overlappingRules,
   ruleHasLimits,
   ruleLimits,
   ruleOrigin,
+  ruleStanding,
   ruleTitle,
   tidyLimits,
   tidyRule,
@@ -52,6 +53,11 @@ type ListKey = "libraries" | "viewers" | "devices";
 export interface RuleTarget {
   index: number;
   rule: QualityRule;
+  /**
+   * Where a new rule starts in the list (0 is the top). Left out, it starts
+   * above the first catch-all rule: see defaultRulePosition.
+   */
+  at?: number;
   /** Opened from a library's page: the Library condition starts as only that library. */
   lockLibrary?: number;
   /** Opened from a viewer's page: the Who condition starts as only that viewer. */
@@ -230,6 +236,8 @@ export function RuleEditor({
     devices: "any",
   });
   const [locked, setLocked] = useState({ library: false, viewer: false });
+  /** Where the rule sits among the other rules once saved; 0 is the top. */
+  const [at, setAt] = useState(0);
   /** The away fallback row only: away plays get exactly what they get at home. */
   const [sameAsHome, setSameAsHome] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
@@ -259,6 +267,12 @@ export function RuleEditor({
         rule.viewers[0] === target.lockViewer,
     });
     setSameAsHome(target.fallback === "away" && awaySameAsHome(quality));
+    const list = quality.rules ?? [];
+    setAt(
+      target.index < list.length
+        ? Math.max(0, target.index)
+        : Math.min(target.at ?? defaultRulePosition(list), list.length),
+    );
     setErrors({});
     setError(null);
     // Keyed on the target alone: the drawer keeps its draft while the list reloads.
@@ -269,6 +283,10 @@ export function RuleEditor({
   const index = target?.index ?? rules.length;
   const fallback = target?.fallback;
   const isNew = !fallback && index >= rules.length;
+  /** Every rule but this one, in order: `at` is a position among these. */
+  const others = isNew || fallback ? rules : rules.filter((_, j) => j !== index);
+  /** The number a rule in `others` has in the list as it is now. */
+  const numberOf = (i: number) => (isNew || fallback || i < index ? i + 1 : i + 2);
   const set = (patch: Partial<QualityRule>) => setDraft((d) => (d ? { ...d, ...patch } : d));
   const setMode = (key: ListKey, mode: Mode) => {
     setModes((m) => ({ ...m, [key]: mode }));
@@ -337,7 +355,7 @@ export function RuleEditor({
       setErrors(next);
       return;
     }
-    const list = isNew ? [...rules, rule] : rules.map((r, j) => (j === index ? rule : r));
+    const list = [...others.slice(0, at), rule, ...others.slice(at)];
     setSaving(true);
     setError(null);
     setErrors({});
@@ -347,7 +365,7 @@ export function RuleEditor({
       onClose();
     } catch (e) {
       setError(e);
-      setErrors(recordErrors(e, `quality.rules[${index}].`));
+      setErrors(recordErrors(e, `quality.rules[${at}].`));
     } finally {
       setSaving(false);
     }
@@ -409,9 +427,36 @@ export function RuleEditor({
   );
 
   const preview = draft ? localizedRule(settled(draft)) : null;
-  const overlaps =
-    preview && !fallback ? overlappingRules(rules, index, devices.data ?? null, preview) : [];
+  const standing =
+    preview && !fallback
+      ? ruleStanding(others.slice(0, at), preview, devices.data ?? null)
+      : { shadowedBy: [], overlaps: [] };
   const home = fallbackRule(quality, "home");
+  const nameOf = (i: number) => ruleTitle(localizedRule(others[i]!), names);
+
+  /** "Insert before rule N" and "Open rule N" for a rule that decides first. */
+  const firstActions = (i: number, open: boolean) => (
+    <span className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <button
+        type="button"
+        className="text-xs font-medium text-primary underline"
+        onClick={() => setAt(i)}
+      >
+        {isNew
+          ? t("Insert before rule {n}", { n: numberOf(i) })
+          : t("Move before rule {n}", { n: numberOf(i) })}
+      </button>
+      {open && onOpenRule ? (
+        <button
+          type="button"
+          className="text-xs font-medium text-primary underline"
+          onClick={() => onOpenRule(rules.indexOf(others[i]!))}
+        >
+          {t("Open rule {n}", { n: numberOf(i) })}
+        </button>
+      ) : null}
+    </span>
+  );
 
   const drawerSummary = fallback ? undefined : preview ? (
     <div className="space-y-2">
@@ -422,38 +467,52 @@ export function RuleEditor({
         <span className="mr-2 font-medium text-fg">{t("Matches")}</span>
         <span>{matchesSummary(preview, names)}</span>
       </div>
-      {overlaps.map(({ index: i, rule: earlier, coversAll }) => {
-        const earlierTitle = ruleTitle(localizedRule(earlier), names);
-        return (
-          <Alert key={earlier.id || i} variant="warning">
-            <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-              <span>
-                {coversAll
-                  ? t(
-                      "Rule {n} “{name}” comes first for all of these, so this rule never picks a profile. Its limits still apply.",
-                      { n: i + 1, name: earlierTitle },
-                    )
-                  : t("Rule {n} “{name}” comes first: those plays get {profile}.", {
-                      n: i + 1,
-                      name: earlierTitle,
-                      profile: earlier.profile ?? "",
-                    })}
-              </span>
-              {onOpenRule ? (
-                <button
-                  type="button"
-                  className="shrink-0 text-xs font-medium text-primary underline"
-                  onClick={() => onOpenRule(i)}
-                >
-                  {t("Open rule {n}", { n: i + 1 })}
-                </button>
-              ) : null}
-            </AlertDescription>
-          </Alert>
-        );
-      })}
+      {standing.shadowedBy.length ? (
+        <Alert variant="warning" data-testid="rule-shadowed">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {standing.shadowedBy.length === 1
+                ? t(
+                    "Rule {n} “{name}” comes first for all of these, so this rule never picks a profile. Its limits still apply.",
+                    { n: numberOf(standing.shadowedBy[0]!), name: nameOf(standing.shadowedBy[0]!) },
+                  )
+                : t(
+                    "Rules {numbers} come first for all of these, so this rule never picks a profile. Its limits still apply.",
+                    { numbers: standing.shadowedBy.map(numberOf).join(", ") },
+                  )}
+            </span>
+            {firstActions(standing.shadowedBy[0]!, standing.shadowedBy.length === 1)}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {standing.overlaps.map((i) => (
+        <Alert key={others[i]!.id || i} variant="warning">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {t("Rule {n} “{name}” comes first: those plays get {profile}.", {
+                n: numberOf(i),
+                name: nameOf(i),
+                profile: others[i]!.profile ?? "",
+              })}
+            </span>
+            {firstActions(i, true)}
+          </AlertDescription>
+        </Alert>
+      ))}
     </div>
   ) : undefined;
+
+  const positionOptions = others.length
+    ? Array.from({ length: others.length + 1 }, (_, i) => ({
+        value: String(i),
+        label:
+          i === 0
+            ? t("Top")
+            : i === others.length
+              ? t("Bottom")
+              : t("Above rule {n}: {name}", { n: numberOf(i), name: nameOf(i) }),
+      }))
+    : [];
 
   return (
     <RecordDrawer
@@ -508,6 +567,23 @@ export function RuleEditor({
                   error={errors.name}
                   onChange={(v) => set({ name: v })}
                 />
+                {positionOptions.length ? (
+                  <SettingsRow
+                    title={t("Position")}
+                    description={t("Rules are checked from the top.")}
+                    control={
+                      <div className="w-72 max-w-full">
+                        <SearchSelect
+                          {...searchSelectLabels()}
+                          value={String(at)}
+                          onChange={(v) => setAt(Number(v))}
+                          options={positionOptions}
+                          ariaLabel={t("Position")}
+                        />
+                      </div>
+                    }
+                  />
+                ) : null}
               </SettingsSection>
 
               <SettingsSection title={t("When")}>

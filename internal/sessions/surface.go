@@ -150,6 +150,16 @@ func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, i
 	return core.Decision{}, core.ErrNotAvailable
 }
 
+func (s surface) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
+	if a.Protocol != s.protocol {
+		return core.Release{}, core.MediaInfo{}, core.ErrUnauthorized
+	}
+	if reader, ok := s.broker.(frontend.PlayingReleaseReader); ok {
+		return reader.PlayingRelease(ctx, a, id)
+	}
+	return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
+}
+
 func (s surface) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id string, index int, format string) (string, error) {
 	if a.Protocol != s.protocol {
 		return "", core.ErrUnauthorized

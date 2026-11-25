@@ -1,11 +1,21 @@
-import { Alert, AlertDescription, Badge, Button, cn } from "@braedonsaunders/appkit-ui";
+import {
+  Alert,
+  AlertDescription,
+  Badge,
+  Button,
+  cn,
+  promptDialog,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import {
   ArrowRight,
+  ArrowUpToLine,
   Clapperboard,
   Globe,
   History,
   Home,
   Library as LibraryIcon,
+  ListOrdered,
   Lock,
   Monitor,
   MonitorSmartphone,
@@ -32,8 +42,8 @@ import {
   ruleConditions,
   ruleLimits,
   ruleOrigin,
+  neverPicksProfile,
   ruleTitle,
-  shadowedBy,
   type ConditionKind,
   type FallbackRow,
 } from "../../lib/qualityRules";
@@ -180,6 +190,31 @@ export function RulesTab() {
     }
   }
 
+  /** Moves the rule at `from` so it becomes rule number `to + 1`. */
+  function moveTo(from: number, to: number) {
+    if (to === from || to < 0 || to >= rules.length) return;
+    const next = [...rules];
+    const [rule] = next.splice(from, 1);
+    next.splice(to, 0, rule!);
+    void reorder(next);
+  }
+
+  async function moveToPosition(from: number) {
+    const answer = await promptDialog({
+      title: t("Move rule {n}", { n: from + 1 }),
+      label: t("New position (1 to {max})", { max: rules.length }),
+      initialValue: String(from + 1),
+      confirmLabel: t("Move"),
+    });
+    if (answer === null) return;
+    const to = Number(answer);
+    if (!Number.isInteger(to) || to < 1 || to > rules.length) {
+      toast.error(t("Enter a position from 1 to {max}.", { max: rules.length }));
+      return;
+    }
+    moveTo(from, to - 1);
+  }
+
   const fixedRow = (row: FallbackRow) => {
     const same = row === "away" && awaySameAsHome(quality);
     const outcome = fallbackRule(quality, row);
@@ -289,7 +324,7 @@ export function RulesTab() {
               const title = ruleTitle(r, names);
               const named = Boolean(raw.name?.trim());
               const label = t("rule {n}", { n: i + 1 });
-              const never = shadowedBy(rules, i, devices.data ?? null) >= 0;
+              const never = neverPicksProfile(rules, i, devices.data ?? null);
               return (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-3 py-3 sm:px-5">
                   <span className="flex w-10 shrink-0 items-center gap-1">
@@ -326,17 +361,37 @@ export function RulesTab() {
                     {never ? <Badge variant="warning">{t("Never picks a profile")}</Badge> : null}
                   </span>
                   <span className="flex items-center gap-1">
-                    <OrderButtons
-                      label={label}
-                      i={i}
-                      n={rules.length}
-                      disabled={moved !== null}
-                      onMove={(d) => {
-                        const next = [...rules];
-                        [next[i], next[i + d]] = [next[i + d]!, next[i]!];
-                        void reorder(next);
-                      }}
-                    />
+                    <span className="flex">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        onClick={() => moveTo(i, 0)}
+                        disabled={moved !== null || i === 0}
+                        aria-label={t("Move {name} to top", { name: label })}
+                        title={t("Move to top")}
+                      >
+                        <ArrowUpToLine size={14} />
+                      </Button>
+                      <OrderButtons
+                        label={label}
+                        i={i}
+                        n={rules.length}
+                        disabled={moved !== null}
+                        onMove={(d) => moveTo(i, i + d)}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        onClick={() => void moveToPosition(i)}
+                        disabled={moved !== null || rules.length < 2}
+                        aria-label={t("Move {name} to position…", { name: label })}
+                        title={t("Move to position…")}
+                      >
+                        <ListOrdered size={14} />
+                      </Button>
+                    </span>
                     <Button
                       variant="outline"
                       size="sm"

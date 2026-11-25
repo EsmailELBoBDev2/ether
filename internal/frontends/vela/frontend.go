@@ -830,7 +830,13 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		// waiters before the panic propagates.
 		if p := recover(); p != nil {
 			if claimed {
-				_ = i.release(pctx, key)
+				// A fresh bound: the claim's context may have expired while
+				// the handler ran.
+				rctx, rcancel := persistContext(r)
+				if err := i.release(rctx, key); err != nil {
+					slog.Warn("vela replay claim not released", "route", r.Pattern, "err", err)
+				}
+				rcancel()
 			}
 			entry.status = http.StatusInternalServerError
 			close(entry.done)
@@ -860,9 +866,17 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	} else {
 		claimed = true
 		i.mux.ServeHTTP(out, r)
+		// The claim's 5 s bound covers the claim only: a slow handler (a
+		// release still being prepared) outlives it, and releasing or saving
+		// with that expired context left the key pending for the whole lease,
+		// so the protocol retry got 409 mutation_outcome_unknown.
+		sctx, scancel := persistContext(r)
+		defer scancel()
 		if releasable(r, out, r.Context().Err() != nil) {
-			_ = i.release(pctx, key)
-		} else if err := i.save(pctx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()}, time.Time{}); err != nil {
+			if err := i.release(sctx, key); err != nil {
+				slog.Warn("vela replay claim not released", "route", r.Pattern, "status", out.Code, "err", err)
+			}
+		} else if err := i.save(sctx, key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()}, time.Time{}); err != nil {
 			// The mutation's result is in hand: deliver it. The claim stays
 			// pending only until replayLease lapses, then the key runs again.
 			slog.Warn("vela replay not recorded", "route", r.Pattern, "status", out.Code, "err", err)

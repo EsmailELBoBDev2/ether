@@ -234,3 +234,38 @@ func TestViewerDirectoryMembershipStatuses(t *testing.T) {
 		}
 	}
 }
+
+type fakeActivityStats struct {
+	gotDays int
+	gotTZ   []int
+	days    []core.ActivityDay
+}
+
+func (f *fakeActivityStats) Activity(_ context.Context, days int, tzMinutes ...int) ([]core.ActivityDay, error) {
+	f.gotDays = days
+	f.gotTZ = append([]int(nil), tzMinutes...)
+	return f.days, nil
+}
+
+func TestInsightsActivityUsesStatsAndTimezone(t *testing.T) {
+	store := newStore(t, nil)
+	act := &fakeActivityStats{
+		days: []core.ActivityDay{{Date: "2026-11-24", Plays: 1027, Hours: 28.1, WatchedMS: 101_160_000, UniqueViewers: 5}},
+	}
+	h := admin.NewHandler(admin.Deps{
+		Config:          store,
+		IsOwnerToken:    storedOwner(store),
+		Personalization: &fakeEngine{},
+		ActivityStats:   act,
+	})
+	rec := serve(h, req(http.MethodGet, "/ether/api/insights/activity?tz=-300", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if act.gotDays != 30 || len(act.gotTZ) != 1 || act.gotTZ[0] != -300 {
+		t.Fatalf("ActivityStats called with days=%d tz=%v, want days=30 tz=[-300]", act.gotDays, act.gotTZ)
+	}
+	if !strings.Contains(rec.Body.String(), `"plays":1027,"hours":28.1,"watchedMs":101160000,"uniqueViewers":5`) {
+		t.Fatalf("unexpected body: %s", rec.Body)
+	}
+}

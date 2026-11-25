@@ -294,6 +294,9 @@ func (a *App) buildAdmin() http.Handler {
 		ListPlexUsers:         a.listPlexUsers,
 		Prerolls:              a.prerollAdmin(),
 	}
+	if a.stats != nil {
+		deps.ActivityStats = a.stats
+	}
 	if a.users != nil {
 		deps.EnsurePlexFriend = a.users.EnsurePlexFriend
 	}

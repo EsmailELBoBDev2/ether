@@ -151,6 +151,37 @@ describe("Overview", () => {
     expect(activitySection.querySelector(".max-h-56")).toBeNull();
   });
 
+  it("computes Overview 30-day hours from exact watchedMs and passes browser timezone", async () => {
+    const requestedUrls: string[] = [];
+    renderApp("/", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/insights/activity")) {
+          requestedUrls.push(url);
+          // 10 days of 150,000 ms each (2.5 min): each day rounds to 0.0 h,
+          // while summed watchedMs = 1,500,000 ms -> 0.4 h (matching Activity › Viewing).
+          const days = Array.from({ length: 10 }, (_, i) => ({
+            date: `2026-11-${String(i + 15).padStart(2, "0")}`,
+            plays: 2,
+            hours: 0,
+            watchedMs: 150_000,
+            uniqueViewers: i === 9 ? 3 : 1,
+          }));
+          return new Response(JSON.stringify({ days }), { status: 200 });
+        }
+        return original(input, init);
+      };
+    });
+    const activitySection = (
+      await screen.findByRole("heading", { name: "Activity · last 30 days" }, WAIT)
+    ).closest("section")!;
+    expect(await within(activitySection).findByText("0.4", {}, WAIT)).toBeInTheDocument();
+    expect(within(activitySection).getByText("20")).toBeInTheDocument();
+    expect(within(activitySection).getByText("3 viewers")).toBeInTheDocument();
+    expect(requestedUrls.some((u) => /[?&]tz=-?\d+/.test(u))).toBe(true);
+  });
+
   it("shows live server instruments: CPU, memory, network, GPU and Ether itself", async () => {
     const { fake } = renderApp("/");
     const server = (await screen.findByRole("heading", { name: "Server" }, WAIT)).closest(

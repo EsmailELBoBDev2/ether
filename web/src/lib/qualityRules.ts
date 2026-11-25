@@ -1,5 +1,5 @@
 import { t } from "../i18n";
-import type { DeviceMatch, EtherConfig, QualityDevices, QualityRule } from "./types";
+import type { DeviceMatch, EtherConfig, QualityDevices, QualityLimits, QualityRule } from "./types";
 
 type Quality = EtherConfig["quality"];
 
@@ -36,12 +36,21 @@ export const resolutionName = (height: number) => (height >= 2160 ? "4K" : `${he
 /** Kbps as Mbps with at most one decimal. */
 export const mbps = (kbps: number) => Math.round(kbps / 100) / 10;
 
-export function ruleHasLimits(r: QualityRule): boolean {
+export function ruleHasLimits(r: QualityLimits): boolean {
   return Boolean(r.maxHeight || r.maxBitrateKbps || r.stereoAudio);
 }
 
+/** Only the limits that are set, as the server stores them. */
+export function tidyLimits(l: QualityLimits | null | undefined): QualityLimits {
+  const out: QualityLimits = {};
+  if (l?.maxHeight) out.maxHeight = l.maxHeight;
+  if (l?.maxBitrateKbps) out.maxBitrateKbps = l.maxBitrateKbps;
+  if (l?.stereoAudio) out.stereoAudio = true;
+  return out;
+}
+
 /** The limits a rule sets, as short chips: "≤ 1080p", "≤ 8 Mbps", "Stereo". */
-export function ruleLimits(r: QualityRule): string[] {
+export function ruleLimits(r: QualityLimits): string[] {
   return [
     r.maxHeight ? `≤ ${resolutionName(r.maxHeight)}` : "",
     r.maxBitrateKbps ? t("≤ {n} Mbps", { n: mbps(r.maxBitrateKbps) }) : "",
@@ -353,27 +362,96 @@ export function overlappingRules(
   return out;
 }
 
-/** Where a profile is used: the default rows and the rules that pick it. */
-export function profileUses(
-  quality: Quality,
-  name: string,
-  names: RuleNames,
-): { key: string; label: string; to: string }[] {
-  const out: { key: string; label: string; to: string }[] = [];
-  if (quality.default === name) {
-    out.push({ key: "default", label: t("Default"), to: "/releases/rules?default=home" });
+/** The two rows fixed at the bottom of the rule list. */
+export type FallbackRow = "home" | "away";
+
+/** A rule to open in the rule drawer: one in the list, a fallback row, or a new one. */
+export type RuleRef =
+  { rule: string } | { fallback: FallbackRow } | { create: Partial<QualityRule> };
+
+export function fallbackTitle(row: FallbackRow): string {
+  return row === "home" ? t("Everyone else, at home") : t("Everyone else, away");
+}
+
+/** Whether away plays that reach the bottom get exactly what they get at home. */
+export function awaySameAsHome(quality: Quality): boolean {
+  return !quality.defaultAway;
+}
+
+/**
+ * What a fallback row gives, shaped like a rule. Away without a profile of
+ * its own gives the at-home profile and limits.
+ */
+export function fallbackRule(quality: Quality, row: FallbackRow): QualityRule {
+  const own = row === "away" && !awaySameAsHome(quality);
+  return {
+    id: "",
+    where: row,
+    profile: own ? quality.defaultAway : quality.default,
+    ...tidyLimits(own ? quality.defaultAwayLimits : quality.defaultLimits),
+  };
+}
+
+/** The limit-rule id the server reports when a fallback row's limits applied. */
+export function fallbackOfRuleId(ruleId: string | undefined): FallbackRow | null {
+  if (ruleId === "default") return "home";
+  if (ruleId === "defaultAway") return "away";
+  return null;
+}
+
+/** Where the upgrade from 0.3.20 took a rule from, in plain words; "" when it wasn't migrated. */
+export function ruleOrigin(r: QualityRule): string {
+  const from = r.from;
+  if (!from) return "";
+  const name = from.name?.trim() ?? "";
+  switch (from.kind) {
+    case "library":
+      return name
+        ? t("From your {name} library's profile", { name })
+        : t("From a library's profile");
+    case "awayLimit":
+      return t("From your away-from-home limit");
+    case "viewerLimit":
+      return name ? t("From {name}'s Max quality", { name }) : t("From a viewer's Max quality");
+    case "rule":
+      return name ? t("From the “{name}” rule", { name }) : t("From one of your device rules");
+    case "awayProfile":
+      return t("From your away profile");
+    case "tvDefault":
+      return t("From your default profile for TV shows");
+    default:
+      return "";
   }
-  if (quality.defaultAway === name) {
-    out.push({ key: "away", label: t("Default away"), to: "/releases/rules?default=away" });
-  }
+}
+
+export interface ProfileUse {
+  key: string;
+  /** "Rule 2: Phones & tablets · Away", "Everyone else, at home". */
+  label: string;
+  open: RuleRef;
+}
+
+/** Every rule that picks a profile, in list order, then the fallback rows. */
+export function profileUses(quality: Quality, name: string, names: RuleNames): ProfileUse[] {
+  const out: ProfileUse[] = [];
   (quality.rules ?? []).forEach((r, i) => {
     if (r.profile !== name) return;
     out.push({
       key: r.id || `rule-${i}`,
-      label: ruleTitle(r, names),
-      to: `/releases/rules?rule=${encodeURIComponent(r.id)}`,
+      label: t("Rule {n}: {name}", { n: i + 1, name: ruleTitle(r, names) }),
+      open: { rule: r.id },
     });
   });
+  if (quality.default === name) {
+    out.push({
+      key: "default",
+      label: awaySameAsHome(quality) ? t("Everyone else, at home and away") : fallbackTitle("home"),
+      open: { fallback: "home" },
+    });
+  }
+  if (quality.defaultAway === name) {
+    out.push({ key: "away", label: fallbackTitle("away"), open: { fallback: "away" } });
+  }
   return out;
 }
 

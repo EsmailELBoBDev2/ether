@@ -9,7 +9,7 @@ import {
   confirmDialog,
   type MultiSelectOption,
 } from "@braedonsaunders/appkit-ui";
-import { Globe, Home, X } from "lucide-react";
+import { Globe, Home, Lock, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Segmented } from "../../components/fields";
 import { useViewers, viewerName } from "../../components/pickers";
@@ -20,16 +20,24 @@ import { api } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import {
+  awaySameAsHome,
   deviceFromKey,
   deviceKey,
   deviceLabel,
+  fallbackRule,
+  fallbackTitle,
   matchesSummary,
   mbps,
   overlappingRules,
   ruleHasLimits,
+  ruleLimits,
+  ruleOrigin,
   ruleTitle,
+  tidyLimits,
   tidyRule,
+  type FallbackRow,
   type RuleNames,
+  type RuleRef,
 } from "../../lib/qualityRules";
 import type { DeviceMatch, QualityDevices, QualityRule } from "../../lib/types";
 import { librariesApi, type Library } from "../libraries/api";
@@ -47,6 +55,24 @@ export interface RuleTarget {
   lockLibrary?: number;
   /** Opened from a viewer's page: the Who condition starts as only that viewer. */
   lockViewer?: number;
+  /**
+   * Set when the drawer edits one of the two rows fixed at the bottom of the
+   * list. Their conditions can't change; what they give is edited like any rule.
+   */
+  fallback?: FallbackRow;
+}
+
+/** The drawer target for a rule in the list, a fallback row, or a new rule. */
+export function ruleTarget(quality: Quality, ref: RuleRef): RuleTarget | null {
+  const rules = quality.rules ?? [];
+  if ("fallback" in ref) {
+    return { index: -1, rule: fallbackRule(quality, ref.fallback), fallback: ref.fallback };
+  }
+  if ("rule" in ref) {
+    const index = rules.findIndex((r) => r.id === ref.rule);
+    return index >= 0 ? { index, rule: rules[index]! } : null;
+  }
+  return { index: rules.length, rule: { id: "", ...ref.create } };
 }
 
 const GROUP_NAMES = localized((): Record<string, string> => ({
@@ -158,6 +184,8 @@ function deviceOptions(devices: QualityDevices | null, picked: DeviceMatch[]): M
 /**
  * The rule drawer: when a rule applies (library, who, device, where, what)
  * and what it does (a profile, limits, or both). Saves the whole rule list.
+ * The two fallback rows at the bottom of the list open here too: the same
+ * outcome section, with their fixed condition spelled out instead of pickers.
  */
 export function RuleEditor({
   quality,
@@ -186,6 +214,8 @@ export function RuleEditor({
     devices: "any",
   });
   const [locked, setLocked] = useState({ library: false, viewer: false });
+  /** The away fallback row only: away plays get exactly what they get at home. */
+  const [sameAsHome, setSameAsHome] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
@@ -212,14 +242,17 @@ export function RuleEditor({
         rule.viewers?.length === 1 &&
         rule.viewers[0] === target.lockViewer,
     });
+    setSameAsHome(target.fallback === "away" && awaySameAsHome(quality));
     setErrors({});
     setError(null);
+    // Keyed on the target alone: the drawer keeps its draft while the list reloads.
   }, [target]);
 
   const rules = quality.rules ?? [];
   const profiles = quality.profiles ?? [];
   const index = target?.index ?? rules.length;
-  const isNew = index >= rules.length;
+  const fallback = target?.fallback;
+  const isNew = !fallback && index >= rules.length;
   const set = (patch: Partial<QualityRule>) => setDraft((d) => (d ? { ...d, ...patch } : d));
   const setMode = (key: ListKey, mode: Mode) => {
     setModes((m) => ({ ...m, [key]: mode }));
@@ -239,8 +272,37 @@ export function RuleEditor({
     });
   }
 
+  async function saveFallback(row: FallbackRow) {
+    if (!draft) return;
+    const own = row === "home" || !sameAsHome;
+    if (own && !draft.profile) {
+      setErrors({ profile: t("Choose a profile.") });
+      return;
+    }
+    const limits = own ? tidyLimits(draft) : {};
+    setSaving(true);
+    setError(null);
+    setErrors({});
+    try {
+      // An empty limits object clears the row's limits (the save is a patch).
+      await commit(
+        row === "home"
+          ? { ...quality, default: draft.profile ?? "", defaultLimits: limits }
+          : { ...quality, defaultAway: own ? draft.profile : "", defaultAwayLimits: limits },
+        t("Rule saved"),
+      );
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function save() {
     if (!draft) return;
+    if (fallback) return saveFallback(fallback);
     const next: Errors = {};
     if (modes.libraries !== "any" && !draft.libraries?.length) {
       next.libraries = t("Choose at least one library, or pick Any library.");
@@ -331,9 +393,11 @@ export function RuleEditor({
   );
 
   const preview = draft ? localizedRule(settled(draft)) : null;
-  const overlaps = preview ? overlappingRules(rules, index, devices.data ?? null, preview) : [];
+  const overlaps =
+    preview && !fallback ? overlappingRules(rules, index, devices.data ?? null, preview) : [];
+  const home = fallbackRule(quality, "home");
 
-  const drawerSummary = preview ? (
+  const drawerSummary = fallback ? undefined : preview ? (
     <div className="space-y-2">
       <div
         role="status"
@@ -380,277 +444,357 @@ export function RuleEditor({
       open={target !== null}
       onClose={() => !saving && onClose()}
       title={
-        isNew
-          ? t("New rule")
-          : preview
-            ? ruleTitle(preview, names)
-            : t("Rule {n}", { n: index + 1 })
+        fallback
+          ? fallbackTitle(fallback)
+          : isNew
+            ? t("New rule")
+            : preview
+              ? ruleTitle(preview, names)
+              : t("Rule {n}", { n: index + 1 })
       }
+      description={target && !fallback ? ruleOrigin(target.rule) || undefined : undefined}
       summary={drawerSummary}
       onSave={() => void save()}
       saving={saving}
       saveLabel={t("Save rule")}
-      onRemove={isNew ? undefined : () => void remove()}
+      onRemove={isNew || fallback ? undefined : () => void remove()}
       removeLabel={t("Remove rule")}
       error={error}
     >
       {draft ? (
         <>
-          <SettingsSection title={t("Rule")}>
-            <TextRow
-              label={t("Name")}
-              help={t("Optional")}
-              value={draft.name ?? ""}
-              placeholder={t("e.g. Living room in 4K")}
-              error={errors.name}
-              onChange={(v) => set({ name: v })}
-            />
-          </SettingsSection>
+          {fallback ? (
+            <SettingsSection title={t("When")}>
+              <div className="flex items-start gap-3 px-5 py-4">
+                <Lock aria-hidden size={16} className="mt-0.5 shrink-0 text-fg-muted" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-fg">
+                    {fallback === "home"
+                      ? t("Applies to everything no rule above caught, at home.")
+                      : t("Applies to everything no rule above caught, away from home.")}
+                  </p>
+                  <p className="text-sm text-fg-muted">
+                    {t(
+                      "This is always the last row, so it can't be narrowed. To treat a library, a person or a device differently, add a rule above it.",
+                    )}
+                  </p>
+                </div>
+              </div>
+            </SettingsSection>
+          ) : (
+            <>
+              <SettingsSection title={t("Rule")}>
+                <TextRow
+                  label={t("Name")}
+                  help={t("Optional")}
+                  value={draft.name ?? ""}
+                  placeholder={t("e.g. Living room in 4K")}
+                  error={errors.name}
+                  onChange={(v) => set({ name: v })}
+                />
+              </SettingsSection>
 
-          <SettingsSection title={t("When")}>
-            {locked.library && target?.lockLibrary !== undefined ? (
-              <SettingsRow
-                title={t("Library")}
-                control={lockedChip(
-                  t("Only {name}", { name: names.library(target.lockLibrary) }),
-                  t("Choose other libraries"),
-                  () => setLocked((l) => ({ ...l, library: false })),
-                )}
-              />
-            ) : (
-              modeRow(
-                "libraries",
-                t("Library"),
-                [
-                  { value: "any", label: t("Any library") },
-                  { value: "only", label: t("Only…") },
-                  { value: "except", label: t("All except…") },
-                ],
-                <MultiSelect
-                  {...multiSelectLabels()}
-                  ariaLabel={t("Libraries")}
-                  placeholder={t("Choose libraries")}
-                  value={(draft.libraries ?? []).map(String)}
-                  onChange={(v) => set({ libraries: v.map(Number) })}
-                  options={[
-                    ...names.libraries.map((l) => ({
-                      value: String(l.id),
-                      label: l.name,
-                      description:
-                        l.source === "plugin" && l.pluginName
-                          ? t("Releases chosen by {plugin}; only limits apply", {
-                              plugin: l.pluginName,
-                            })
-                          : undefined,
-                    })),
-                    ...(draft.libraries ?? [])
-                      .filter((id) => names.ready && !names.libraries.some((l) => l.id === id))
-                      .map((id) => ({ value: String(id), label: t("Unavailable library") })),
-                  ]}
-                />,
-              )
-            )}
-            {locked.viewer && target?.lockViewer !== undefined ? (
-              <SettingsRow
-                title={t("Who")}
-                control={lockedChip(
-                  t("Only {name}", { name: names.viewer(target.lockViewer) }),
-                  t("Choose other viewers"),
-                  () => setLocked((l) => ({ ...l, viewer: false })),
-                )}
-              />
-            ) : (
-              modeRow(
-                "viewers",
-                t("Who"),
-                [
-                  { value: "any", label: t("Anyone") },
-                  { value: "only", label: t("Only…") },
-                  { value: "except", label: t("Everyone except…") },
-                ],
-                <MultiSelect
-                  {...multiSelectLabels()}
-                  ariaLabel={t("Viewers")}
-                  placeholder={t("Choose viewers")}
-                  value={(draft.viewers ?? []).map(String)}
-                  onChange={(v) => set({ viewers: v.map(Number) })}
-                  options={[
-                    ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerName(v) })),
-                    ...(draft.viewers ?? [])
-                      .filter((id) => viewers && !viewers.some((v) => v.id === id))
-                      .map((id) => ({ value: String(id), label: t("Unavailable viewer") })),
-                  ]}
-                />,
-              )
-            )}
-            {modeRow(
-              "devices",
-              t("Device"),
-              [
-                { value: "any", label: t("Any device") },
-                { value: "only", label: t("Only…") },
-                { value: "except", label: t("Any except…") },
-              ],
-              (() => {
-                const options = deviceOptions(devices.data ?? null, draft.devices ?? []);
-                return (
-                  <MultiSelect
-                    {...multiSelectLabels()}
-                    searchPlaceholder={t("Search devices, apps, kinds")}
-                    ariaLabel={t("Devices")}
-                    placeholder={t("Choose devices or apps")}
-                    value={(draft.devices ?? []).map(deviceKey)}
-                    onChange={(keys) =>
-                      set({
-                        devices: keys.map(
-                          (key) =>
-                            (draft.devices ?? []).find((m) => deviceKey(m) === key) ??
-                            deviceFromKey(key, options.find((o) => o.value === key)?.label ?? ""),
-                        ),
-                      })
-                    }
-                    options={options}
+              <SettingsSection title={t("When")}>
+                {locked.library && target?.lockLibrary !== undefined ? (
+                  <SettingsRow
+                    title={t("Library")}
+                    control={lockedChip(
+                      t("Only {name}", { name: names.library(target.lockLibrary) }),
+                      t("Choose other libraries"),
+                      () => setLocked((l) => ({ ...l, library: false })),
+                    )}
                   />
-                );
-              })(),
-            )}
-            <SettingsRow
-              title={t("Where")}
-              control={
-                <Segmented
-                  ariaLabel={t("Where")}
-                  size="sm"
-                  value={draft.where ?? ""}
-                  options={[
-                    { value: "", label: t("Anywhere"), icon: <Globe size={12} aria-hidden /> },
-                    { value: "home", label: t("At home"), icon: <Home size={12} aria-hidden /> },
-                    { value: "away", label: t("Away"), icon: <Globe size={12} aria-hidden /> },
-                  ]}
-                  onChange={(where) => set({ where })}
+                ) : (
+                  modeRow(
+                    "libraries",
+                    t("Library"),
+                    [
+                      { value: "any", label: t("Any library") },
+                      { value: "only", label: t("Only…") },
+                      { value: "except", label: t("All except…") },
+                    ],
+                    <MultiSelect
+                      {...multiSelectLabels()}
+                      ariaLabel={t("Libraries")}
+                      placeholder={t("Choose libraries")}
+                      value={(draft.libraries ?? []).map(String)}
+                      onChange={(v) => set({ libraries: v.map(Number) })}
+                      options={[
+                        ...names.libraries.map((l) => ({
+                          value: String(l.id),
+                          label: l.name,
+                          description:
+                            l.source === "plugin" && l.pluginName
+                              ? t("Releases chosen by {plugin}; only limits apply", {
+                                  plugin: l.pluginName,
+                                })
+                              : undefined,
+                        })),
+                        ...(draft.libraries ?? [])
+                          .filter((id) => names.ready && !names.libraries.some((l) => l.id === id))
+                          .map((id) => ({ value: String(id), label: t("Unavailable library") })),
+                      ]}
+                    />,
+                  )
+                )}
+                {locked.viewer && target?.lockViewer !== undefined ? (
+                  <SettingsRow
+                    title={t("Who")}
+                    control={lockedChip(
+                      t("Only {name}", { name: names.viewer(target.lockViewer) }),
+                      t("Choose other viewers"),
+                      () => setLocked((l) => ({ ...l, viewer: false })),
+                    )}
+                  />
+                ) : (
+                  modeRow(
+                    "viewers",
+                    t("Who"),
+                    [
+                      { value: "any", label: t("Anyone") },
+                      { value: "only", label: t("Only…") },
+                      { value: "except", label: t("Everyone except…") },
+                    ],
+                    <MultiSelect
+                      {...multiSelectLabels()}
+                      ariaLabel={t("Viewers")}
+                      placeholder={t("Choose viewers")}
+                      value={(draft.viewers ?? []).map(String)}
+                      onChange={(v) => set({ viewers: v.map(Number) })}
+                      options={[
+                        ...(viewers ?? []).map((v) => ({
+                          value: String(v.id),
+                          label: viewerName(v),
+                        })),
+                        ...(draft.viewers ?? [])
+                          .filter((id) => viewers && !viewers.some((v) => v.id === id))
+                          .map((id) => ({ value: String(id), label: t("Unavailable viewer") })),
+                      ]}
+                    />,
+                  )
+                )}
+                {modeRow(
+                  "devices",
+                  t("Device"),
+                  [
+                    { value: "any", label: t("Any device") },
+                    { value: "only", label: t("Only…") },
+                    { value: "except", label: t("Any except…") },
+                  ],
+                  (() => {
+                    const options = deviceOptions(devices.data ?? null, draft.devices ?? []);
+                    return (
+                      <MultiSelect
+                        {...multiSelectLabels()}
+                        searchPlaceholder={t("Search devices, apps, kinds")}
+                        ariaLabel={t("Devices")}
+                        placeholder={t("Choose devices or apps")}
+                        value={(draft.devices ?? []).map(deviceKey)}
+                        onChange={(keys) =>
+                          set({
+                            devices: keys.map(
+                              (key) =>
+                                (draft.devices ?? []).find((m) => deviceKey(m) === key) ??
+                                deviceFromKey(
+                                  key,
+                                  options.find((o) => o.value === key)?.label ?? "",
+                                ),
+                            ),
+                          })
+                        }
+                        options={options}
+                      />
+                    );
+                  })(),
+                )}
+                <SettingsRow
+                  title={t("Where")}
+                  control={
+                    <Segmented
+                      ariaLabel={t("Where")}
+                      size="sm"
+                      value={draft.where ?? ""}
+                      options={[
+                        { value: "", label: t("Anywhere"), icon: <Globe size={12} aria-hidden /> },
+                        {
+                          value: "home",
+                          label: t("At home"),
+                          icon: <Home size={12} aria-hidden />,
+                        },
+                        { value: "away", label: t("Away"), icon: <Globe size={12} aria-hidden /> },
+                      ]}
+                      onChange={(where) => set({ where })}
+                    />
+                  }
                 />
-              }
-            />
-            <SettingsRow
-              title={t("What")}
-              control={
-                <Segmented
-                  ariaLabel={t("What")}
-                  size="sm"
-                  value={draft.kind ?? ""}
-                  options={[
-                    { value: "", label: t("Movies and episodes") },
-                    { value: "movie", label: t("Movies") },
-                    { value: "episode", label: t("Episodes") },
-                  ]}
-                  onChange={(kind) => set({ kind })}
+                <SettingsRow
+                  title={t("What")}
+                  control={
+                    <Segmented
+                      ariaLabel={t("What")}
+                      size="sm"
+                      value={draft.kind ?? ""}
+                      options={[
+                        { value: "", label: t("Movies and episodes") },
+                        { value: "movie", label: t("Movies") },
+                        { value: "episode", label: t("Episodes") },
+                      ]}
+                      onChange={(kind) => set({ kind })}
+                    />
+                  }
                 />
-              }
-            />
-          </SettingsSection>
+              </SettingsSection>
+            </>
+          )}
 
           <SettingsSection title={t("Then")}>
-            <SettingsRow
-              title={t("Profile")}
-              description={
-                errors.profile ? (
-                  <span className="text-danger">{errors.profile}</span>
-                ) : (
-                  t("Ranks the releases")
-                )
-              }
-              control={
-                <div className="w-72 max-w-full">
-                  <SearchSelect
-                    {...searchSelectLabels()}
-                    value={draft.profile ?? NO_CHANGE}
-                    onChange={(v) => {
-                      set({ profile: v });
-                      setErrors((e) => ({ ...e, profile: "" }));
-                    }}
-                    options={[
-                      { value: NO_CHANGE, label: t("No change: only apply the limits below") },
-                      ...profiles.map((p) => ({ value: p.name, label: p.name })),
-                      ...(draft.profile && !profiles.some((p) => p.name === draft.profile)
-                        ? [{ value: draft.profile, label: draft.profile }]
-                        : []),
-                    ]}
-                    ariaLabel={t("Profile")}
-                  />
-                </div>
-              }
-            />
-            <SettingsRow
-              title={t("Max resolution")}
-              description={
-                errors.maxHeight ? (
-                  <span className="text-danger">{errors.maxHeight}</span>
-                ) : undefined
-              }
-              control={
-                <Segmented
-                  ariaLabel={t("Max resolution")}
-                  size="sm"
-                  value={String(draft.maxHeight ?? 0)}
-                  options={RESOLUTIONS}
-                  onChange={(v) => set({ maxHeight: Number(v) || undefined })}
+            {fallback === "away" ? (
+              <SettingsRow
+                stacked
+                title={t("Away from home")}
+                control={
+                  <div className="space-y-2">
+                    <Segmented
+                      ariaLabel={t("Away from home")}
+                      size="sm"
+                      value={sameAsHome ? "same" : "own"}
+                      options={[
+                        { value: "same", label: t("Same as at home") },
+                        { value: "own", label: t("Its own profile and limits") },
+                      ]}
+                      onChange={(v) => {
+                        setSameAsHome(v === "same");
+                        setErrors({});
+                      }}
+                    />
+                    {sameAsHome ? (
+                      <p className="flex flex-wrap items-center gap-1.5 text-sm text-fg-muted">
+                        <span>{t("At home that is")}</span>
+                        <span className="font-medium text-fg">{home.profile}</span>
+                        {ruleLimits(home).map((limit) => (
+                          <Badge key={limit} variant="secondary">
+                            {limit}
+                          </Badge>
+                        ))}
+                      </p>
+                    ) : null}
+                  </div>
+                }
+              />
+            ) : null}
+            {fallback === "away" && sameAsHome ? null : (
+              <>
+                <SettingsRow
+                  title={t("Profile")}
+                  description={
+                    errors.profile ? (
+                      <span className="text-danger">{errors.profile}</span>
+                    ) : (
+                      t("Ranks the releases")
+                    )
+                  }
+                  control={
+                    <div className="w-72 max-w-full">
+                      <SearchSelect
+                        {...searchSelectLabels()}
+                        value={draft.profile ?? NO_CHANGE}
+                        onChange={(v) => {
+                          set({ profile: v });
+                          setErrors((e) => ({ ...e, profile: "" }));
+                        }}
+                        options={[
+                          ...(fallback
+                            ? []
+                            : [
+                                {
+                                  value: NO_CHANGE,
+                                  label: t("No change: only apply the limits below"),
+                                },
+                              ]),
+                          ...profiles.map((p) => ({ value: p.name, label: p.name })),
+                          ...(draft.profile && !profiles.some((p) => p.name === draft.profile)
+                            ? [{ value: draft.profile, label: draft.profile }]
+                            : []),
+                        ]}
+                        ariaLabel={t("Profile")}
+                      />
+                    </div>
+                  }
                 />
-              }
-            />
-            <SettingsRow
-              title={t("Max bitrate")}
-              description={
-                errors.maxBitrateKbps ? (
-                  <span className="text-danger">{errors.maxBitrateKbps}</span>
-                ) : undefined
-              }
-              control={
-                <span className="flex items-center gap-2">
-                  <Input
-                    aria-label={t("Max bitrate")}
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    step="any"
-                    placeholder={t("No limit")}
-                    value={bitrateText}
-                    className="w-24 tabular-nums"
-                    onChange={(e) => {
-                      const raw = e.currentTarget.value;
-                      setBitrateText(raw);
-                      if (raw.trim() === "") {
-                        set({ maxBitrateKbps: undefined });
-                        return;
-                      }
-                      const n = e.currentTarget.valueAsNumber;
-                      if (Number.isFinite(n)) {
-                        set({ maxBitrateKbps: n > 0 ? Math.round(n * 1000) : undefined });
-                      }
-                    }}
-                    onBlur={() => {
-                      setBitrateText(
-                        draft.maxBitrateKbps ? String(mbps(draft.maxBitrateKbps)) : "",
-                      );
-                    }}
-                  />
-                  <span className="text-sm text-fg-muted">Mbps</span>
-                </span>
-              }
-            />
-            <SettingsRow
-              title={t("Audio")}
-              control={
-                <Segmented
-                  ariaLabel={t("Audio")}
-                  size="sm"
-                  value={draft.stereoAudio ? "stereo" : ""}
-                  options={[
-                    { value: "", label: t("As released") },
-                    { value: "stereo", label: t("Stereo") },
-                  ]}
-                  onChange={(v) => set({ stereoAudio: v === "stereo" || undefined })}
+                <SettingsRow
+                  title={t("Max resolution")}
+                  description={
+                    errors.maxHeight ? (
+                      <span className="text-danger">{errors.maxHeight}</span>
+                    ) : undefined
+                  }
+                  control={
+                    <Segmented
+                      ariaLabel={t("Max resolution")}
+                      size="sm"
+                      value={String(draft.maxHeight ?? 0)}
+                      options={RESOLUTIONS}
+                      onChange={(v) => set({ maxHeight: Number(v) || undefined })}
+                    />
+                  }
                 />
-              }
-            />
+                <SettingsRow
+                  title={t("Max bitrate")}
+                  description={
+                    errors.maxBitrateKbps ? (
+                      <span className="text-danger">{errors.maxBitrateKbps}</span>
+                    ) : undefined
+                  }
+                  control={
+                    <span className="flex items-center gap-2">
+                      <Input
+                        aria-label={t("Max bitrate")}
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="any"
+                        placeholder={t("No limit")}
+                        value={bitrateText}
+                        className="w-24 tabular-nums"
+                        onChange={(e) => {
+                          const raw = e.currentTarget.value;
+                          setBitrateText(raw);
+                          if (raw.trim() === "") {
+                            set({ maxBitrateKbps: undefined });
+                            return;
+                          }
+                          const n = e.currentTarget.valueAsNumber;
+                          if (Number.isFinite(n)) {
+                            set({ maxBitrateKbps: n > 0 ? Math.round(n * 1000) : undefined });
+                          }
+                        }}
+                        onBlur={() => {
+                          setBitrateText(
+                            draft.maxBitrateKbps ? String(mbps(draft.maxBitrateKbps)) : "",
+                          );
+                        }}
+                      />
+                      <span className="text-sm text-fg-muted">Mbps</span>
+                    </span>
+                  }
+                />
+                <SettingsRow
+                  title={t("Audio")}
+                  control={
+                    <Segmented
+                      ariaLabel={t("Audio")}
+                      size="sm"
+                      value={draft.stereoAudio ? "stereo" : ""}
+                      options={[
+                        { value: "", label: t("As released") },
+                        { value: "stereo", label: t("Stereo") },
+                      ]}
+                      onChange={(v) => set({ stereoAudio: v === "stereo" || undefined })}
+                    />
+                  }
+                />
+              </>
+            )}
           </SettingsSection>
         </>
       ) : null}
@@ -665,6 +809,7 @@ export function RuleEditor({
 export function RuleDrawer({
   open,
   ruleId,
+  fallback,
   preset,
   lockLibrary,
   lockViewer,
@@ -673,6 +818,8 @@ export function RuleDrawer({
 }: {
   open: boolean;
   ruleId?: string;
+  /** Edit one of the two fallback rows instead of a rule. */
+  fallback?: FallbackRow;
   /** Starting values of a new rule. */
   preset?: Partial<QualityRule>;
   lockLibrary?: number;
@@ -683,6 +830,7 @@ export function RuleDrawer({
   const { quality, commit } = useQuality();
   const target = useMemo<RuleTarget | null>(() => {
     if (!open || !quality) return null;
+    if (fallback) return ruleTarget(quality, { fallback });
     const rules = quality.rules ?? [];
     const at = ruleId ? rules.findIndex((r) => r.id === ruleId) : -1;
     if (at >= 0) return { index: at, rule: rules[at]!, lockLibrary, lockViewer };
@@ -698,7 +846,7 @@ export function RuleDrawer({
       lockViewer,
     };
     // Keyed on what was asked for, so the drawer keeps its rule while the list reloads.
-  }, [open, ruleId, lockLibrary, lockViewer, quality === null]);
+  }, [open, ruleId, fallback, lockLibrary, lockViewer, quality === null]);
   if (!quality) return null;
   return (
     <RuleEditor

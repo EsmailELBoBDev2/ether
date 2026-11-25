@@ -540,17 +540,12 @@ describe("Releases", () => {
     ).toBeNull();
   });
 
-  it("shows Used by badges on profiles and read-only links in the drawer", async () => {
+  it("shows where each profile is used and opens the fallback row from the list", async () => {
     renderApp("/releases/profiles");
-    expect(await screen.findByText("Default", {}, WAIT)).toBeInTheDocument();
-    expect(screen.getByText("Living room Apple TV")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Edit 1080p" }));
-    const drawer = await screen.findByRole("dialog", { name: "1080p" });
-    expect(within(drawer).queryByRole("group", { name: "Default for" })).not.toBeInTheDocument();
-    expect(within(drawer).getByRole("link", { name: "Default" })).toHaveAttribute(
-      "href",
-      "/releases/rules?default=home",
-    );
+    expect(await screen.findByText("Rule 1: Living room Apple TV", {}, WAIT)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Everyone else, at home and away" }));
+    const drawer = await screen.findByRole("dialog", { name: "Everyone else, at home" });
+    expect(within(drawer).getByRole("radiogroup", { name: "Max resolution" })).toBeInTheDocument();
   });
 
   it("renames a profile in its drawer and keeps rules pointing at it", async () => {

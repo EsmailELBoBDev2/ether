@@ -499,13 +499,17 @@ export function createQualityMock() {
           profile = "";
           source = "plugin";
         } else if (!profile) {
-          if (where === "away" && defaultAway) {
-            profile = defaultAway;
-            source = "defaultAway";
-          } else {
-            profile = defaultHome;
-            source = "default";
+          // The fallback row decides, and its limits apply with the rules'.
+          const away = where === "away" && Boolean(defaultAway);
+          profile = away ? defaultAway : defaultHome;
+          source = away ? "defaultAway" : "default";
+          const l = (away ? config.quality.defaultAwayLimits : config.quality.defaultLimits) ?? {};
+          if (l.maxHeight && (!maxHeight || l.maxHeight < maxHeight)) maxHeight = l.maxHeight;
+          if (l.maxBitrateKbps && (!maxBitrateKbps || l.maxBitrateKbps < maxBitrateKbps)) {
+            maxBitrateKbps = l.maxBitrateKbps;
           }
+          if (l.stereoAudio) stereo = true;
+          if (l.maxHeight || l.maxBitrateKbps || l.stereoAudio) limitRuleIds.push(source);
         }
 
         return {
@@ -638,7 +642,7 @@ export function createQualityMock() {
       const r = rules[i]!;
       if (r.where && r.where !== where) continue;
       if (r.kind && kind && r.kind !== kind) continue;
-      if (!matchesRuleViewer(r, q.userId)) continue;
+      if (!matchesRuleViewer(r, q.userId ?? 0)) continue;
       if (!matchesRuleDevice(r, dev)) continue;
       if (r.libraries?.length) {
         if (!memberLibs) continue;
@@ -673,12 +677,23 @@ export function createQualityMock() {
     }
 
     if (!chosenByPlugin && !profileName) {
-      if (where === "away" && config.quality.defaultAway) {
-        profileName = config.quality.defaultAway;
-        profileSource = "defaultAway";
-      } else {
-        profileName = config.quality.default || profiles[0]?.name || "4K";
-        profileSource = "default";
+      const away = where === "away" && Boolean(config.quality.defaultAway);
+      profileName = away
+        ? (config.quality.defaultAway ?? "")
+        : config.quality.default || profiles[0]?.name || "4K";
+      profileSource = away ? "defaultAway" : "default";
+      // The fallback row's limits apply with the rules', attributed to the row.
+      const l = (away ? config.quality.defaultAwayLimits : config.quality.defaultLimits) ?? {};
+      if (l.maxHeight || l.maxBitrateKbps || l.stereoAudio) {
+        if (l.maxHeight && (!ruleMaxHeight || l.maxHeight < ruleMaxHeight)) {
+          ruleMaxHeight = l.maxHeight;
+        }
+        if (l.maxBitrateKbps && (!ruleMaxBitrate || l.maxBitrateKbps < ruleMaxBitrate)) {
+          ruleMaxBitrate = l.maxBitrateKbps;
+        }
+        if (l.stereoAudio) stereo = true;
+        limitRuleIds.push(profileSource);
+        matchingLimitLayers.push({ rule: { id: profileSource, ...l }, ruleNum: 0 });
       }
     }
 
@@ -802,8 +817,9 @@ export function createQualityMock() {
     }
     if (route === "POST /quality/explain") {
       const req = (body ?? {}) as QualityQuestion & { mediaType?: string };
-      if (!req.userId) return fail(404, "unknown_viewer", "no such viewer");
-      return explain(req, config, libs, getPolicy(req.userId), getPolicy, resolveTitle);
+      // No viewer is "anyone", as on the server: rules for particular viewers don't apply.
+      const policy = req.userId ? getPolicy(req.userId) : undefined;
+      return explain(req, config, libs, policy, getPolicy, resolveTitle);
     }
     return null;
   }

@@ -21,7 +21,7 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
 import { api, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { ruleHasLimits, ruleTitle } from "../../lib/qualityRules";
+import { ruleHasLimits, ruleTitle, type FallbackRow, type RuleRef } from "../../lib/qualityRules";
 import { RuleDrawer, localizedRule, useRuleNames } from "../releases/RuleDrawer";
 import {
   LimitBadges,
@@ -349,7 +349,17 @@ function LibraryReleasesSection({ library }: { library: Library }) {
   const { config, quality, refresh } = useQuality();
   const names = useRuleNames();
   const summary = useAsync((signal) => api.qualitySummary({}, signal), [library.id]);
-  const [drawer, setDrawer] = useState<{ open: boolean; ruleId?: string }>({ open: false });
+  const [drawer, setDrawer] = useState<{
+    open: boolean;
+    ruleId?: string;
+    fallback?: FallbackRow;
+  }>({ open: false });
+  const openRule = (ref: RuleRef) =>
+    setDrawer({
+      open: true,
+      ...("rule" in ref ? { ruleId: ref.rule } : {}),
+      ...("fallback" in ref ? { fallback: ref.fallback } : {}),
+    });
 
   const row = summary.data?.rows.find((r) => r.libraryId === library.id);
   const chosenByPlugin = row?.chosenByPlugin ?? library.source === "plugin";
@@ -452,9 +462,10 @@ function LibraryReleasesSection({ library }: { library: Library }) {
                   ) : null}
                   <SummaryCellView
                     cell={pair.home}
+                    where="home"
                     chosenByPlugin={chosenByPlugin}
                     resolveRule={resolveRule}
-                    onSelectRule={(rid) => setDrawer({ open: true, ruleId: rid })}
+                    onOpenRule={openRule}
                   />
                 </div>
               ))}
@@ -475,9 +486,10 @@ function LibraryReleasesSection({ library }: { library: Library }) {
                   ) : null}
                   <SummaryCellView
                     cell={pair.away}
+                    where="away"
                     chosenByPlugin={chosenByPlugin}
                     resolveRule={resolveRule}
-                    onSelectRule={(rid) => setDrawer({ open: true, ruleId: rid })}
+                    onOpenRule={openRule}
                   />
                 </div>
               ))}
@@ -543,6 +555,7 @@ function LibraryReleasesSection({ library }: { library: Library }) {
       <RuleDrawer
         open={drawer.open}
         ruleId={drawer.ruleId}
+        fallback={drawer.fallback}
         lockLibrary={library.id}
         onClose={() => setDrawer({ open: false })}
         onSaved={() => {

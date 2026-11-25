@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
+import { AppProvider } from "../app-context";
 import type { QualityAnswer } from "../lib/types";
 import { createFakeServer } from "../mock/server";
 import { createRuleResolver } from "../pages/releases/qualitySummaryUi";
@@ -17,7 +18,19 @@ async function renderWhoGetsWhat(
   vi.stubGlobal("fetch", vi.fn(fake.fetch));
   render(
     <MemoryRouter>
-      <WhoGetsWhat />
+      <AppProvider
+        boot={{
+          ok: true,
+          version: "test",
+          setupComplete: true,
+          authenticated: true,
+          authRequired: false,
+          serverName: "Test",
+        }}
+        reloadBoot={async () => {}}
+      >
+        <WhoGetsWhat />
+      </AppProvider>
     </MemoryRouter>,
   );
   return fake;
@@ -26,79 +39,20 @@ async function renderWhoGetsWhat(
 const headline = () => screen.getByTestId("quality-headline").textContent;
 
 describe("who gets what", () => {
-  it("never sends an empty-client explain request on mount (M1)", async () => {
-    let releaseDevices!: () => void;
-    const devicesGate = new Promise<void>((resolve) => {
-      releaseDevices = resolve;
-    });
-    const explainStatuses: number[] = [];
-    let origFetch!: typeof fetch;
-
-    const fake = await renderWhoGetsWhat((f) => {
-      origFetch = f.fetch;
-      f.fetch = async (input, init) => {
-        const url = String(input);
-        if (url.includes("/quality/devices") || url.includes("/quality/clients")) {
-          await devicesGate;
-        }
-        const res = await origFetch(input, init);
-        if (url.includes("/quality/explain")) {
-          explainStatuses.push(res.status);
-        }
-        return res;
-      };
-    });
-
-    // Viewers resolve immediately while devices are still in flight; explain must wait.
-    await settleUi(() => expect(calls(fake, "GET", "/viewers").length).toBeGreaterThan(0));
-    expect(calls(fake, "POST", "/quality/explain")).toHaveLength(0);
-
-    releaseDevices();
-    await settleUi(() => expect(headline()).toBe("4KHDRDolby Vision"));
-    // Every UI-triggered explain request succeeded with 200 and carried a clientId.
-    expect(explainStatuses).toEqual([200]);
+  it("checks a play for anyone on any device until a viewer and device are chosen", async () => {
+    const fake = await renderWhoGetsWhat();
+    await settleUi(() => expect(headline()).toBe("1080pSDR"));
     expect(calls(fake, "POST", "/quality/explain")).toHaveLength(1);
     expect(calls(fake, "POST", "/quality/explain")[0]?.body).toEqual({
-      userId: 1,
-      clientId: "plex-apple-tv",
+      clientId: "any",
       remote: false,
     });
-
-    // Direct check that the mock enforces the 400 missing_client guard when clientId is omitted.
-    const rawMissing = await origFetch("/ether/api/quality/explain", {
+    // The server refuses a question with no device or app at all.
+    const rawMissing = await fake.fetch("/ether/api/quality/explain", {
       method: "POST",
       body: JSON.stringify({ userId: 1, remote: false }),
     });
     expect(rawMissing.status).toBe(400);
-  });
-
-  it("falls back to clientId 'any' when a fresh server has no seen devices or apps", async () => {
-    const fake = await renderWhoGetsWhat((f) => {
-      const orig = f.fetch;
-      f.fetch = async (input, init) => {
-        const url = String(input);
-        if (url.includes("/quality/devices")) {
-          return new Response(JSON.stringify({ groups: [], types: [], apps: [], clients: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (url.includes("/quality/clients")) {
-          return new Response(JSON.stringify({ clients: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return orig(input, init);
-      };
-    });
-
-    await settleUi(() => expect(headline()).toBe("1080pSDR"));
-    expect(calls(fake, "POST", "/quality/explain").at(-1)?.body).toEqual({
-      userId: 1,
-      clientId: "any",
-      remote: false,
-    });
   });
 
   it("renders the per-library summary, exceptions, partial rules, plugin rows, and filters", async () => {
@@ -186,23 +140,35 @@ describe("who gets what", () => {
       expect(screen.queryByTestId("global-exceptions")).not.toBeInTheDocument();
       expect(screen.getAllByText("≤ 1080p").length).toBeGreaterThan(0);
     });
+    // A kind of device has no single play to check.
+    expect(
+      screen.getByText(
+        "Phones & tablets covers several devices. Choose one device or app above to check a play.",
+      ),
+    ).toBeInTheDocument();
+
+    // The fallback row named in a cell opens in the rule drawer, in place.
+    fireEvent.click(screen.getAllByRole("button", { name: "Everyone else, at home" })[0]!);
+    const drawer = await screen.findByRole("dialog", { name: "Everyone else, at home" }, WAIT);
+    expect(
+      within(drawer).getByText("Applies to everything no rule above caught, at home."),
+    ).toBeInTheDocument();
   });
 
-  it("traces one play across viewer, app, where, and kind", async () => {
+  it("traces one play for the chosen viewer and device, at home, away and in a library", async () => {
     const fake = await renderWhoGetsWhat((f) =>
       f.fetch("/ether/api/safety/policies/2", {
         method: "PUT",
         body: JSON.stringify({ maxBitrateKbps: 4000, remoteDisabled: true }),
       }),
     );
-    await settleUi(() => expect(headline()).toBe("4KHDRDolby Vision"));
+    await settleUi(() => expect(headline()).toBe("1080pSDR"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Viewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter by viewer" }));
     fireEvent.click(await screen.findByRole("option", { name: "Sam Rivera" }, WAIT));
-    fireEvent.click(screen.getByRole("button", { name: "App" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Pixel 8" }, WAIT));
+    fireEvent.click(screen.getByRole("button", { name: "Filter by device" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Pixel 8/ }, WAIT));
     await settleUi(() => expect(headline()).toBe("1080pSDRUp to 4 Mbps"));
-    expect(screen.getByText("4 Mbps")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("radio", { name: "Away" }));
     await settleUi(() => expect(headline()).toBe("Can't play away from home"));
@@ -213,14 +179,14 @@ describe("who gets what", () => {
       remote: true,
     });
 
-    // Switch back to At home and choose Episodes kind.
     fireEvent.click(screen.getByRole("radio", { name: "At home" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Episodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    fireEvent.click(await screen.findByRole("option", { name: "TV Shows" }, WAIT));
     await settleUi(() =>
       expect(calls(fake, "POST", "/quality/explain").at(-1)?.body).toEqual({
         userId: 2,
         clientId: "client-pixel-8",
-        kind: "episode",
+        libraryId: 2,
         remote: false,
       }),
     );

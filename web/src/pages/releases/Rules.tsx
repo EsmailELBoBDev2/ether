@@ -1,15 +1,9 @@
-import {
-  Alert,
-  AlertDescription,
-  Badge,
-  Button,
-  SearchSelect,
-  SettingsSection,
-} from "@braedonsaunders/appkit-ui";
+import { Alert, AlertDescription, Badge, Button, cn } from "@braedonsaunders/appkit-ui";
 import {
   ArrowRight,
   Clapperboard,
   Globe,
+  History,
   Home,
   Library as LibraryIcon,
   Lock,
@@ -26,24 +20,27 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { Section } from "../../components/layout";
-import { SettingsRow } from "../../components/SettingsRow";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t } from "../../i18n";
-import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import {
+  awaySameAsHome,
   deviceIconGroup,
+  fallbackRule,
+  fallbackTitle,
   ruleConditions,
   ruleLimits,
+  ruleOrigin,
   ruleTitle,
   shadowedBy,
   type ConditionKind,
+  type FallbackRow,
 } from "../../lib/qualityRules";
 import type { QualityDevices, QualityRule } from "../../lib/types";
-import { OrderButtons, RecordDrawer, toastError } from "../sources/form";
+import { OrderButtons, toastError } from "../sources/form";
 import { QualityHelp } from "./QualityHelp";
-import { RuleEditor, localizedRule, useRuleNames, type RuleTarget } from "./RuleDrawer";
+import { RuleEditor, localizedRule, ruleTarget, useRuleNames, type RuleTarget } from "./RuleDrawer";
 import { useQuality } from "./useQuality";
 
 function conditionIcon(kind: ConditionKind, rule: QualityRule, devices: QualityDevices | null) {
@@ -83,7 +80,7 @@ function Outcome({
           <span>{profile}</span>
         </span>
       ) : (
-        <span className="text-sm text-fg-muted">{emptyLabel ?? t("No change")}</span>
+        <span className="text-sm text-fg-muted">{emptyLabel ?? t("Limit only")}</span>
       )}
       {limits.map((limit) => (
         <Badge key={limit} variant="secondary">
@@ -94,9 +91,21 @@ function Outcome({
   );
 }
 
+/** Which 0.3.20 setting a row came from; shown while the upgrade note is up. */
+function Origin({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <p className="mt-1.5 flex items-center gap-1.5 text-xs text-fg-muted">
+      <History aria-hidden size={12} className="shrink-0" />
+      {text}
+    </p>
+  );
+}
+
 /**
- * Releases › Rules: the one ordered list that decides who gets which profile,
- * with the two default rows fixed at the bottom.
+ * Releases › Rules: the one ordered list that decides who gets which profile.
+ * The two fallback rows fixed at the bottom are rules too, and open in the
+ * same drawer.
  */
 export function RulesTab() {
   const { config, quality, commit } = useQuality();
@@ -104,10 +113,6 @@ export function RulesTab() {
   const devices = useAsync((signal) => api.qualityDevices(signal), []);
   const [params, setParams] = useSearchParams();
   const [target, setTarget] = useState<RuleTarget | null>(null);
-  const [defaultRow, setDefaultRow] = useState<"home" | "away" | null>(null);
-  const [defaultDraft, setDefaultDraft] = useState("");
-  const [defaultError, setDefaultError] = useState<unknown>(null);
-  const [saving, setSaving] = useState(false);
   /** The order being saved, shown until the list reloads. */
   const [moved, setMoved] = useState<QualityRule[] | null>(null);
   const [migratedDismissed, setMigratedDismissed] = useState(false);
@@ -123,8 +128,7 @@ export function RulesTab() {
       const index = rules.findIndex((r) => r.id === ruleId);
       if (index >= 0) setTarget({ index, rule: rules[index]! });
     } else if (row === "home" || row === "away") {
-      setDefaultDraft(row === "home" ? quality.default : (quality.defaultAway ?? ""));
-      setDefaultRow(row);
+      setTarget(ruleTarget(quality, { fallback: row }));
     } else if (params.get("new")) {
       const library = Number(params.get("library")) || undefined;
       const viewer = Number(params.get("viewer")) || undefined;
@@ -150,13 +154,14 @@ export function RulesTab() {
 
   const rules = moved ?? quality.rules ?? [];
   const profiles = quality.profiles ?? [];
-  const showMigratedNote = Boolean(quality.rulesMigrationNote) && !migratedDismissed;
+  const note = quality.migrationNote;
+  const showMigratedNote = Boolean(note && !note.dismissed) && !migratedDismissed;
 
   function dismissMigratedNote() {
     setMigratedDismissed(true);
-    if (!quality?.rulesMigrationNote) return;
+    if (!note || note.dismissed) return;
     void api
-      .putSection("quality", { ...quality, rulesMigrationNote: false })
+      .putSection("quality", { migrationNote: { ...note, dismissed: true } })
       .then(() => config.reload())
       .catch(() => {
         // Optimistic dismissal stays in place for this session.
@@ -175,59 +180,42 @@ export function RulesTab() {
     }
   }
 
-  function openDefault(row: "home" | "away") {
-    if (!quality) return;
-    setDefaultDraft(row === "home" ? quality.default : (quality.defaultAway ?? ""));
-    setDefaultError(null);
-    setDefaultRow(row);
-  }
-
-  async function saveDefault() {
-    if (!quality || !defaultRow) return;
-    setSaving(true);
-    setDefaultError(null);
-    try {
-      await commit(
-        defaultRow === "home"
-          ? { ...quality, default: defaultDraft }
-          : { ...quality, defaultAway: defaultDraft },
-        t("Default saved"),
-      );
-      setDefaultRow(null);
-    } catch (e) {
-      setDefaultError(e);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const fixedRow = (row: "home" | "away") => {
-    const where = row === "home" ? t("At home") : t("Away");
-    const profile = row === "home" ? quality.default : (quality.defaultAway ?? "");
+  const fixedRow = (row: FallbackRow) => {
+    const same = row === "away" && awaySameAsHome(quality);
+    const outcome = fallbackRule(quality, row);
+    const WhereIcon = row === "home" ? Home : Globe;
     return (
-      <li className="flex flex-wrap items-center gap-3 bg-bg-subtle/40 px-4 py-3 sm:px-5">
-        <span className="flex w-10 shrink-0 items-center justify-center text-fg-muted">
+      <li className="flex flex-wrap items-center gap-x-3 gap-y-2 bg-bg-subtle/40 px-3 py-3 sm:px-5">
+        <span className="flex w-10 shrink-0 items-center justify-end pr-0.5 text-fg-muted">
           <Lock aria-hidden size={14} />
         </span>
         <div className="min-w-0 flex-1 basis-56">
-          <p className="text-sm font-medium text-fg">
-            {t("Everything else")} · {where}
+          <p className="flex items-center gap-1.5 text-sm font-medium text-fg">
+            <WhereIcon aria-hidden size={14} className="shrink-0 text-fg-muted" />
+            {fallbackTitle(row)}
           </p>
-          <p className="text-xs text-fg-muted">{t("When no rule picks a profile")}</p>
+          <p className="mt-1 text-xs text-fg-muted">{t("Everything no rule above caught")}</p>
+          {showMigratedNote && !same ? (
+            <Origin
+              text={row === "home" ? t("From your default profile") : t("From your away profile")}
+            />
+          ) : null}
         </div>
-        <Outcome
-          profile={profile}
-          limits={[]}
-          emptyLabel={row === "away" ? t("Same as at home") : undefined}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => openDefault(row)}
-          aria-label={row === "home" ? t("Edit the at home default") : t("Edit the away default")}
-        >
-          <Pencil size={13} /> {t("Edit")}
-        </Button>
+        {same ? (
+          <span className="text-sm text-fg-muted">{t("Same as at home")}</span>
+        ) : (
+          <Outcome profile={outcome.profile ?? ""} limits={ruleLimits(outcome)} />
+        )}
+        <span className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setTarget(ruleTarget(quality, { fallback: row }))}
+            aria-label={t("Edit {name}", { name: fallbackTitle(row) })}
+          >
+            <Pencil size={13} /> {t("Edit")}
+          </Button>
+        </span>
       </li>
     );
   };
@@ -237,7 +225,16 @@ export function RulesTab() {
       {showMigratedNote ? (
         <Alert variant="info" role="status" className="flex items-start justify-between gap-3">
           <AlertDescription>
-            {t("Your quality settings were moved into rules. Nothing plays differently.")}
+            <p className="font-medium text-fg">
+              {t(
+                "Your quality settings from 0.3.20 were moved into these rules. Nothing plays differently.",
+              )}
+            </p>
+            {rules.some((r) => r.from) ? (
+              <p className="mt-1 text-fg-muted">
+                {t("Each rule below says which setting it came from.")}
+              </p>
+            ) : null}
           </AlertDescription>
           <button
             type="button"
@@ -258,7 +255,7 @@ export function RulesTab() {
               "Checked from the top. The first rule with a profile picks it; every matching limit applies.",
             )}
             detail={t(
-              "A rule can pick a profile, set limits, or both. Limits only ever lower quality, and the strictest one wins. When no rule picks a profile, the two rows at the bottom decide.",
+              "A rule can pick a profile, set limits, or both. Limits only ever lower quality, and the strictest one wins. When no rule picks a profile, the two rows at the bottom do.",
             )}
           />
         }
@@ -275,7 +272,7 @@ export function RulesTab() {
       >
         {rules.length === 0 ? (
           <p className="border-b border-border px-5 py-4 text-sm text-fg-muted">
-            {t("No rules yet. Everything uses the defaults below.")}
+            {t("No rules yet. Everything uses the two rows below.")}
           </p>
         ) : (
           <SortableList
@@ -286,6 +283,7 @@ export function RulesTab() {
               const r = localizedRule(raw);
               const conditions = ruleConditions(r, names);
               const title = ruleTitle(r, names);
+              const named = Boolean(raw.name?.trim());
               const label = t("rule {n}", { n: i + 1 });
               const never = shadowedBy(rules, i, devices.data ?? null) >= 0;
               return (
@@ -297,8 +295,12 @@ export function RulesTab() {
                     </span>
                   </span>
                   <div className="min-w-0 flex-1 basis-56">
-                    <p className="truncate text-sm font-medium text-fg">{title}</p>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {/* An unnamed rule's title would only repeat its chips. */}
+                    {named ? <p className="truncate text-sm font-medium text-fg">{title}</p> : null}
+                    <div
+                      className={cn("flex flex-wrap gap-1.5", named && "mt-1.5")}
+                      aria-label={named ? undefined : title}
+                    >
                       {conditions.length === 0 ? (
                         <Badge variant="outline">{t("Everything")}</Badge>
                       ) : (
@@ -313,6 +315,7 @@ export function RulesTab() {
                         })
                       )}
                     </div>
+                    {showMigratedNote ? <Origin text={ruleOrigin(raw)} /> : null}
                   </div>
                   <span className="flex flex-wrap items-center gap-2">
                     <Outcome profile={r.profile ?? ""} limits={ruleLimits(r)} />
@@ -366,37 +369,6 @@ export function RulesTab() {
           if (rule) setTarget({ index, rule });
         }}
       />
-
-      <RecordDrawer
-        open={defaultRow !== null}
-        onClose={() => !saving && setDefaultRow(null)}
-        title={defaultRow === "away" ? t("Everything else, away") : t("Everything else, at home")}
-        description={t("The profile when no rule picks one.")}
-        onSave={() => void saveDefault()}
-        saving={saving}
-        saveLabel={t("Save")}
-        error={defaultError}
-      >
-        <SettingsSection>
-          <SettingsRow
-            title={t("Profile")}
-            control={
-              <div className="w-72 max-w-full">
-                <SearchSelect
-                  {...searchSelectLabels()}
-                  value={defaultDraft}
-                  onChange={setDefaultDraft}
-                  options={[
-                    ...(defaultRow === "away" ? [{ value: "", label: t("Same as at home") }] : []),
-                    ...profiles.map((p) => ({ value: p.name, label: p.name })),
-                  ]}
-                  ariaLabel={t("Profile")}
-                />
-              </div>
-            }
-          />
-        </SettingsSection>
-      </RecordDrawer>
     </>
   );
 }

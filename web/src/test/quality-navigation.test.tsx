@@ -8,16 +8,15 @@ import { settingsIndex } from "../lib/settings-index";
 it("gives Who gets what its own searchable destination and inline controls", async () => {
   renderApp("/releases/check");
   const result = await screen.findByTestId("quality-headline", {}, { timeout: 10000 });
-  expect(result).toHaveTextContent("4K");
+  expect(result).toHaveTextContent("1080p");
   expect(screen.getAllByTestId("quality-headline")).toHaveLength(1);
-  // The step bar shows here too, with Who gets what as the current step.
-  const steps = screen.getByRole("navigation", { name: "How quality works" });
-  expect(steps.querySelector("[aria-current=step]")).toHaveTextContent("Who gets what");
-  const viewer = screen.getByRole("button", { name: "Viewer" });
-  const row = viewer.closest(".grid")!;
-  expect(row).toHaveClass("sm:grid-cols-3");
-  expect(within(row as HTMLElement).getByRole("button", { name: "App" })).toBeVisible();
-  expect(within(row as HTMLElement).getByRole("radio", { name: "Away" })).toBeVisible();
+  // The tabs are the only navigation: no step bar repeats them.
+  expect(screen.queryByRole("navigation", { name: "How quality works" })).not.toBeInTheDocument();
+  // One viewer picker and one device picker drive the table and the check below it.
+  expect(screen.getAllByRole("button", { name: "Filter by viewer" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Filter by device" })).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "App" })).not.toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Away" })).toBeVisible();
   expect(destinations().some((d) => d.href === "/releases/check")).toBe(true);
   expect(settingsIndex().find((d) => d.title === "Who gets what")?.href).toBe("/releases/check");
 });
@@ -36,9 +35,7 @@ it("orders profile sections without a remote bitrate section", async () => {
   renderApp("/releases/profiles");
   await screen.findByRole("button", { name: "Add profile" }, { timeout: 10000 });
   await screen.findByText("Same-quality versions to offer", {}, { timeout: 10000 });
-  const flow = screen.getByRole("navigation", { name: "How quality works" });
-  expect(flow.querySelector("[aria-current=step]")).toHaveTextContent("Profiles");
-  expect(within(flow).queryByRole("link", { name: /Profiles/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("navigation", { name: "How quality works" })).not.toBeInTheDocument();
   const headings = screen.getAllByRole("heading").map((h) => h.textContent);
   const order = ["Profiles", "Which source goes first", "Version menu"].map((s) =>
     headings.indexOf(s),
@@ -63,9 +60,9 @@ it("shows all profiles together without a media switcher and lists where each is
   expect(screen.queryByRole("radiogroup", { name: "Applies to" })).not.toBeInTheDocument();
 
   const row = (name: string) => screen.getByRole("button", { name: `Edit ${name}` }).closest("li")!;
-  expect(within(row("4K")).getByText("Living room Apple TV")).toBeInTheDocument();
-  expect(within(row("1080p")).getByText("Default")).toBeInTheDocument();
-  expect(within(row("Anime")).getByText("Unused")).toBeInTheDocument();
+  expect(within(row("4K")).getByText("Rule 1: Living room Apple TV")).toBeInTheDocument();
+  expect(within(row("1080p")).getByText("Everyone else, at home and away")).toBeInTheDocument();
+  expect(within(row("Anime")).getByText("Not used by any rule")).toBeInTheDocument();
 });
 
 it("collapses guide sync to one line until a profile is imported", async () => {

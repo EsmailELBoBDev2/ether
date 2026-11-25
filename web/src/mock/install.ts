@@ -47,6 +47,59 @@ export function installMockBackend(): void {
     fake.state.boot.ownerConfigured = true;
   }
   if (params.get("backups") === "empty") fake.state.backups = [];
+  // `?quality=upgraded` previews Releases just after upgrading from 0.3.20:
+  // the rules its settings became, each with where it came from, and the note.
+  if (params.get("quality") === "upgraded") {
+    fake.state.config.quality = {
+      ...fake.state.config.quality,
+      rules: [
+        {
+          id: "r_away0001",
+          where: "away",
+          maxBitrateKbps: 8000,
+          from: { kind: "awayLimit" },
+        },
+        {
+          id: "r_viewer01",
+          viewers: [2],
+          maxBitrateKbps: 5000,
+          from: { kind: "viewerLimit", name: "Sam Rivera" },
+        },
+        {
+          id: "r_appletv1",
+          devices: [{ type: "Apple TV", label: "Apple TV" }],
+          profile: "4K",
+          from: { kind: "rule", name: "Apple TV" },
+        },
+        {
+          id: "r_phones01",
+          devices: [{ group: "mobile", label: "Phones & tablets" }],
+          where: "away",
+          profile: "1080p",
+          maxHeight: 1080,
+          from: { kind: "rule", name: "Phones" },
+        },
+        {
+          id: "r_anime001",
+          libraries: [7],
+          profile: "1080p",
+          from: { kind: "library", name: "Anime Shows" },
+        },
+        {
+          id: "r_movies01",
+          libraries: [1],
+          profile: "4K",
+          from: { kind: "library", name: "Movies" },
+        },
+      ],
+      default: "1080p",
+      defaultLimits: {},
+      defaultAway: "",
+      defaultAwayLimits: {},
+      migratedRules: 1,
+      migrationNote: { at: "2026-11-24T15:04:05Z", dismissed: false },
+    };
+  }
   const offApps = new Set(
     (params.get("off") ?? "")
       .split(",")

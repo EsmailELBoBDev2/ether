@@ -115,7 +115,8 @@ type Deps struct {
 	Bus clusterbus.Bus
 	// FetchClient fetches manifests and artifacts; nil builds one from
 	// safefetch and egress CapPlugins. Tests inject an httptest client.
-	FetchClient *http.Client
+	FetchClient   *http.Client
+	IsIndexerHost func(string) bool
 	// CheckPackage runs the conformance kit during install previews.
 	CheckPackage func(context.Context, []byte, map[string][]byte) error
 	Backends     Backends

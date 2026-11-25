@@ -838,10 +838,17 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+			}}}
+		}
+	case "nzb_request":
+		if strings.TrimSpace(q.NZBRef) == "" && (q.NZBIdentity == nil ||
+			strings.TrimSpace(q.NZBIdentity.IndexerID) == "" || strings.TrimSpace(q.NZBIdentity.GUID) == "") {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field: "nzbRef", Message: "nzb_request needs an nzbRef or indexer release identity",
 			}}}
 		}
 	case "usenet_check":
@@ -849,15 +856,15 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
 		}
-		if nzbURL == "" {
+		if nzbURL == "" && q.NZBRef == "" && (q.Candidate == nil || q.Candidate.NZBRef == "") {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "nzbUrl",
-				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+				Message: "usenet_check needs an nzbRef, candidate or legacy nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",

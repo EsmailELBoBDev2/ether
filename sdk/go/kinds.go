@@ -177,7 +177,7 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -232,6 +232,9 @@ type SourceQuery struct {
 	// indexer did not supply an infoHash or magnet.
 	TorrentURL string `json:"torrentUrl,omitempty"`
 	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	TorrentRef  string       `json:"torrentRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// full Candidate from indexer_search.
 	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files
@@ -419,17 +422,22 @@ type DebridServiceRef struct {
 	Name string `json:"name"`
 }
 
+// NZBIdentity identifies a release by its native configured indexer and GUID.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
+}
+
 // SourceCandidate is one Ether-found release for a resolver to rank.
-// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
-// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
-// indexer_search are stripped of indexer API keys and secrets so candidates
-// can be cached safely; Ether re-attaches credentials at fetch time on the
-// originating indexer's origin using indexerId.
+// NZBRef and TorrentRef are opaque references returned by indexer search.
 type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	// Deprecated: indexer search leaves NZBURL empty. Use NZBRef.
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -448,7 +456,7 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query.
+	// Files is populated by release_files or nzb_request.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
 	// or release_files query.
@@ -597,6 +605,8 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
@@ -996,6 +1006,18 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
 	return c.Ether.StreamURL(ctx, viewerID, itemRef)
+}
+
+// RequestNZB opens an indexer search reference and returns a file list and vault reference.
+func (c *Context) RequestNZB(ref string) (SourceCandidate, error) {
+	res, err := c.ResolveSourcesWithResult(SourceQuery{Kind: "nzb_request", NZBRef: ref})
+	if err != nil {
+		return SourceCandidate{}, err
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].NZBRef == "" {
+		return SourceCandidate{}, errors.New("nzb_request returned no vault reference")
+	}
+	return res.Candidates[0], nil
 }
 
 // ResolveSourcesWithResult runs sources.resolve and returns both the candidate

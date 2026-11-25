@@ -41,6 +41,9 @@ CREATE TABLE vault_tracks(
 );
 CREATE INDEX vault_tracks_updated ON vault_tracks(updated_at);
 `)
+	store.Register("vault", 4, `
+CREATE INDEX vault_nzb_name_size ON vault_releases(name,size) WHERE kind='usenet';
+`)
 }
 
 const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
@@ -120,12 +123,22 @@ func (v *library) List(ctx context.Context, q string, k Kind, h *Health, limit i
 }
 func (v *library) ByAlias(ctx context.Context, i, id string) (Key, bool, error) {
 	var k Key
-	e := v.DB.QueryRowContext(ctx, `SELECT a.key FROM vault_aliases a JOIN vault_releases r ON a.key=r.key WHERE a.indexer_id=? AND a.release_id=? AND r.dead=0`, i, id).Scan(&k)
+	e := v.DB.QueryRowContext(ctx, `SELECT a.key FROM vault_aliases a JOIN vault_releases r ON a.key=r.key WHERE a.indexer_id=? AND a.release_id=? AND (r.dead=0 OR r.kind='usenet')`, i, id).Scan(&k)
 	if errors.Is(e, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	return k, e == nil, e
 }
+
+// Include historical tombstones so a missing pack cannot trigger another grab.
+func (v *library) ByNZBName(ctx context.Context, name string, size int64) (Key, bool, error) {
+	var key Key
+	var matches int
+	err := v.DB.QueryRowContext(ctx, `SELECT COALESCE(min(key),''),count(*) FROM
+		(SELECT key FROM vault_releases WHERE kind='usenet' AND name=? AND size=? LIMIT 2) matches`, name, size).Scan(&key, &matches)
+	return key, err == nil && matches == 1, err
+}
+
 func (v *library) Kept(ctx context.Context, rels []core.Release) (map[string]bool, error) {
 	keys, err := v.KeysFor(ctx, rels)
 	if err != nil {
@@ -363,6 +376,13 @@ func (v *library) Touch(ctx context.Context, k Key, avoided bool) error {
 	return v.update(ctx, k, "uses=uses+1,last_used=?,avoided=avoided+?", v.Now().Unix(), flag(avoided))
 }
 func (v *library) Purge(ctx context.Context, k Key) error {
+	entry, err := v.Entry(ctx, k)
+	if err != nil {
+		return err
+	}
+	if entry.Kind == KindUsenet {
+		return ErrNZBRetained
+	}
 	if err := v.update(ctx, k, "dead=1"); err != nil {
 		return err
 	}

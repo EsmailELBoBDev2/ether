@@ -1117,6 +1117,11 @@ export interface KindChangePage {
   complete: boolean;
 }
 
+export interface NZBIdentity {
+  indexerId: string;
+  guid: string;
+}
+
 export interface SourceQuery {
   kind:
     | "indexer_search"
@@ -1126,7 +1131,8 @@ export interface SourceQuery {
     | "debrid_check"
     | "debrid_acquire"
     | "release_files"
-    | "usenet_check";
+    | "usenet_check"
+    | "nzb_request";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. Source plugins that declared the category answer it too. */
   category?: string;
@@ -1159,6 +1165,9 @@ export interface SourceQuery {
   torrentUrl?: string;
   /** Usenet NZB link for usenet_check when not passing a full candidate. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
+  nzbIdentity?: NZBIdentity;
   /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
   /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
@@ -1264,8 +1273,10 @@ export interface SourceCandidate {
   magnet?: string;
   /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
   torrentUrl?: string;
-  /** Key-less Usenet NZB download link; Ether strips same-origin indexer API keys and re-attaches them at fetch time using indexerId so candidates are safe to cache in KV. */
+  /** @deprecated Indexer search leaves this field empty. Use nzbRef. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
   title?: string;
@@ -1368,6 +1379,8 @@ export interface PlayableSource {
   };
   release?: {
     nzbUrl?: string;
+    nzbRef?: string;
+    torrentRef?: string;
     magnet?: string;
     infoHash?: string;
     torrentUrl?: string;

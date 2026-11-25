@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -66,7 +67,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	var busyAt time.Time
 	var busyValue bool
 	mgr, err := plugins.New(plugins.Deps{
-		EventBus:          a.EventBus(),
+		EventBus: a.EventBus(),
+		IsIndexerHost: func(host string) bool {
+			return (a.indexers != nil && a.indexers.IsIndexerHost(host)) || configuredProwlarrHost(a.cfg.Read().Prowlarr.URL, host)
+		},
 		EventRegistry:     a.EventRegistry(),
 		FlowActions:       a.FlowsActions(),
 		ReadRuntimeConfig: func() config.Plugins { return a.cfg.Read().Plugins },
@@ -466,6 +470,10 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	} else if a.sourceProber != nil {
 		probeStream = a.sourceProber.Probe
 	}
+	var pluginNZBs adapters.PluginNZBStore
+	if a.indexers != nil {
+		pluginNZBs = a.indexers
+	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
 		Manager:       mgr,
 		Libraries:     a.libraries,
@@ -473,6 +481,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Blobs:         blobs,
 		Catalog:       kindCatalog,
 		Indexer:       idx,
+		PluginNZBs:    pluginNZBs,
 		Sources:       a.streamSources(),
 		Resolver:      a.resolver,
 		Debrid:        deb,
@@ -813,4 +822,10 @@ func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.Kin
 	}
 	t := piv.Title
 	return &t, nil
+}
+
+// Prowlarr's API is reserved even when it has no imported indexer rows.
+func configuredProwlarrHost(rawURL, host string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }

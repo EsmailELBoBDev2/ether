@@ -4150,16 +4150,16 @@ class DebridServiceRef(TypedDict):
 class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
-    Same-origin ``nzbUrl`` and ``torrentUrl`` links returned by ``indexer_search``
-    have indexer API keys and secrets stripped; Ether re-attaches credentials at
-    fetch time on the originating indexer's origin when handed back with
-    ``indexerId``.
+    Search returns opaque ``nzbRef`` and ``torrentRef`` values. The deprecated
+    ``nzbUrl`` field is empty in search results.
     """
 
     infoHash: str
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     fileIndex: int
     title: str
     size: int
@@ -4210,6 +4210,11 @@ class SourceResolveResult(TypedDict, total=False):
     done: bool
 
 
+class NZBIdentity(TypedDict):
+    indexerId: str
+    guid: str
+
+
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
@@ -4222,6 +4227,7 @@ class SourceQuery(TypedDict, total=False):
         "debrid_acquire",
         "release_files",
         "usenet_check",
+        "nzb_request",
     ]
     query: str
     category: str
@@ -4240,6 +4246,9 @@ class SourceQuery(TypedDict, total=False):
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
+    nzbIdentity: NZBIdentity
     candidate: SourceCandidate
     fileCount: int
 
@@ -4519,9 +4528,9 @@ class _KindsClient:
           name for video release scoring; default uses owner default). Video
           candidates include ``score``, ``resolution``, ``source`` and ``codec``
           alongside ``indexer``/``indexerId``; non-video candidates omit those
-          video fields. Same-origin ``nzbUrl`` and ``torrentUrl`` links are
-          key-less so candidates can be cached in KV without storing indexer API
-          keys (Ether re-attaches credentials at fetch time using ``indexerId``).
+          video fields. Use the result's opaque ``nzbRef`` or ``torrentRef``.
+        - ``nzb_request``: return a file list and a vault reference using
+          ``nzbRef`` or ``nzbIdentity``.
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
         - ``usenet_check``: sampled NNTP article check for a Usenet
@@ -4538,6 +4547,18 @@ class _KindsClient:
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
+
+    def request_nzb(self, release: Union[str, NZBIdentity]) -> SourceCandidate:
+        """Return a file list and permanent vault reference for an indexer NZB."""
+        query: SourceQuery = {"kind": "nzb_request"}
+        if isinstance(release, str):
+            query["nzbRef"] = release
+        else:
+            query["nzbIdentity"] = release
+        result = self.resolve_sources(query)
+        if not result or not result[0].get("nzbRef"):
+            raise ValueError("nzb_request returned no vault reference")
+        return result[0]
 
     def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
         """Run ``sources.resolve`` and return the full envelope (``candidates``, ``indexers``, ``pending``, ``searchId``, ``done``) (#733)."""

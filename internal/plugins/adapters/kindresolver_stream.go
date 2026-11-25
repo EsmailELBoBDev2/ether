@@ -358,6 +358,14 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 	knownLookup, hasKnownLookup := r.debrid.(debridKnownCachedByBackend)
 	for i := range scored {
 		scored[i] = r.stripCandidateAuth(scored[i])
+		if r.pluginNZBs != nil {
+			scored[i].NZBRef = r.pluginNZBs.PluginNZBReference(rels[i])
+			scored[i].NZBURL = ""
+			if scored[i].TorrentURL != "" {
+				scored[i].TorrentRef = r.pluginNZBs.PluginTorrentReference(rels[i])
+				scored[i].TorrentURL = ""
+			}
+		}
 		if plugin, kind, ref, ok := directStream(rels[i].GUID); ok && kind == "lazy" {
 			// A plugin source's category answer: no link of its own, the
 			// plugin lists and opens it (#792).
@@ -377,7 +385,7 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 		nonUsenet := make([]core.SourceCandidate, 0, len(scored))
 		usenetOnly := make([]core.SourceCandidate, 0, len(scored))
 		for _, c := range scored {
-			if c.NZBURL != "" && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" {
+			if (c.NZBURL != "" || c.NZBRef != "") && c.InfoHash == "" && c.Magnet == "" && c.TorrentURL == "" && c.TorrentRef == "" {
 				usenetOnly = append(usenetOnly, c)
 			} else {
 				nonUsenet = append(nonUsenet, c)

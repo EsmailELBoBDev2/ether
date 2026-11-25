@@ -440,6 +440,11 @@ func (s *StreamSources) prepareDirectURL(ctx context.Context, r core.Release, ra
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("plugin stream %q invalid url: %w", r.Name, core.ErrSourceUnavailable)
 	}
+	if mgr := s.manager(); mgr != nil {
+		if err := mgr.CheckIndexerNetwork(u.Hostname()); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.RLock()
 	deb := s.debrid
 	s.mu.RUnlock()

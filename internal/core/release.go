@@ -92,6 +92,8 @@ type Release struct {
 	Indexer    string      `json:"indexer"`              // indexer name
 	Name       string      `json:"name"`                 // release name
 	NZBURL     string      `json:"nzbUrl"`
+	NZBRef     string      `json:"-"` // opaque plugin NZB reference
+	TorrentRef string      `json:"-"` // opaque plugin torrent descriptor reference
 	Size       int64       `json:"size"`
 	PubDate    time.Time   `json:"pubDate"`
 	Grabs      int         `json:"grabs,omitempty"`

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"log/slog"
@@ -63,17 +64,18 @@ func redactURLError(err error) error {
 
 // Options tunes a Client or Manager. Zero values get sensible defaults.
 type Options struct {
-	HTTPClient     *http.Client
-	Logger         *slog.Logger
-	SearchCacheTTL time.Duration // <0 disables cache, 0 = default 6h
-	Vault          vault.Store
-	LegacyNZBDir   func() string // non-empty only while migrating
-	PublicIndexer  func(context.Context, config.Indexer) bool
-	MaxNZBBytes    int64
-	Now            func() time.Time // injected clock (tests)
-	MaxParallel    int              // Manager fan-out; 0 dispatches every configured indexer
-	MaxPerHost     int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
-	HostLimiter    *HostLimiter     // optional shared per-origin concurrency limiter
+	HTTPClient       *http.Client
+	Logger           *slog.Logger
+	SearchCacheTTL   time.Duration // <0 disables cache, 0 = default 6h
+	Vault            vault.Store
+	PluginReferences vault.Sealer
+	LegacyNZBDir     func() string // non-empty only while migrating
+	PublicIndexer    func(context.Context, config.Indexer) bool
+	MaxNZBBytes      int64
+	Now              func() time.Time // injected clock (tests)
+	MaxParallel      int              // Manager fan-out; 0 dispatches every configured indexer
+	MaxPerHost       int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
+	HostLimiter      *HostLimiter     // optional shared per-origin concurrency limiter
 	// ClientIdentity is the owner's policy for the client Ether presents to
 	// indexers; the zero value keeps the Ether identity.
 	ClientIdentity config.ClientIdentity
@@ -158,8 +160,11 @@ type Client struct {
 
 	// nzbFlights coalesces concurrent FetchNZB calls per release id, so
 	// racing warm-up, playback and validation spend one grab.
-	nzbFlightMu sync.Mutex
-	nzbFlights  map[string]*nzbFlight
+	nzbFlightMu      sync.Mutex
+	nzbFlights       map[string]*nzbFlight
+	nzbRefusals      map[string]error
+	nzbRefusalDay    string
+	nzbStoreFailures map[string]struct{}
 
 	cfgMu            sync.RWMutex
 	eventMu          sync.RWMutex
@@ -2264,12 +2269,25 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 		}()
 		started := time.Now()
 		var reserved bool
-		if body := c.keptNZB(fctx, r); body != nil {
-			f.body, f.cached = body, true
-			c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
-		} else {
-			f.body, reserved, f.err = c.fetchNZB(fctx, r)
-			c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		if body, err := c.keptNZB(fctx, r); err != nil || body != nil {
+			f.body, f.cached, f.err = body, body != nil, err
+			if body != nil {
+				c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
+			}
+			return
+		}
+		if f.err = c.nzbRefusal(r); f.err != nil {
+			return
+		}
+		f.body, reserved, f.err = c.fetchNZB(fctx, r)
+		c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		var apiErr *APIError
+		if errors.As(f.err, &apiErr) && apiErr.Code == http.StatusConflict {
+			f.body, f.err = c.keptNZB(fctx, r)
+			if f.body == nil && f.err == nil {
+				f.err = core.ErrReleaseRejected
+				c.rememberNZBRefusal(r.ID, f.err)
+			}
 		}
 	}()
 	return f, true
@@ -2619,24 +2637,53 @@ func TestCapsWithOptions(ctx context.Context, cfg config.Indexer, opts Options) 
 	return id, nil
 }
 
-func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
+func (c *Client) keptNZB(ctx context.Context, r core.Release) ([]byte, error) {
 	if c.vault == nil {
-		return nil
+		return nil, nil
 	}
-	lookup := func(source, id string) []byte {
-		key, ok, err := c.vault.ByAlias(ctx, source, id)
-		if err != nil || !ok {
-			return nil
-		}
+	read := func(key vault.Key) ([]byte, error) {
 		record, err := c.vault.Get(ctx, key)
-		if err != nil || record == nil || len(record.XML) == 0 {
-			return nil
+		if err != nil {
+			return nil, err
+		}
+		if record == nil || len(record.XML) == 0 {
+			return nil, vault.ErrPayloadMissing
 		}
 		_ = c.vault.Touch(ctx, key, true)
-		return bytes.Clone(record.XML)
+		return bytes.Clone(record.XML), nil
 	}
-	if body := lookup(c.indexerID(), r.ID); body != nil {
-		return body
+	lookup := func(source, id string) ([]byte, error) {
+		if id == "" {
+			return nil, nil
+		}
+		key, ok, err := c.vault.ByAlias(ctx, source, id)
+		if !ok || err != nil {
+			return nil, err
+		}
+		return read(key)
+	}
+	guidID := ""
+	if r.GUID != "" {
+		guidID = releaseID(c.indexerID(), r.GUID, "")
+	}
+	for _, id := range []string{r.ID, guidID, c.nzbLinkAlias(r.NZBURL)} {
+		if body, err := lookup(c.indexerID(), id); body != nil || err != nil {
+			return body, err
+		}
+	}
+	if strings.HasPrefix(r.ContentID, nzb.ContentIDPrefix) {
+		if body, err := read(vault.Key(r.ContentID)); !errors.Is(err, vault.ErrNotFound) {
+			return body, err
+		}
+	}
+	if names, ok := c.vault.(vault.NZBIdentityLookup); ok && r.Name != "" && r.Size > 0 {
+		key, found, err := names.ByNZBName(ctx, r.Name, r.Size)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return read(key)
+		}
 	}
 	hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + r.ID))
 	id := hex.EncodeToString(hash[:])
@@ -2644,7 +2691,7 @@ func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
 		if dir := c.legacyDir(); dir != "" {
 			if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
 				c.keepNZB(ctx, r, body)
-				return body
+				return body, nil
 			}
 		}
 	}
@@ -2657,7 +2704,25 @@ func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
 	}
 	r.IndexerID = c.indexerID()
 	private := c.publicIndexer == nil || !c.publicIndexer(ctx, c.Config())
-	if _, err := c.vault.Put(ctx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body}); err != nil {
+	var aliases []string
+	if alias := c.nzbLinkAlias(r.NZBURL); alias != "" {
+		aliases = append(aliases, alias)
+	}
+	if r.GUID != "" {
+		aliases = append(aliases, releaseID(r.IndexerID, r.GUID, ""))
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if _, err := c.vault.Put(writeCtx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body, Aliases: aliases}); err != nil {
+		c.nzbFlightMu.Lock()
+		if c.nzbStoreFailures == nil {
+			c.nzbStoreFailures = make(map[string]struct{})
+		}
+		c.nzbStoreFailures[r.ID] = struct{}{}
+		for _, alias := range aliases {
+			c.nzbStoreFailures[alias] = struct{}{}
+		}
+		c.nzbFlightMu.Unlock()
 		c.log.Warn("could not store indexer release in vault", "indexer", r.IndexerID)
 	}
 }

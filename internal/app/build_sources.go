@@ -119,10 +119,11 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		},
 	})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
-		Logger:         log.With("component", "newznab"),
-		Events:         a.eventBus,
-		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
-		Vault:          a.vault,
+		PluginReferences: a.cfg,
+		Logger:           log.With("component", "newznab"),
+		Events:           a.eventBus,
+		SearchCacheTTL:   cfg.Resolver.SearchCacheTTL.D(),
+		Vault:            a.vault,
 		LegacyNZBDir: func() string {
 			if migrated.Load() {
 				return ""

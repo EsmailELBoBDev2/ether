@@ -96,12 +96,13 @@ const (
 
 // KindResolverDeps configures a KindResolver.
 type KindResolverDeps struct {
-	Manager   *plugins.Manager
-	Libraries *libraries.Service
-	Items     *pluginitems.Service
-	Blobs     *blobcache.Cache
-	Catalog   *KindCatalog
-	Indexer   core.Indexer
+	Manager    *plugins.Manager
+	Libraries  *libraries.Service
+	Items      *pluginitems.Service
+	Blobs      *blobcache.Cache
+	Catalog    *KindCatalog
+	Indexer    core.Indexer
+	PluginNZBs PluginNZBStore
 	// Sources, when set, accounts plugin-release opens (#792) against the
 	// source plugin's grab limits.
 	Sources       *StreamSources
@@ -162,6 +163,7 @@ type KindResolver struct {
 	blobs                *blobcache.Cache
 	catalog              *KindCatalog
 	indexer              core.Indexer
+	pluginNZBs           PluginNZBStore
 	sources              *StreamSources
 	resolver             *resolver.Service
 	debrid               DebridSourceBackend
@@ -271,6 +273,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		blobs:                deps.Blobs,
 		catalog:              deps.Catalog,
 		indexer:              deps.Indexer,
+		pluginNZBs:           deps.PluginNZBs,
 		sources:              deps.Sources,
 		resolver:             deps.Resolver,
 		debrid:               deps.Debrid,
@@ -2159,11 +2162,15 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		cands, _ := raw.([]core.SourceCandidate)
 		return reorder(cloneSourceCandidates(cands)), nil
 
+	case "nzb_request":
+		return r.requestPluginNZB(ctx, q)
+
 	case "release_files":
 		cand := core.SourceCandidate{
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
 			TorrentURL: strings.TrimSpace(q.TorrentURL),
+			TorrentRef: strings.TrimSpace(q.TorrentRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
@@ -2177,11 +2184,14 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if q.Magnet != "" {
 				cand.Magnet = strings.TrimSpace(q.Magnet)
 			}
+			if q.TorrentRef != "" {
+				cand.TorrentRef = strings.TrimSpace(q.TorrentRef)
+			}
 			if q.TorrentURL != "" {
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
 		}
-		if cand.PluginRelease != nil && cand.InfoHash == "" && cand.Magnet == "" && cand.TorrentURL == "" && cand.NZBURL == "" {
+		if cand.PluginRelease != nil && cand.InfoHash == "" && cand.Magnet == "" && cand.TorrentURL == "" && cand.TorrentRef == "" && cand.NZBURL == "" && cand.NZBRef == "" {
 			cand.FileIndex = nil
 			cand.Files = nil
 			return r.pluginReleaseFiles(ctx, cand)
@@ -2201,11 +2211,14 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			if r.indexer == nil {
 				return []core.SourceCandidate{cand}, nil
 			}
-			releaseKey := normalizeNZBKey(cand.NZBURL)
+			releaseKey := candidateNZBKey(cand)
 			workKey := "release_files:" + releaseKey
 			if files, ok := r.lookupUsenetReleaseFiles(releaseKey); ok {
 				noteResolveSourceWork(ctx, workKey, true)
 				cand.Files = files
+				if r.pluginNZBs != nil {
+					cand.NZBURL = ""
+				}
 				return []core.SourceCandidate{cand}, nil
 			}
 			endWork := beginResolveSourceWork(ctx, workKey)
@@ -2214,7 +2227,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 				// Fetching through the originating indexer is the same call
 				// playback makes, so the NZB lands in the vault and playback
 				// does not fetch it again.
-				data, err := r.indexer.FetchNZB(workCtx, rel)
+				data, err := r.fetchPluginNZB(workCtx, rel)
 				if err != nil {
 					return nil, err
 				}
@@ -2247,6 +2260,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			}
 			files, _ := raw.([]core.ReleaseFile)
 			cand.Files = cloneReleaseFiles(files)
+			if r.pluginNZBs != nil {
+				cand.NZBURL = ""
+			}
 			return []core.SourceCandidate{cand}, nil
 		}
 		if rel.Protocol != core.ProtocolTorrent {
@@ -2262,7 +2278,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceReleaseFilesTimeout, func(workCtx context.Context) (any, error) {
 			outCand := cand
 			outRel := rel
-			if outRel.InfoHash == "" && outRel.MagnetURL == "" && outRel.NZBURL != "" {
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && (outRel.NZBURL != "" || outRel.TorrentRef != "") {
 				resolved, err := r.resolveTorrent(workCtx, outRel)
 				if err != nil {
 					return nil, err
@@ -2311,9 +2327,13 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 	case "usenet_check":
 		cand := core.SourceCandidate{
 			NZBURL: strings.TrimSpace(q.NZBURL),
+			NZBRef: strings.TrimSpace(q.NZBRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
+			if q.NZBRef != "" {
+				cand.NZBRef = strings.TrimSpace(q.NZBRef)
+			}
 			cand.NZBURL = strings.TrimSpace(cand.NZBURL)
 			if strings.TrimSpace(q.NZBURL) != "" {
 				cand.NZBURL = strings.TrimSpace(q.NZBURL)
@@ -2325,6 +2345,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		cand.UsenetCheck = &res
+		if r.pluginNZBs != nil {
+			cand.NZBURL = ""
+		}
 		return []core.SourceCandidate{cand}, nil
 
 	case "debrid_acquire":
@@ -2335,6 +2358,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			InfoHash:   strings.ToLower(strings.TrimSpace(q.InfoHash)),
 			Magnet:     strings.TrimSpace(q.Magnet),
 			TorrentURL: strings.TrimSpace(q.TorrentURL),
+			TorrentRef: strings.TrimSpace(q.TorrentRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
@@ -2346,6 +2370,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			}
 			if q.Magnet != "" {
 				cand.Magnet = strings.TrimSpace(q.Magnet)
+			}
+			if q.TorrentRef != "" {
+				cand.TorrentRef = strings.TrimSpace(q.TorrentRef)
 			}
 			if q.TorrentURL != "" {
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
@@ -2367,7 +2394,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		defer endWork()
 		raw, _, err := r.runDetachedSourceFlight(ctx, workKey, sourceDebridAcquireTimeout, func(workCtx context.Context) (any, error) {
 			outRel := rel
-			if outRel.InfoHash == "" && outRel.MagnetURL == "" && outRel.NZBURL != "" {
+			if outRel.InfoHash == "" && outRel.MagnetURL == "" && (outRel.NZBURL != "" || outRel.TorrentRef != "") {
 				resolved, err := r.resolveTorrent(workCtx, outRel)
 				if err != nil {
 					return nil, err
@@ -2392,6 +2419,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 				InfoHash:   outRel.InfoHash,
 				Magnet:     outRel.MagnetURL,
 				TorrentURL: cand.TorrentURL,
+				TorrentRef: cand.TorrentRef,
 				Cached:     true,
 				CachedBy:   cachedBy,
 			}}, nil
@@ -2921,13 +2949,13 @@ func isTorrentReleaseSource(src core.PlayableSource) bool {
 		return false
 	}
 	rel := src.Release
-	if strings.TrimSpace(rel.InfoHash) != "" || strings.TrimSpace(rel.Magnet) != "" || strings.TrimSpace(rel.TorrentURL) != "" {
+	if strings.TrimSpace(rel.InfoHash) != "" || strings.TrimSpace(rel.Magnet) != "" || strings.TrimSpace(rel.TorrentURL) != "" || rel.TorrentRef != "" {
 		return true
 	}
 	if rel.Candidate != nil {
 		return strings.TrimSpace(rel.Candidate.InfoHash) != "" ||
 			strings.TrimSpace(rel.Candidate.Magnet) != "" ||
-			strings.TrimSpace(rel.Candidate.TorrentURL) != ""
+			strings.TrimSpace(rel.Candidate.TorrentURL) != "" || rel.Candidate.TorrentRef != ""
 	}
 	return false
 }
@@ -3627,7 +3655,9 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.InfoHash = strings.ToLower(strings.TrimSpace(hint.Candidate.InfoHash))
 		rel.MagnetURL = strings.TrimSpace(hint.Candidate.Magnet)
 		torrentURL = strings.TrimSpace(hint.Candidate.TorrentURL)
+		rel.TorrentRef = hint.Candidate.TorrentRef
 		rel.NZBURL = strings.TrimSpace(hint.Candidate.NZBURL)
+		rel.NZBRef = strings.TrimSpace(hint.Candidate.NZBRef)
 		rel.Name = hint.Candidate.Title
 		rel.Size = hint.Candidate.Size
 		rel.Seeders = hint.Candidate.Seeders
@@ -3645,8 +3675,14 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 	if m := strings.TrimSpace(hint.Magnet); m != "" {
 		rel.MagnetURL = m
 	}
+	if hint.TorrentRef != "" {
+		rel.TorrentRef = hint.TorrentRef
+	}
 	if t := strings.TrimSpace(hint.TorrentURL); t != "" {
 		torrentURL = t
+	}
+	if ref := strings.TrimSpace(hint.NZBRef); ref != "" {
+		rel.NZBRef = ref
 	}
 	if u := strings.TrimSpace(hint.NZBURL); u != "" {
 		rel.NZBURL = u
@@ -3663,7 +3699,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		}
 	}
 	switch {
-	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "" || rel.TorrentRef != "":
 		rel.Protocol = core.ProtocolTorrent
 		if torrentURL != "" {
 			// Core's torrent resolvers (newznab/cardigann) read the torrent
@@ -3672,7 +3708,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		} else {
 			rel.NZBURL = ""
 		}
-	case rel.NZBURL != "":
+	case rel.NZBURL != "" || rel.NZBRef != "":
 		rel.Protocol = core.ProtocolUsenet
 	case pluginReleaseOf(&hint) != nil:
 		ref := hint.Candidate.PluginRelease
@@ -3687,7 +3723,11 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 }
 
 func releaseIDWithTarget(rel core.Release) string {
-	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
+	identity := firstNonEmpty(rel.InfoHash, rel.MagnetURL, rel.GUID)
+	if identity == "" {
+		identity = fmt.Sprintf("%x", sha256.Sum256([]byte(firstNonEmpty(rel.NZBRef, rel.TorrentRef, rel.NZBURL))))
+	}
+	id := "kind:" + identity
 	if rel.Target != nil {
 		selection, _ := json.Marshal(rel.Target)
 		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
@@ -3800,6 +3840,7 @@ func kindDefaultMIME(decl plugins.MediaKindMeta) string {
 }
 
 func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME string) (core.Release, error) {
+	src = kindstream.NormalizeNZBSource(src)
 	if src.Release == nil {
 		return core.Release{}, core.ErrSourceUnavailable
 	}
@@ -3997,14 +4038,17 @@ func (r *KindResolver) listNZBFiles(ctx context.Context, releaseID string, data 
 }
 
 func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (core.Release, error) {
-	if r.indexer == nil {
-		return rel, core.ErrSourceUnavailable
+	var resolved core.Release
+	var err error
+	if r.pluginNZBs != nil {
+		resolved, err = r.pluginNZBs.ResolvePluginTorrent(ctx, rel)
+	} else {
+		tr, ok := r.indexer.(debrid.TorrentResolver)
+		if !ok {
+			return rel, fmt.Errorf("kindresolver: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
+		}
+		resolved, err = tr.ResolveTorrent(ctx, rel)
 	}
-	tr, ok := r.indexer.(debrid.TorrentResolver)
-	if !ok {
-		return rel, fmt.Errorf("kindresolver: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
-	}
-	resolved, err := tr.ResolveTorrent(ctx, rel)
 	if err != nil {
 		return rel, err
 	}
@@ -4083,7 +4127,7 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		}
 		acqCtx, acqCancel := withHardTimeout(ctx, r.engineOpenTimeout)
 		defer acqCancel()
-		if rel.InfoHash == "" && rel.MagnetURL == "" && rel.NZBURL != "" {
+		if rel.InfoHash == "" && rel.MagnetURL == "" && (rel.NZBURL != "" || rel.TorrentRef != "") {
 			resolved, err := r.resolveTorrent(acqCtx, rel)
 			if err != nil {
 				if r.log != nil {
@@ -4141,18 +4185,18 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 		}
 		return ms, nil
 	}
-	if rel.NZBURL != "" {
+	if rel.NZBURL != "" || rel.NZBRef != "" {
 		if r.indexer == nil {
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolUsenet
-		releaseKey := normalizeNZBKey(rel.NZBURL)
+		releaseKey := candidateNZBKey(core.SourceCandidate{NZBURL: rel.NZBURL, NZBRef: rel.NZBRef})
 		if r.log != nil {
 			r.log.Info("kindresolver: opening release", "release", rel.ID, "name", rel.Name, "protocol", rel.Protocol, "indexer", rel.Indexer)
 		}
 		fetchStart := time.Now()
 		fetchCtx, fetchCancel := withHardTimeout(ctx, r.nzbFetchTimeout)
-		nzbData, err := r.indexer.FetchNZB(fetchCtx, rel)
+		nzbData, err := r.fetchPluginNZB(fetchCtx, rel)
 		fetchCancel()
 		fetchTook := time.Since(fetchStart)
 		if err != nil {

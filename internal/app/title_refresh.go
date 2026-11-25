@@ -15,7 +15,7 @@ import (
 // within the cooldown, or while refreshes are already running at the cap,
 // is answered without new work.
 const (
-	titleRefreshTimeout     = 30 * time.Second
+	titleRefreshTimeout     = 2 * time.Minute
 	titleRefreshCooldown    = 10 * time.Minute
 	titleRefreshConcurrency = 2
 )
@@ -50,38 +50,61 @@ func refreshTarget(key core.RatingKey) (core.RatingKey, bool) {
 }
 
 func (t *titleRefresher) RefreshTitleMetadata(_ context.Context, viewer *core.Viewer, key core.RatingKey) error {
-	if t == nil || t.refresh == nil || viewer == nil || !viewer.IsOwner {
-		return nil
+	if viewer == nil || !viewer.IsOwner {
+		return core.ErrNotAvailable
 	}
 	target, ok := refreshTarget(key)
 	if !ok {
+		return core.ErrNotFound
+	}
+	if !t.reserve(target, true) {
 		return nil
 	}
-	now := t.now()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), titleRefreshTimeout)
+		defer cancel()
+		t.finish(target, t.refresh(ctx, target))
+	}()
+	return nil
+}
+
+func (t *titleRefresher) reserve(key core.RatingKey, cooldown bool) bool {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
 	for k, at := range t.recent {
-		if now.Sub(at) >= titleRefreshCooldown {
+		if !at.IsZero() && now.Sub(at) >= titleRefreshCooldown {
 			delete(t.recent, k)
 		}
 	}
-	if _, seen := t.recent[target]; seen || t.running >= titleRefreshConcurrency {
-		t.mu.Unlock()
-		return nil
+	if at, seen := t.recent[key]; (seen && (at.IsZero() || cooldown)) || t.running >= titleRefreshConcurrency {
+		return false
 	}
-	t.recent[target] = now
+	t.recent[key] = time.Time{}
 	t.running++
-	t.mu.Unlock()
-	go func() {
-		defer func() {
-			t.mu.Lock()
-			t.running--
-			t.mu.Unlock()
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), titleRefreshTimeout)
-		defer cancel()
-		_ = t.refresh(ctx, target)
-	}()
-	return nil
+	return true
+}
+
+func (t *titleRefresher) finish(key core.RatingKey, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.running--
+	if err != nil {
+		delete(t.recent, key)
+	} else {
+		t.recent[key] = t.now()
+	}
+}
+
+func (t *titleRefresher) run(ctx context.Context, key core.RatingKey) error {
+	if !t.reserve(key, false) {
+		return core.ErrNotAvailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, titleRefreshTimeout)
+	defer cancel()
+	err := t.refresh(ctx, key)
+	t.finish(key, err)
+	return err
 }
 
 var _ frontend.TitleRefresher = (*titleRefresher)(nil)
@@ -92,15 +115,19 @@ func (a *App) appTitleRefresher() *titleRefresher {
 	a.titleRefreshOnce.Do(func() {
 		a.titleRefresh = newTitleRefresher(func(ctx context.Context, key core.RatingKey) error {
 			if a.catalog == nil {
-				return nil
+				return core.ErrNotAvailable
 			}
-			if _, err := a.catalog.RefreshTitle(ctx, key, true); err != nil {
-				if a.log != nil {
-					a.log.Debug("app title refresh failed", "key", key, "err", err)
-				}
+			paths, err := a.catalog.TitleTreeArtwork(ctx, key)
+			if err != nil {
 				return err
 			}
-			_, err := a.catalog.RefreshStoredTitle(ctx, key)
+			if _, err := a.catalog.RefreshTitleTree(ctx, key); err != nil {
+				return err
+			}
+			current, err := a.catalog.TitleTreeArtwork(ctx, key)
+			if a.images != nil {
+				a.images.InvalidateTMDB(append(paths, current...))
+			}
 			return err
 		})
 	})

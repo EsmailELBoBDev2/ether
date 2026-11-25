@@ -139,26 +139,27 @@ type Record struct {
 
 // Entry is one index row (no payload).
 type Entry struct {
-	CacheID   string // original playable release ID (the parent release ID for a pack)
-	Key       Key
-	Kind      Kind
-	Name      string
-	TitleKey  string // normalized title tokens
-	TMDB      int
-	Year      int
-	Season    int
-	Episode   int
-	Size      int64
-	Segments  int
-	Source    string // indexer id, "import:sabnzbd", "rosetta", ...
-	Private   bool   // from a private indexer: DB-equivalent handling
-	Added     time.Time
-	LastUsed  time.Time
-	Uses      int
-	Health    Health
-	HealthAt  time.Time
-	ProfileFP string // profile fingerprint when it was chosen
-	Info      core.ReleaseInfo
+	CacheID    string // original playable release ID (the parent release ID for a pack)
+	Key        Key
+	Kind       Kind
+	Name       string
+	TitleKey   string // normalized title tokens
+	OwnerMatch bool   // title binding explicitly corrected by the owner
+	TMDB       int
+	Year       int
+	Season     int
+	Episode    int
+	Size       int64
+	Segments   int
+	Source     string // indexer id, "import:sabnzbd", "rosetta", ...
+	Private    bool   // from a private indexer: DB-equivalent handling
+	Added      time.Time
+	LastUsed   time.Time
+	Uses       int
+	Health     Health
+	HealthAt   time.Time
+	ProfileFP  string // profile fingerprint when it was chosen
+	Info       core.ReleaseInfo
 }
 
 // PutRequest stores a release.

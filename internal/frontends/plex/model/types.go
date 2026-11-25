@@ -569,6 +569,10 @@ type Hub struct {
 
 // SearchResult wraps one /library/search hit.
 type SearchResult struct {
+	GUID      string         `plex:"guid,omitempty"`
+	Name      string         `plex:"name,omitempty"`
+	Year      int            `plex:"year,omitempty"`
+	Lifespan  string         `plex:"lifespan,omitempty"`
 	Score     float64        `plex:"score"`
 	Metadata  *Metadata      `plex:"Metadata,object"`
 	Directory *Directory     `plex:"Directory,object"`

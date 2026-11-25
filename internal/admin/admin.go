@@ -295,7 +295,8 @@ type Deps struct {
 	// AddonCatalogImports backs /api/collections/addon-imports*.
 	AddonCatalogImports AddonCatalogImporter
 	// CatalogHelper backs /api/catalog/*.
-	CatalogHelper CatalogHelper
+	CatalogHelper   CatalogHelper
+	TitleManagement CatalogTitleManagement
 	// PluginTitleDetail resolves plugin-library rating keys for
 	// GET /api/catalog/title/{key}. Optional; nil answers plugin keys 404.
 	PluginTitleDetail func(context.Context, core.RatingKey) (*core.Title, error)

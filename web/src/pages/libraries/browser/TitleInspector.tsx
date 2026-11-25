@@ -16,6 +16,7 @@ import { useAsync } from "../../../lib/hooks";
 import { localToday } from "../../calendar/model";
 import { CatalogTags } from "./CatalogTags";
 import { TitleAvailability } from "./TitleAvailability";
+import { TitleMetadataActions } from "./TitleMetadataActions";
 import { TitleCalendar } from "./TitleCalendar";
 import { NextEpisodeCard, TitleEpisodes } from "./TitleEpisodes";
 import { TitleReleases, milestone } from "./TitleReleases";
@@ -43,12 +44,14 @@ export function TitleInspector({
   watchlistAction,
   watchlistViewers,
   onLibraryChange,
+  onMatch,
 }: {
   titleKey: string;
   onClose: () => void;
   watchlistAction?: ReactNode;
   watchlistViewers?: ReactNode;
   onLibraryChange?: () => void;
+  onMatch?: (key: string) => void;
 }) {
   const state = useAsync(() => api.title(titleKey), [titleKey]);
   const title = state.data;
@@ -71,6 +74,7 @@ export function TitleInspector({
     (signal) => (isMovie ? titleScheduleApi.releases(titleKey, signal) : Promise.resolve(null)),
     [titleKey, isMovie],
   );
+  const [artworkRevision, setArtworkRevision] = useState(0);
   const [tab, setTab] = useState<InspectorTab>("overview");
   const [focus, setFocus] = useState<EpisodeFocus | null>(null);
   const [availabilityKey, setAvailabilityKey] = useState<string | null>(null);
@@ -142,7 +146,42 @@ export function TitleInspector({
         <Overview
           watchlistAction={watchlistAction}
           watchlistViewers={watchlistViewers}
-          title={title}
+          title={
+            artworkRevision
+              ? {
+                  ...title,
+                  poster: title.poster && appendArtworkRevision(title.poster, artworkRevision),
+                  backdrop:
+                    title.backdrop && appendArtworkRevision(title.backdrop, artworkRevision),
+                }
+              : title
+          }
+          metadataActions={
+            isShow || isMovie ? (
+              <TitleMetadataActions
+                key={title.key}
+                title={title}
+                onRefresh={async () => {
+                  await Promise.all([
+                    state.reload(),
+                    schedule.reload(),
+                    releases.reload(),
+                    library.reload(),
+                  ]);
+                  setArtworkRevision((revision) => revision + 1);
+                  onLibraryChange?.();
+                }}
+                onMatch={(key) => {
+                  if (key === titleKey) {
+                    void state.reload();
+                  } else {
+                    onMatch?.(key);
+                  }
+                  onLibraryChange?.();
+                }}
+              />
+            ) : null
+          }
           library={library.data ?? null}
           onLibraryReload={async () => {
             await library.reload();
@@ -160,6 +199,10 @@ export function TitleInspector({
       )}
     </Drawer>
   );
+}
+
+function appendArtworkRevision(url: string, revision: number) {
+  return url + (url.includes("?") ? "&" : "?") + "refresh=" + revision;
 }
 
 export function libraryReasonLine(item: TitleLibraryReason): string {
@@ -293,6 +336,7 @@ function Overview({
   onShowReleases,
   onReload,
   onClose,
+  metadataActions,
 }: {
   watchlistAction?: ReactNode;
   watchlistViewers?: ReactNode;
@@ -307,6 +351,7 @@ function Overview({
   onShowReleases: () => void;
   onReload: () => void;
   onClose: () => void;
+  metadataActions: ReactNode;
 }) {
   const isShow = title.type === "show";
   return (
@@ -355,6 +400,7 @@ function Overview({
             {watchlistAction}
             {isShow || title.type === "movie" ? <WarmingControls titleKey={title.key} /> : null}
             {watchlistViewers}
+            {metadataActions}
           </div>
         ) : null}
         <LibraryStatusSection titleKey={title.key} status={library} onChanged={onLibraryReload} />

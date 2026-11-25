@@ -10,3 +10,9 @@ import "context"
 type TitleRefresher interface {
 	RefreshTitleMetadata(ctx context.Context, viewer *Viewer, key RatingKey) error
 }
+
+// TitleMatcher searches the metadata provider and moves bindings to the chosen title.
+type TitleMatcher interface {
+	SearchTitleMatches(context.Context, MediaType, string, int) ([]Title, error)
+	ApplyTitleMatch(context.Context, RatingKey, int64) (RatingKey, error)
+}

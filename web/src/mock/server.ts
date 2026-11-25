@@ -5919,6 +5919,29 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const followed = t ? null : calendar.title(decodeURIComponent(seg[2]));
       if (followed) return json(followed);
       if (!t) return err(404, "not_found", "no such title");
+      if (seg[3] === "refresh" && method === "POST") return new Response(null, { status: 204 });
+      if (seg[3] === "matches" && method === "GET") {
+        const search = (url.searchParams.get("q") ?? "").toLowerCase();
+        const year = Number(url.searchParams.get("year"));
+        return json(
+          [...byKey.values()]
+            .filter(
+              (item) =>
+                item.type === t.type &&
+                item.title.toLowerCase().includes(search) &&
+                (!year || item.year === year),
+            )
+            .slice(0, 20)
+            .map((item) => ({ ...card(item), tmdbId: Number(item.key) % 1e15 })),
+        );
+      }
+      if (seg[3] === "match" && method === "PUT") {
+        const id = (body as { tmdbId: number }).tmdbId;
+        const next = [...byKey.values()].find(
+          (item) => item.type === t.type && Number(item.key) % 1e15 === id,
+        );
+        return next ? json({ key: next.key }) : err(404, "not_found", "no such title");
+      }
       if (seg[3] === "tags") {
         if (method === "PUT")
           ownerTags.set(t.key, [

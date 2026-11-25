@@ -19,6 +19,10 @@ const maxRefreshKeys = 20
 // nothing walks a library.
 func (s *Server) handleMetadataRefresh(w http.ResponseWriter, r *http.Request) {
 	pr := FromContext(r.Context())
+	if pr.User.Delegated {
+		writeHTTPError(w, http.StatusForbidden)
+		return
+	}
 	keys, err := parseKeys(chi.URLParam(r, "key"))
 	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)

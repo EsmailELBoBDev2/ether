@@ -510,6 +510,7 @@ type Host struct {
 	// TitleRefresh refreshes one title's metadata for an owner's app request.
 	// Nil answers the request without refreshing.
 	TitleRefresh TitleRefresher
+	TitleMatch   TitleMatcher
 	LazyStreams  LazyStreams
 	LANStreams   LANLazyStreams
 	// KindStreams opens byte-addressable media and lists playable leaves for

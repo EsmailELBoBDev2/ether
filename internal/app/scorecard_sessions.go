@@ -469,6 +469,13 @@ func (s scorecardSessionWrapper) StreamDecision(ctx context.Context, a frontend.
 	return core.Decision{}, core.ErrNotAvailable
 }
 
+func (s scorecardSessionWrapper) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
+	if reader, ok := s.embeddedScorecardSessions.(frontend.PlayingReleaseReader); ok {
+		return reader.PlayingRelease(ctx, a, id)
+	}
+	return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
+}
+
 func (s scorecardSessionWrapper) AudioFallbackAvailable() bool {
 	audio, ok := s.embeddedScorecardSessions.(frontend.AudioFallback)
 	return ok && audio.AudioFallbackAvailable()

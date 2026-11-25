@@ -1192,6 +1192,23 @@ func (b *Broker) logMasterFailure(r *http.Request, sessionID, reason string) {
 	}
 }
 
+// PlayingRelease reports the release the session's playback reads now,
+// after any failover. It reads the live playback session; it never resolves.
+func (b *Broker) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
+	s, _, err := b.accessSession(ctx, a, id, false)
+	if err != nil {
+		return core.Release{}, core.MediaInfo{}, err
+	}
+	if s.live || s.playID == "" || b.deps.Playback == nil {
+		return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
+	}
+	ps, ok := b.deps.Playback.Session(s.playID)
+	if !ok || ps == nil || ps.Resolution == nil || ps.Resolution.Release.ID == "" {
+		return core.Release{}, core.MediaInfo{}, core.ErrNotAvailable
+	}
+	return ps.Resolution.Release, publicMedia(ps.Info), nil
+}
+
 func (b *Broker) StreamDecision(ctx context.Context, a frontend.SessionAccess, id string) (core.Decision, error) {
 	if _, _, err := b.access(ctx, a, id); err != nil {
 		return core.Decision{}, err

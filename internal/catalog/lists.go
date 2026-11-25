@@ -194,7 +194,13 @@ func (c *Catalog) searchWithOpts(ctx context.Context, query string, types []core
 	if limit <= 0 {
 		limit = 20
 	}
-	items, err := c.searchTitlesOpts(ctx, query, types, limit, 0, unfiltered)
+	coldCtx := ctx
+	if core.ExplicitSearch(ctx) && !c.TMDBConfigured() {
+		// A query with a trailing year can take two passes. Both share
+		// the same provider allowance.
+		coldCtx = WithReadWaitBudget(ctx, coldSourceSearchWait)
+	}
+	items, err := c.searchTitlesOpts(ctx, coldCtx, query, types, limit, 0, unfiltered)
 	if err != nil || len(items) > 0 {
 		return items, err
 	}
@@ -202,7 +208,7 @@ func (c *Catalog) searchWithOpts(ctx context.Context, query string, types []core
 	if year == 0 {
 		return items, nil
 	}
-	return c.searchTitlesOpts(ctx, title, types, limit, year, unfiltered)
+	return c.searchTitlesOpts(ctx, coldCtx, title, types, limit, year, unfiltered)
 }
 
 // Only interpret a final, separated year after the literal query found nothing.
@@ -226,7 +232,7 @@ func searchTitleYear(query string) (string, int) {
 	return title, year
 }
 
-func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []core.MediaType, limit, year int, unfiltered bool) ([]core.Title, error) {
+func (c *Catalog) searchTitlesOpts(ctx, coldCtx context.Context, query string, types []core.MediaType, limit, year int, unfiltered bool) ([]core.Title, error) {
 	// Track origins so visibility and final hydration retain the different
 	// local and remote semantics.
 	localKeys := make(map[core.RatingKey]bool)
@@ -613,11 +619,12 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 		// they are immediate.
 		wait = searchRemoteGrace
 	}
-	if !tmdbReady && len(sources) > 0 && len(out) == 0 && core.ExplicitSearch(ctx) {
-		// A cold non-TMDB install has no indexed results to show yet. Give
-		// the explicit search one bounded provider lookup.
-		wait = coldSourceSearchWait
-		ctx = WithReadWaitBudget(ctx, wait)
+	if !tmdbReady && core.ExplicitSearch(ctx) {
+		wait = 0
+		if len(out) == 0 {
+			wait = coldSourceSearchWait
+			ctx = coldCtx
+		}
 	} else if noReadWait(ctx) {
 		wait = 0
 	}

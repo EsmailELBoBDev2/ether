@@ -284,7 +284,7 @@ func evalSummaryCell(q config.Quality, lib SummaryLibrary, libByID map[int64]Sum
 			continue
 		case libRelDirect:
 			if r.HasLimits() {
-				limits.add(r)
+				limits.add(r.Limits())
 				if r.ID != "" {
 					cell.LimitRuleIDs = append(cell.LimitRuleIDs, r.ID)
 				}
@@ -298,38 +298,21 @@ func evalSummaryCell(q config.Quality, lib SummaryLibrary, libByID map[int64]Sum
 			}
 		}
 	}
+	if lib.ChosenByPlugin {
+		cell.Source = ProfileFromPlugin
+	} else if cell.Profile == "" {
+		choice := fallbackProfile(q, where == config.WhereAway)
+		cell.Profile = choice.profile.Name
+		cell.Source = choice.source
+		source, fallback := fallbackLimits(q, choice)
+		if fallback.HasLimits() {
+			limits.add(fallback)
+			cell.LimitRuleIDs = append(cell.LimitRuleIDs, string(source))
+		}
+	}
 	cell.MaxHeight = limits.maxHeight
 	cell.MaxBitrateKbps = limits.maxBitrateKbps
 	cell.Stereo = limits.stereo
-
-	if lib.ChosenByPlugin {
-		cell.Profile = ""
-		cell.Source = ProfileFromPlugin
-		cell.ProfileRuleID = ""
-		return cell
-	}
-	if cell.Profile != "" {
-		return cell
-	}
-	if where == config.WhereAway && q.DefaultAway != "" {
-		if p, ok := core.FindProfile(q.Profiles, q.DefaultAway); ok {
-			cell.Profile = p.Name
-			cell.Source = ProfileFromDefaultAway
-			return cell
-		}
-	}
-	if p, ok := core.FindProfile(q.Profiles, q.Default); ok {
-		cell.Profile = p.Name
-		cell.Source = ProfileFromDefault
-		return cell
-	}
-	if len(q.Profiles) > 0 {
-		cell.Profile = q.Profiles[0].Name
-		cell.Source = ProfileFromDefault
-		return cell
-	}
-	cell.Profile = defaultProfile().Name
-	cell.Source = ProfileBuiltin
 	return cell
 }
 
@@ -350,12 +333,12 @@ func summaryRuleMatchesViewerAndDevice(r config.QualityRule, viewerID int64, dev
 }
 
 type summaryDeviceMatcher struct {
-	dev      SummaryDevice
-	group    string
-	devType  string
-	app      string
-	hasCaps  bool
-	caps     core.ClientCaps
+	dev     SummaryDevice
+	group   string
+	devType string
+	app     string
+	hasCaps bool
+	caps    core.ClientCaps
 }
 
 func newSummaryDeviceMatcher(dev SummaryDevice) summaryDeviceMatcher {

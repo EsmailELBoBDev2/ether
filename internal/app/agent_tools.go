@@ -826,12 +826,14 @@ func (qs *appQualityRulesService) QualityRules(ctx context.Context, includeDevic
 		}
 	}
 	snap := builtin.QualityRulesSnapshot{
-		Default:     cfg.Quality.Default,
-		DefaultAway: cfg.Quality.DefaultAway,
-		Profiles:    profiles,
-		Rules:       cfg.Quality.Rules,
-		Libraries:   libraries,
-		Viewers:     viewers,
+		Default:           cfg.Quality.Default,
+		DefaultAway:       cfg.Quality.DefaultAway,
+		DefaultLimits:     cfg.Quality.DefaultLimits,
+		DefaultAwayLimits: cfg.Quality.DefaultAwayLimits,
+		Profiles:          profiles,
+		Rules:             cfg.Quality.Rules,
+		Libraries:         libraries,
+		Viewers:           viewers,
 	}
 	if includeDevices {
 		regApps := clientreg.Apps()

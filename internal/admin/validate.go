@@ -25,6 +25,17 @@ func (e FieldError) Error() string { return e.Field + ": " + e.Message }
 
 type validator struct{ errs []FieldError }
 
+func (v *validator) qualityLimits(field string, l config.QualityLimits) {
+	switch l.MaxHeight {
+	case 0, 480, 720, 1080, 2160:
+	default:
+		v.add(field+".maxHeight", "must be 0, 480, 720, 1080 or 2160")
+	}
+	if l.MaxBitrateKbps < 0 {
+		v.add(field+".maxBitrateKbps", "must be >= 0")
+	}
+}
+
 func (v *validator) add(field, format string, args ...any) {
 	v.errs = append(v.errs, FieldError{Field: field, Message: fmt.Sprintf(format, args...)})
 }
@@ -525,11 +536,15 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if cfg.Quality.DefaultAway != "" && len(profiles) > 0 && !exists(cfg.Quality.DefaultAway) {
 		v.add("quality.defaultAway", "names a profile that does not exist")
 	}
+	v.qualityLimits("quality.defaultLimits", cfg.Quality.DefaultLimits)
+	v.qualityLimits("quality.defaultAwayLimits", cfg.Quality.DefaultAwayLimits)
 	ruleIDs := map[string]bool{}
 	for i, r := range cfg.Quality.Rules {
 		f := fmt.Sprintf("quality.rules[%d]", i)
 		if r.ID != "" {
-			if ruleIDs[r.ID] {
+			if r.ID == "default" || r.ID == "defaultAway" {
+				v.add(f+".id", "is reserved for a fallback row")
+			} else if ruleIDs[r.ID] {
 				v.add(f+".id", "is used by another rule")
 			}
 			ruleIDs[r.ID] = true
@@ -541,14 +556,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		} else if r.Profile != "" && len(profiles) > 0 && !exists(r.Profile) {
 			v.add(f+".profile", "names a profile that does not exist")
 		}
-		switch r.MaxHeight {
-		case 0, 480, 720, 1080, 2160:
-		default:
-			v.add(f+".maxHeight", "must be 0, 480, 720, 1080 or 2160")
-		}
-		if r.MaxBitrateKbps < 0 {
-			v.add(f+".maxBitrateKbps", "must be >= 0")
-		}
+		v.qualityLimits(f, r.Limits())
 		for j, d := range r.Devices {
 			n := 0
 			for _, s := range []string{d.Group, d.Type, d.App, d.Client, d.Contains} {

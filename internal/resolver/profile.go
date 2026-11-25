@@ -70,12 +70,17 @@ type playTarget struct {
 	// media lets Kind rules apply.
 	titled bool
 	inLib  Membership
+	// Fallback limits apply once the play is known to use a fallback row.
+	skipFallbackLimits bool
 }
 
 func mediaTarget(media string) playTarget { return playTarget{media: normalizeMedia(media)} }
 
 func titleTarget(t *core.Title, inLib Membership) playTarget {
-	return playTarget{media: titleMedia(t), titled: t != nil, inLib: inLib}
+	return playTarget{
+		media: titleMedia(t), titled: t != nil, inLib: inLib,
+		skipFallbackLimits: t != nil && t.Key.IsPluginKey(),
+	}
 }
 
 // ruleLimits are the limits every matching rule contributes; the
@@ -86,7 +91,7 @@ type ruleLimits struct {
 	stereo         bool
 }
 
-func (l *ruleLimits) add(r config.QualityRule) {
+func (l *ruleLimits) add(r config.QualityLimits) {
 	if r.MaxHeight > 0 && (l.maxHeight == 0 || r.MaxHeight < l.maxHeight) {
 		l.maxHeight = r.MaxHeight
 	}
@@ -242,12 +247,12 @@ func ruleMatches(rule config.QualityRule, facts *clientFacts, user *core.User, t
 
 // evaluation is the walk of the rule list for one play.
 type evaluation struct {
-	choice      profileChoice
-	limits      ruleLimits
-	limitRules  []int // indexes of matching rules that set a limit
-	deviceRule  bool  // the profile came from a rule with a Device condition
-	matched     []int // every matching rule, in order
-	defaultName string
+	choice              profileChoice
+	limits              ruleLimits
+	limitRules          []int // indexes of matching rules that set a limit
+	deviceRule          bool  // the profile came from a rule with a Device condition
+	matched             []int // every matching rule, in order
+	fallbackLimitSource ProfileSource
 }
 
 // evaluate walks the rules from the top: the first matching rule that
@@ -263,7 +268,7 @@ func evaluate(q config.Quality, caps core.ClientCaps, user *core.User, target pl
 		}
 		ev.matched = append(ev.matched, i)
 		if rule.HasLimits() {
-			ev.limits.add(rule)
+			ev.limits.add(rule.Limits())
 			ev.limitRules = append(ev.limitRules, i)
 		}
 		if ev.choice.rule < 0 && rule.Profile != "" {
@@ -276,22 +281,37 @@ func evaluate(q config.Quality, caps core.ClientCaps, user *core.User, target pl
 	if ev.choice.rule >= 0 {
 		return ev
 	}
-	if caps.Remote && q.DefaultAway != "" {
+	ev.choice = fallbackProfile(q, caps.Remote)
+	if !target.skipFallbackLimits {
+		source, limits := fallbackLimits(q, ev.choice)
+		if limits.HasLimits() {
+			ev.limits.add(limits)
+			ev.fallbackLimitSource = source
+		}
+	}
+	return ev
+}
+
+func fallbackProfile(q config.Quality, remote bool) profileChoice {
+	if remote && q.DefaultAway != "" {
 		if p, ok := core.FindProfile(q.Profiles, q.DefaultAway); ok {
-			ev.choice = profileChoice{profile: p, source: ProfileFromDefaultAway, rule: -1}
-			return ev
+			return profileChoice{profile: p, source: ProfileFromDefaultAway, rule: -1}
 		}
 	}
 	if p, ok := core.FindProfile(q.Profiles, q.Default); ok {
-		ev.choice = profileChoice{profile: p, source: ProfileFromDefault, rule: -1}
-		return ev
+		return profileChoice{profile: p, source: ProfileFromDefault, rule: -1}
 	}
 	if len(q.Profiles) > 0 {
-		ev.choice = profileChoice{profile: q.Profiles[0], source: ProfileFromDefault, rule: -1}
-		return ev
+		return profileChoice{profile: q.Profiles[0], source: ProfileFromDefault, rule: -1}
 	}
-	ev.choice = profileChoice{profile: defaultProfile(), source: ProfileBuiltin, rule: -1}
-	return ev
+	return profileChoice{profile: defaultProfile(), source: ProfileBuiltin, rule: -1}
+}
+
+func fallbackLimits(q config.Quality, choice profileChoice) (ProfileSource, config.QualityLimits) {
+	if choice.source == ProfileFromDefaultAway {
+		return ProfileFromDefaultAway, q.DefaultAwayLimits
+	}
+	return ProfileFromDefault, q.DefaultLimits
 }
 
 // chooseProfile is the media-neutral choice for callers with no title.
@@ -305,7 +325,8 @@ type ruleEffect struct {
 	choice profileChoice
 	limits ruleLimits
 	// limitRules are the matching rules that set a limit, in order.
-	limitRules []int
+	limitRules          []int
+	fallbackLimitSource ProfileSource
 	// ruleHeight is the strictest rule max height that lowered the
 	// client's ceiling (0 when none lowered it).
 	ruleHeight int
@@ -375,10 +396,12 @@ func ApplyClientRules(q config.Quality, caps core.ClientCaps, user *core.User) c
 
 // ApplyClientRulesForMedia applies only what can be known before the title
 // is: rules with a Library condition never apply here, and Kind rules only
-// when media is known. Scoped rules must never irreversibly narrow another
-// title's capabilities.
+// when media is known. Defer fallback limits until the title is known:
+// a Library or Kind rule can still pick a profile.
 func ApplyClientRulesForMedia(q config.Quality, caps core.ClientCaps, user *core.User, media string) core.ClientCaps {
-	caps, _ = applyClientRules(q, caps, user, mediaTarget(media))
+	target := mediaTarget(media)
+	target.skipFallbackLimits = true
+	caps, _ = applyClientRules(q, caps, user, target)
 	return caps
 }
 
@@ -397,7 +420,7 @@ func applyRuleLimits(caps core.ClientCaps, eff *ruleEffect) core.ClientCaps {
 		caps.MaxHeightSource = fmt.Sprintf("quality rule (max %dp)", l.maxHeight)
 		eff.ruleHeight = l.maxHeight
 	}
-	if l.maxBitrateKbps > 0 && (caps.MaxBitrateKbps == 0 || l.maxBitrateKbps < caps.MaxBitrateKbps) {
+	if l.maxBitrateKbps > 0 && (caps.MaxBitrateKbps == 0 || l.maxBitrateKbps <= caps.MaxBitrateKbps) {
 		caps.MaxBitrateKbps = l.maxBitrateKbps
 		caps.DefaultRemoteBitrate = false
 	}
@@ -416,7 +439,7 @@ func applyClientRules(q config.Quality, caps core.ClientCaps, user *core.User, t
 	// Rule conditions read only identity, viewer, remote and the title,
 	// none of which this function changes, so the result holds.
 	ev := evaluate(q, caps, user, target)
-	eff := ruleEffect{choice: ev.choice, limits: ev.limits, limitRules: ev.limitRules}
+	eff := ruleEffect{choice: ev.choice, limits: ev.limits, limitRules: ev.limitRules, fallbackLimitSource: ev.fallbackLimitSource}
 	if caps.Download {
 		return caps, eff
 	}
@@ -445,7 +468,9 @@ func applyClientRules(q config.Quality, caps core.ClientCaps, user *core.User, t
 	caps = applyRuleLimits(caps, &eff)
 	selected := eff.choice.profile
 	if eff.choice.source != ProfileBuiltin && caps.DefaultRemoteBitrate && (selected.MaxHeight == 0 || selected.MaxHeight >= 2160) && (caps.MaxHeight == 0 || caps.MaxHeight >= 2160) {
-		caps.MaxBitrateKbps = 0
+		// An implicit client default may be discarded, but a configured
+		// limit still applies even if it was above that implicit default.
+		caps.MaxBitrateKbps = eff.limits.maxBitrateKbps
 		caps.DefaultRemoteBitrate = false
 	}
 	return caps, eff
@@ -502,6 +527,9 @@ func (d profileDecision) ruleDecision(q config.Quality) (source ProfileSource, p
 				limitRuleIDs = append(limitRuleIDs, q.Rules[idx].ID)
 			}
 		}
+	}
+	if d.effect.fallbackLimitSource != "" {
+		limitRuleIDs = append(limitRuleIDs, string(d.effect.fallbackLimitSource))
 	}
 	return source, profileRuleID, limitRuleIDs
 }

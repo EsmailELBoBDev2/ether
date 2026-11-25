@@ -347,11 +347,11 @@ func TestLibraryAndViewerDeletionCleanup(t *testing.T) {
 }
 
 // TestLibraryProfilesInLibraryRetryOnErrorAndPluginFastPath verifies:
-// 1. A cancelled/failing membership lookup returns false WITHOUT poisoning the
-//    membership bitset cache, so an immediate retry with a live context returns
-//    true and caches it.
-// 2. Plugin titles carrying LibraryID resolve membership directly without SQL
-//    or kindCatalog.Item calls (succeeding even on a cancelled context).
+//  1. A cancelled/failing membership lookup returns false WITHOUT poisoning the
+//     membership bitset cache, so an immediate retry with a live context returns
+//     true and caches it.
+//  2. Plugin titles carrying LibraryID resolve membership directly without SQL
+//     or kindCatalog.Item calls (succeeding even on a cancelled context).
 func TestLibraryProfilesInLibraryRetryOnErrorAndPluginFastPath(t *testing.T) {
 	ctx := context.Background()
 	a := setupTestApp(t, true)
@@ -421,5 +421,53 @@ func TestLibraryProfilesInLibraryRetryOnErrorAndPluginFastPath(t *testing.T) {
 	}
 	if lp.InLibrary(cancelledCtx, pluginTitle, core.LibraryID(100)) {
 		t.Fatalf("plugin title fast path matched wrong LibraryID")
+	}
+}
+
+func TestQualityPUTPreservesMigrationMetadataAndReplacesFallbackLimits(t *testing.T) {
+	a := setupTestAppOwner(t)
+	at := time.Date(2026, 11, 24, 1, 2, 3, 0, time.UTC)
+	if err := a.cfg.Update(func(c *config.Config) error {
+		c.Quality.MigrationNote = &config.QualityMigrationNote{At: at}
+		c.Quality.Rules = []config.QualityRule{{
+			ID: "r_migrated", MaxBitrateKbps: 8000,
+			From: &config.QualityRuleOrigin{Kind: "awayLimit"},
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string, status int) {
+		t.Helper()
+		w := doAdminAPI(t, a, http.MethodPut, "/api/config/quality", body)
+		if w.Code != status {
+			t.Fatalf("quality PUT = %d, want %d: %s", w.Code, status, w.Body.String())
+		}
+	}
+	put(`{
+		"defaultLimits":{"maxHeight":720,"stereoAudio":true},
+		"defaultAwayLimits":{"maxBitrateKbps":6000},
+		"rules":[
+			{"id":"r_migrated","maxBitrateKbps":7000,"from":{"kind":"tvDefault"}},
+			{"id":"r_new","maxBitrateKbps":9000,"from":{"kind":"tvDefault"}}
+		]
+	}`, http.StatusOK)
+	q := a.cfg.Get().Quality
+	if q.DefaultLimits != (config.QualityLimits{MaxHeight: 720, StereoAudio: true}) ||
+		q.DefaultAwayLimits != (config.QualityLimits{MaxBitrateKbps: 6000}) {
+		t.Fatalf("fallback limits = %+v home, %+v away", q.DefaultLimits, q.DefaultAwayLimits)
+	}
+	if q.Rules[0].From == nil || q.Rules[0].From.Kind != "awayLimit" || q.Rules[1].From != nil {
+		t.Fatalf("incorrect stored provenance: %+v", q.Rules)
+	}
+	put(`{"defaultLimits":{"maxHeight":1000},"defaultAwayLimits":{"maxBitrateKbps":-1}}`, http.StatusBadRequest)
+	put(`{"defaultLimits":{},"migrationNote":{"at":"2026-11-24T01:02:03Z","dismissed":true}}`, http.StatusOK)
+	put(`{"migrationNote":{"at":"2026-11-24T01:02:03Z","dismissed":false}}`, http.StatusOK)
+	q = a.cfg.Get().Quality
+	if q.DefaultLimits.HasLimits() || q.DefaultAwayLimits.MaxBitrateKbps != 6000 {
+		t.Fatalf("clearing home limits changed the wrong rows: %+v", q)
+	}
+	if q.MigrationNote == nil || !q.MigrationNote.Dismissed || !q.MigrationNote.At.Equal(at) {
+		t.Fatalf("migration dismissal = %+v", q.MigrationNote)
 	}
 }

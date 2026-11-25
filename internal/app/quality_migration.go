@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/clientreg"
 	"github.com/braedonsaunders/ether/internal/config"
@@ -97,6 +98,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 	// glance.
 	if remoteKbps > 0 {
 		rules = append(rules, config.QualityRule{
+			From:           &config.QualityRuleOrigin{Kind: "awayLimit"},
 			Where:          config.WhereAway,
 			MaxBitrateKbps: remoteKbps,
 		})
@@ -104,7 +106,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 	}
 	for _, uid := range cappedViewers {
 		kbps := viewerPolicies[uid].MaxBitrateKbps
+		name := fmt.Sprintf("Viewer %d", uid)
+		// This startup migration runs before the auth service is built.
+		if a.db != nil {
+			var title, username string
+			if err := a.db.QueryRowContext(ctx, "SELECT title, username FROM auth_users WHERE id = ?", uid).Scan(&title, &username); err == nil {
+				name = firstNonEmptyStr(title, username, name)
+			}
+		}
 		rules = append(rules, config.QualityRule{
+			From:           &config.QualityRuleOrigin{Kind: "viewerLimit", Name: name},
 			Viewers:        []int64{uid},
 			MaxBitrateKbps: kbps,
 		})
@@ -126,7 +137,14 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 				notes = append(notes, fmt.Sprintf("dropped legacy quality rule naming missing profile %q", lr.Profile))
 				continue
 			}
+			var matches []string
+			for _, match := range []string{lr.Product, lr.Platform, lr.Protocol} {
+				if match = strings.TrimSpace(match); match != "" {
+					matches = append(matches, match)
+				}
+			}
 			rule := config.QualityRule{
+				From:        &config.QualityRuleOrigin{Kind: "rule", Name: strings.Join(matches, " / ")},
 				Profile:     lr.Profile,
 				StereoAudio: lr.ConvertSurroundAudio,
 			}
@@ -184,6 +202,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		// before library profile rules.
 		if awayMovie != "" && awayMovie == awayTV {
 			rules = append(rules, config.QualityRule{
+				From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
 				Where:   config.WhereAway,
 				Profile: awayMovie,
 			})
@@ -191,6 +210,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		} else {
 			if awayMovie != "" {
 				rules = append(rules, config.QualityRule{
+					From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
 					Where:   config.WhereAway,
 					Kind:    config.KindMovie,
 					Profile: awayMovie,
@@ -199,6 +219,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 			}
 			if awayTV != "" {
 				rules = append(rules, config.QualityRule{
+					From:    &config.QualityRuleOrigin{Kind: "awayProfile"},
 					Where:   config.WhereAway,
 					Kind:    config.KindEpisode,
 					Profile: awayTV,
@@ -250,16 +271,17 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 	slices.SortFunc(builtinLibs, sortByID)
 
 	for _, lib := range customLibs {
+		origin := &config.QualityRuleOrigin{Kind: "library", Name: lib.Name}
 		raw := strings.TrimSpace(lib.QualityProfile)
 		switch lib.MediaType {
 		case core.TypeMovie:
 			if p := renameFor(core.MediaMovie, raw); validProfile(p) {
-				rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Profile: p})
+				rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
 				notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 			}
 		case core.TypeShow:
 			if p := renameFor(core.MediaTV, raw); validProfile(p) {
-				rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Profile: p})
+				rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
 				notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 			}
 		default:
@@ -267,16 +289,16 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 			pt := renameFor(core.MediaTV, raw)
 			if pm == pt {
 				if validProfile(pm) {
-					rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Profile: pm})
+					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: pm})
 					notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, pm, len(rules)))
 				}
 			} else {
 				if validProfile(pm) {
-					rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Kind: config.KindMovie, Profile: pm})
+					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Kind: config.KindMovie, Profile: pm})
 					notes = append(notes, fmt.Sprintf("migrated library %s movie profile (%q) to rule %d", lib.Name, pm, len(rules)))
 				}
 				if validProfile(pt) {
-					rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Kind: config.KindEpisode, Profile: pt})
+					rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Kind: config.KindEpisode, Profile: pt})
 					notes = append(notes, fmt.Sprintf("migrated library %s TV profile (%q) to rule %d", lib.Name, pt, len(rules)))
 				}
 			}
@@ -285,6 +307,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 
 	var hiddenBuiltinFallbacks []config.QualityRule
 	for _, lib := range builtinLibs {
+		origin := &config.QualityRuleOrigin{Kind: "library", Name: lib.Name}
 		raw := strings.TrimSpace(lib.QualityProfile)
 		media := core.MediaMovie
 		kind := config.KindMovie
@@ -298,7 +321,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		if !validProfile(p) {
 			continue
 		}
-		rules = append(rules, config.QualityRule{Libraries: []int64{int64(lib.ID)}, Profile: p})
+		rules = append(rules, config.QualityRule{From: origin, Libraries: []int64{int64(lib.ID)}, Profile: p})
 		notes = append(notes, fmt.Sprintf("migrated library %s profile (%q) to rule %d", lib.Name, p, len(rules)))
 		// §5 edge case: in 0.3.20 a built-in library's profile also covered
 		// titles hidden from that built-in library by an "only this library"
@@ -306,6 +329,7 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		// with an extra Kind rule when that can occur.
 		if len(core.BuiltinLibraryExtraRules(lib.Rules)) > 0 && p != homeDef {
 			hiddenBuiltinFallbacks = append(hiddenBuiltinFallbacks, config.QualityRule{
+				From:    origin,
 				Kind:    kind,
 				Profile: p,
 			})
@@ -319,13 +343,12 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 	// Step 5: Media defaults.
 	if homeTV != "" && homeTV != homeMovie && validProfile(homeTV) {
 		rules = append(rules, config.QualityRule{
+			From:    &config.QualityRuleOrigin{Kind: "tvDefault"},
 			Kind:    config.KindEpisode,
 			Profile: homeTV,
 		})
 		notes = append(notes, fmt.Sprintf("migrated TV default (%q) to final rule %d", homeTV, len(rules)))
 	}
-
-	showBanner := len(rules) > 0 || defaultAway != "" || len(addedOverrides) > 0 || (mig != nil && len(mig.Renames) > 0)
 
 	if err := a.cfg.Update(func(c *config.Config) error {
 		if c.Quality.MigratedRules >= 1 {
@@ -340,9 +363,8 @@ func (a *App) migrateQualityRules(ctx context.Context) error {
 		config.AssignRuleIDs(&c.Quality)
 		c.Quality.MigratedRules = 1
 		c.Quality.RulesMigration = nil
-		if showBanner {
-			c.Quality.RulesMigrationNote = true
-		}
+		c.Quality.MigrationNote = &config.QualityMigrationNote{At: time.Now().UTC().Truncate(time.Second)}
+		c.Quality.RulesMigrationNote = true
 		if remoteKbps > 0 {
 			c.Transcode.RemoteMaxBitrateKbps = 0
 		}

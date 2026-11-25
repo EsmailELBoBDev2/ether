@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -11,8 +12,13 @@ import (
 
 const continueSeriesIndex = `CREATE INDEX state_history_continue_series ON state_history(user_id,completed,rating_key,viewed_at DESC,id DESC);`
 
+var allocatedContinueSeriesWhere = fmt.Sprintf("completed=1 AND rating_key>%d AND rating_key<%d",
+	core.AllocatedEpisodeBase, core.AllocatedEpisodeBase+core.AllocatedKeyMaxSeq)
+
 func init() {
 	store.Register("state", 11, continueSeriesIndex)
+	store.Register("state", 16, `CREATE INDEX IF NOT EXISTS state_history_continue_allocated
+		ON state_history(user_id,viewed_at DESC,id DESC) WHERE `+allocatedContinueSeriesWhere+`;`)
 }
 
 // Rank only this viewer's completed episodes using the covering viewer-first
@@ -62,18 +68,37 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 	}
 	rows.Close()
 
+	allocated, err := s.db.QueryContext(ctx, `SELECT id,user_id,rating_key,viewed_at,completed,view_type,device_id,snapshot
+		FROM state_history WHERE user_id=? AND `+allocatedContinueSeriesWhere+`
+		ORDER BY viewed_at DESC,id DESC LIMIT ?`, uid, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer allocated.Close()
+	for allocated.Next() {
+		h, err := scanHistory(allocated)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	if err := allocated.Err(); err != nil {
+		return nil, err
+	}
+	allocated.Close()
+
 	var keys []core.RatingKey
 	for key, write := range pending {
 		if key.Kind() == core.KindEpisode && (write.kind == "scrobble" || (write.kind == "progress" && write.progress.state != "progress")) {
 			keys = append(keys, key)
 		}
 	}
-	if len(keys) == 0 {
-		return out, nil
-	}
-	statuses, err := s.GetMany(ctx, uid, keys)
-	if err != nil {
-		return nil, err
+	var statuses map[core.RatingKey]core.WatchStatus
+	if len(keys) > 0 {
+		statuses, err = s.GetMany(ctx, uid, keys)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, key := range keys {
 		write := pending[key]
@@ -100,10 +125,18 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 		}
 		return out[i].ID > out[j].ID
 	})
-	seen := make(map[int64]bool, len(out))
+	seen := make(map[core.RatingKey]bool, len(out))
 	distinct := out[:0]
 	for _, entry := range out {
-		show := entry.Key.TMDB()
+		show := entry.Key.Parent().Parent()
+		if entry.Snapshot != nil && entry.Snapshot.ShowKey != 0 {
+			show = entry.Snapshot.ShowKey
+		}
+		if show == 0 {
+			// Unlabeled allocated entries are resolved in the bounded title
+			// batch by the caller. Keep each distinct identity for that read.
+			show = entry.Key
+		}
 		if seen[show] {
 			continue
 		}

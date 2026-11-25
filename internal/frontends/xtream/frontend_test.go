@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +322,20 @@ func TestXtreamPlaybackUsesBrokerAndPreservesRange(t *testing.T) {
 }
 func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 	host, _ := testHost(t)
-	show := frontend.Title{Key: core.ShowKey(1), Type: core.TypeShow, Title: "Show"}
+	showKey, _ := core.AllocatedKey(core.KindShow, 1)
+	firstSeason, _ := core.AllocatedKey(core.KindSeason, 1)
+	yearSeason, _ := core.AllocatedKey(core.KindSeason, 2)
+	firstEpisode, _ := core.AllocatedKey(core.KindEpisode, 1)
+	yearEpisode, _ := core.AllocatedKey(core.KindEpisode, 2)
+	show := frontend.Title{Key: showKey, Type: core.TypeShow, Title: "Show", IDs: core.IDs{TVDB: 1}}
+	seasons := []core.Title{
+		{Key: firstSeason, Type: core.TypeSeason, ShowKey: showKey, Season: 1},
+		{Key: yearSeason, Type: core.TypeSeason, ShowKey: showKey, Season: 2026},
+	}
+	episodes := map[core.RatingKey]core.Title{
+		firstSeason: {Key: firstEpisode, Type: core.TypeEpisode, ShowKey: showKey, ParentKey: firstSeason, Season: 1, Episode: 1, Title: "Episode"},
+		yearSeason:  {Key: yearEpisode, Type: core.TypeEpisode, ShowKey: showKey, ParentKey: yearSeason, Season: 2026, Episode: 123, Title: "Daily Episode"},
+	}
 	host.Experience = frontendtest.Experience{ItemFunc: func(_ context.Context, r frontend.ItemRequest) (frontend.ItemDetail, error) {
 		return frontend.ItemDetail{Title: show}, nil
 	}, ChildrenFunc: func(_ context.Context, v *frontend.Viewer, d frontend.Device, k core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
@@ -329,10 +343,12 @@ func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 			t.Fatal("unscoped/unbounded series")
 		}
 		if k == show.Key {
-			return core.Page{Items: []core.Title{{Key: core.SeasonKey(1, 1), Type: core.TypeSeason, Season: 1}, {Key: core.SeasonKey(1, 2), Type: core.TypeSeason, Season: 2}}, Total: 2}, nil
+			return core.Page{Items: seasons, Total: len(seasons)}, nil
 		}
-		n := k.Season()
-		return core.Page{Items: []core.Title{{Key: core.EpisodeKey(1, n, 1), ShowKey: show.Key, Type: core.TypeEpisode, Season: n, Episode: 1, Title: "Episode"}}, Total: 1}, nil
+		if episode, ok := episodes[k]; ok {
+			return core.Page{Items: []core.Title{episode}, Total: 1}, nil
+		}
+		return core.Page{}, core.ErrNotFound
 	}}
 	id, err := host.IDs.Compact(context.Background(), "xtream", "item", fmt.Sprint(show.Key))
 	if err != nil {
@@ -348,19 +364,21 @@ func TestXtreamSeriesSeasonsAndEpisodeIdentity(t *testing.T) {
 			ID int32 `json:"id"`
 		}
 		Episodes map[string][]struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Number int    `json:"episode_num"`
 		}
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Seasons) != 2 || result.Seasons[0].ID == 0 || result.Seasons[1].ID == 0 || len(result.Episodes["1"]) != 1 || len(result.Episodes["2"]) != 1 {
+	if len(result.Seasons) != 2 || result.Seasons[0].ID == 0 || result.Seasons[1].ID == 0 || len(result.Episodes["1"]) != 1 || len(result.Episodes["2026"]) != 1 {
 		t.Fatal(w.Body.String())
 	}
-	for n := 1; n <= 2; n++ {
-		ref, err := host.IDs.Resolve(context.Background(), "xtream", "item", int32(mustInt(t, result.Episodes[fmt.Sprint(n)][0].ID)))
-		if err != nil || ref != fmt.Sprint(core.EpisodeKey(1, n, 1)) {
-			t.Fatalf("episode identity %s %v", ref, err)
+	for _, episode := range episodes {
+		wire := result.Episodes[strconv.Itoa(episode.Season)][0]
+		ref, err := host.IDs.Resolve(context.Background(), "xtream", "item", int32(mustInt(t, wire.ID)))
+		if err != nil || ref != episode.Key.String() || wire.Number != episode.Episode {
+			t.Fatalf("episode identity %s, number %d: %v", ref, wire.Number, err)
 		}
 	}
 }

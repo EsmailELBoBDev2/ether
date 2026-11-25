@@ -190,7 +190,7 @@ func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.Rating
 				grouped[sk] = true
 			}
 		}
-		return grouped, nil
+		return s.effectiveViewerGroups(ctx, grouped)
 	}
 	for len(shows) > 0 {
 		n := min(len(shows), 500)
@@ -221,6 +221,32 @@ func (s *Service) Grouped(ctx context.Context, u *core.User, shows []core.Rating
 	for k, ok := range grouped {
 		if !ok {
 			delete(grouped, k)
+		}
+	}
+	return s.effectiveViewerGroups(ctx, grouped)
+}
+
+func (s *Service) effectiveViewerGroups(ctx context.Context, grouped map[core.RatingKey]bool) (map[core.RatingKey]bool, error) {
+	if len(grouped) == 0 {
+		return grouped, nil
+	}
+	cached, ok := s.catalog.(interface {
+		CachedGetMany(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	})
+	if !ok {
+		return grouped, nil
+	}
+	keys := make([]core.RatingKey, 0, len(grouped))
+	for key := range grouped {
+		keys = append(keys, key)
+	}
+	shows, err := cached.CachedGetMany(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for key, title := range shows {
+		if !allowsViewerOrder(title) {
+			delete(grouped, key)
 		}
 	}
 	return grouped, nil
@@ -328,10 +354,31 @@ func userID(u *core.User) int64 {
 	return u.ID
 }
 func showKey(k core.RatingKey) core.RatingKey {
-	if k.Kind() == core.KindShow {
+	switch k.Kind() {
+	case core.KindShow:
 		return k
+	case core.KindSeason:
+		return k.Parent()
+	case core.KindEpisode:
+		return k.Parent().Parent()
 	}
-	return core.ShowKey(k.TMDB())
+	return 0
+}
+
+func allowsViewerOrder(t core.Title) bool {
+	return !t.Key.Allocated() && (t.EpisodeOrder.Source == "" ||
+		t.EpisodeOrder.Source == core.MetadataTMDB && t.EpisodeOrder.Kind == core.OrderAired)
+}
+
+func (s *Service) overlayShow(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	return reqmemo.Do(ctx, fmt.Sprintf("episodeorder:overlay-show:%p:%d", s, key), func() (*core.Title, error) {
+		if local, ok := s.catalog.(interface {
+			CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+		}); ok {
+			return local.CachedGet(ctx, key)
+		}
+		return s.catalog.Get(ctx, key)
+	})
 }
 func (s *Service) layout(ctx context.Context, u *core.User, k core.RatingKey) (*layout, error) {
 	l, _, err := s.layoutWithPref(ctx, u, k)
@@ -342,12 +389,19 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 		return nil, Preference{Specials: "last"}, nil
 	}
 	show := showKey(k)
+	if show == 0 || show.Allocated() {
+		return nil, Preference{}, nil
+	}
 	cacheKey := fmt.Sprintf("%d:%d", userID(u), show)
 	s.mu.Lock()
 	cached, ok := s.cache[cacheKey]
 	generation := s.generation
 	s.mu.Unlock()
 	if ok && time.Now().Before(cached.expires) {
+		st, err := s.overlayShow(ctx, show)
+		if err != nil || st == nil || !allowsViewerOrder(*st) {
+			return nil, Preference{}, err
+		}
 		return cached.value, Preference{}, nil
 	}
 	p, e := s.Preference(ctx, userID(u), show)
@@ -357,6 +411,10 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 	if p.GroupID == "" {
 		return nil, p, nil
 	}
+	st, e := s.overlayShow(ctx, show)
+	if e != nil || st == nil || !allowsViewerOrder(*st) {
+		return nil, Preference{}, e
+	}
 	g, e := s.group(ctx, p.GroupID)
 	if errors.Is(e, tmdb.ErrNoKey) {
 		return nil, p, nil
@@ -365,10 +423,6 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 		return nil, p, e
 	}
 	eps, e := s.catalog.Grandchildren(ctx, show)
-	if e != nil {
-		return nil, p, e
-	}
-	st, e := s.catalog.Get(ctx, show)
 	if e != nil {
 		return nil, p, e
 	}
@@ -393,7 +447,7 @@ func (s *Service) layoutWithPref(ctx context.Context, u *core.User, k core.Ratin
 		if added.IsZero() {
 			added = st.DateAdded(now)
 		}
-		out.seasons = append(out.seasons, core.Title{Key: core.SeasonKey(show.TMDB(), n), Type: core.TypeSeason, ShowKey: show, ShowTitle: st.Title, Title: name, SeasonTitle: name, Season: n, ChildCount: len(kids), LeafCount: len(kids), PosterPath: st.PosterPath, BackdropPath: st.BackdropPath, ContentRating: st.ContentRating, AddedAt: added})
+		out.seasons = append(out.seasons, core.Title{Key: core.SeasonKey(show.TMDB(), n), Type: core.TypeSeason, ParentKey: show, ShowKey: show, ShowIDs: st.IDs, ShowTitle: st.Title, Title: name, SeasonTitle: name, Season: n, ChildCount: len(kids), LeafCount: len(kids), PosterPath: st.PosterPath, BackdropPath: st.BackdropPath, ContentRating: st.ContentRating, AddedAt: added})
 		out.episodes = append(out.episodes, kids...)
 	}
 	for i, group := range groups {
@@ -481,9 +535,17 @@ func (s *Service) Get(ctx context.Context, u *core.User, k core.RatingKey) (*cor
 
 // CachedVirtualSeason returns only an already-computed, unexpired layout for
 // this viewer. It never refreshes preferences, the catalogue, or TMDB.
-func (s *Service) CachedVirtualSeason(_ context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
+func (s *Service) CachedVirtualSeason(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
 	if u == nil || u.ID <= 0 || k.Kind() != core.KindSeason || k.Season() < virtualBase || !s.groupsConfigured() {
 		return nil, core.ErrNotFound
+	}
+	if local, ok := s.catalog.(interface {
+		CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+	}); ok {
+		st, err := local.CachedGet(ctx, showKey(k))
+		if err != nil || st == nil || !allowsViewerOrder(*st) {
+			return nil, core.ErrNotFound
+		}
 	}
 	cacheKey := fmt.Sprintf("%d:%d", u.ID, showKey(k))
 	s.mu.Lock()
@@ -525,6 +587,9 @@ func (s *Service) canonicalChildren(ctx context.Context, k core.RatingKey, p Pre
 	items, e := s.catalog.Children(ctx, k)
 	if e != nil {
 		return nil, e
+	}
+	if k.Allocated() || (len(items) > 0 && !allowsViewerOrder(items[0])) {
+		return items, nil
 	}
 	if k.Kind() == core.KindSeason && k.Season() == 0 && p.Specials == "hidden" {
 		return nil, nil
@@ -578,6 +643,9 @@ func (s *Service) OrderStoredGrandchildren(ctx context.Context, u *core.User, k 
 }
 
 func orderUngroupedEpisodes(p Preference, items []core.Title) []core.Title {
+	if len(items) > 0 && !allowsViewerOrder(items[0]) {
+		return items
+	}
 	var special, normal []core.Title
 	for _, t := range items {
 		if t.Season == 0 {

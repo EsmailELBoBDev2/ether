@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"cmp"
 	"context"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -242,8 +243,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		md := model.HistoryMetadata{RatingKey: t.Key.String(), Key: "/library/metadata/" + t.Key.String(), Type: string(t.Type), Title: t.Title, Thumb: s.thumbURL(t), HistoryKey: "/status/sessions/history/" + strconv.FormatInt(h.ID, 10), ViewedAt: h.ViewedAt.Unix(), LibrarySectionID: secID, DeviceID: h.DeviceID, AccountID: dir.wireID(ctx, h.UserID)}
 
-		if !t.Released.IsZero() {
-			md.OriginallyAvailableAt = t.Released.Format("2006-01-02")
+		if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+			md.OriginallyAvailableAt = date.Format("2006-01-02")
 		}
 		if t.Type == frontend.TypeEpisode {
 			md.GrandparentTitle = t.ShowTitle
@@ -258,7 +259,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			md.ViewType = model.Ptr(h.ViewType)
 		}
 		if t.Type == frontend.TypeEpisode {
-			md.ParentKey = "/library/metadata/" + frontend.SeasonKey(t.ShowKey.TMDB(), t.Season).String()
+			md.ParentKey = "/library/metadata/" + titleParent(t).String()
 			md.ParentThumb = md.ParentKey + "/thumb"
 			md.GrandparentThumb = "/library/metadata/" + t.ShowKey.String() + "/thumb"
 			md.GrandparentKey = "/library/metadata/" + t.ShowKey.String()

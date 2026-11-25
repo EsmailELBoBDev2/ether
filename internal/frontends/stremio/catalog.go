@@ -57,14 +57,17 @@ func stremioLibraryType(view frontend.View) string {
 }
 
 // stremioMetaID is the Stremio id for a catalog row: tmdb:<id> for a catalogue
-// title, else the item's pk: ItemRef when the host supplied one. Empty means
-// the row cannot be addressed by Stremio and is dropped.
+// title with a TMDB ID, ether:<key> for a provider-only title, or the plugin
+// item's pk: ItemRef. An unaddressable row is omitted.
 func stremioMetaID(title frontend.Title, ref frontend.ItemRef) string {
-	if title.IDs.TMDB > 0 {
+	if title.IDs.TMDB > 0 && !title.Key.Allocated() {
 		return "tmdb:" + strconv.FormatInt(title.IDs.TMDB, 10)
 	}
 	if ref != "" {
 		return string(ref)
+	}
+	if title.Key.Valid() && (title.Key.Kind() == frontend.KindMovie || title.Key.Kind() == frontend.KindShow) {
+		return catalogKeyPrefix + title.Key.String()
 	}
 	return ""
 }

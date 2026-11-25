@@ -105,9 +105,9 @@ func (s *RowsService) rows(ctx context.Context, req frontend.RowRequest, protoco
 					if entry.Kind != frontend.RowEntryTitle || entry.Title == nil {
 						continue
 					}
-					show := entry.Title.ShowKey
-					if show == 0 && (entry.Title.Type == core.TypeEpisode || entry.Title.Type == core.TypeSeason) {
-						show = core.ShowKey(entry.Title.Key.TMDB())
+					show := seriesOfTitle(*entry.Title)
+					if show == entry.Title.Key {
+						continue
 					}
 					if show != 0 && !seenParent[show] {
 						seenParent[show] = true

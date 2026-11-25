@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// HasBufferedPosition reports whether a seek can reuse an already published segment.
+func (s *Session) HasBufferedPosition(at time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.segmentPublishedLocked(0, s.segForOffsetLocked(at))
+}
+
 // ServeSegment implements core.HLSSession. n == InitSegment serves the fMP4
 // init segment. For DASH sessions it serves the first representation.
 func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {

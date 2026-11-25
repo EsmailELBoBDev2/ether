@@ -52,6 +52,8 @@ type DirectStream struct {
 }
 
 type session struct {
+	archiveInput        bool // staged relay grants have a finite upstream
+	catchUp             *catchUpSession
 	broadcastPolicy     broadcastViewerPolicy
 	broadcast           *broadcastLease
 	ephemeral           bool
@@ -328,6 +330,8 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 	owned := ss.owned
 	ss.owned = nil
 	dash := ss.dash
+	archive := ss.catchUp
+	ss.catchUp = nil
 	httpStream := ss.http
 	ss.dash = nil
 	ss.http = nil
@@ -349,6 +353,7 @@ func (ss *session) closeWithReason(s *Service, expired bool) {
 		broadcast.close()
 	}
 	s.revokeInput(ss)
+	archive.close(s)
 	owned.close()
 	if dash != nil {
 		dash.Close()
@@ -1000,6 +1005,9 @@ func (s *Service) Session(ctx context.Context, id string, u *core.User) (Session
 	ss.mu.Unlock()
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
+	if info.Channel.Archive != nil {
+		info.Channel.Archive = &ChannelArchive{Days: info.Channel.Archive.Days, Mode: info.Channel.Archive.Mode}
+	}
 	if ephemeral {
 		return info, nil
 	}
@@ -1132,7 +1140,12 @@ func (s *Service) ServePlaylist(w http.ResponseWriter, r *http.Request, id strin
 	ss.mu.Lock()
 	ss.consumed = true
 	shared := ss.broadcast != nil
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		s.serveCatchUp(w, r, ss, archive, nil)
+		return
+	}
 	if shared {
 		s.serveBroadcastPlaylist(w, r, ss)
 		return
@@ -1470,7 +1483,12 @@ func (s *Service) ServeRelaySegment(w http.ResponseWriter, r *http.Request, id s
 	shared := ss.broadcast != nil
 	fmp4 := broadcastUsesFMP4(ss.caps)
 	lease := ss.owned
+	archive := ss.catchUp
 	ss.mu.Unlock()
+	if archive != nil {
+		s.serveCatchUp(w, r, ss, archive, &n)
+		return
+	}
 	if shared {
 		if n == transcode.InitSegment {
 			s.serveBroadcastInit(w, r, ss)

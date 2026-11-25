@@ -78,6 +78,7 @@ type cachedManifest struct {
 }
 
 type inputGrant struct {
+	finite        bool
 	variantCaps   core.ClientCaps // immutable input quality ceilings
 	variantLogged sync.Once
 
@@ -269,7 +270,7 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if ss.inputSource.ID != "" {
 		histSrc = ss.inputSource
 	}
-	g := &inputGrant{variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, direct: direct, directGen: directGen, histChannel: c.ID, histSrc: histSrc,
+	g := &inputGrant{finite: ss.archiveInput, variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, direct: direct, directGen: directGen, histChannel: c.ID, histSrc: histSrc,
 		log:   s.sessionLog(ss).With("input", src.ID),
 		token: base64.RawURLEncoding.EncodeToString(b[:]), origin: relayOrigin(u), headers: headers.Clone(), mediaHeaders: redirectMediaHeaders(src.Headers),
 		ctx: ctx, cancel: cancel, slots: make(chan struct{}, relayConcurrency), source: source,
@@ -370,7 +371,7 @@ func (s *Service) paceSessionInput(ctx context.Context, ss *session) (time.Durat
 	mediaHeaders := g.mediaHeaders.Clone()
 	g.mu.Unlock()
 	source, limit := s.tapSource(g)
-	joined, err := r.taps.canJoinOrOpen(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit)
+	joined, err := r.taps.canJoinOrOpen(g.rootTapKey(raw, headers, mediaHeaders), source, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -344,6 +344,14 @@ type upstreamTap struct {
 	burstProbeUsed bool
 }
 
+func (g *inputGrant) rootTapKey(raw string, headers, mediaHeaders http.Header) string {
+	key := tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers)
+	if g.finite {
+		key += "\x00" + g.token
+	}
+	return key
+}
+
 func tapKey(raw string, h http.Header) string {
 	names := make([]string, 0, len(h))
 	for k := range h {
@@ -1116,7 +1124,7 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 		var cm *cachedManifest
 		var created bool
 		var err error
-		t, cm, created, err = s.inputRelay.taps.acquireOrManifest(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g, func() *cachedManifest {
+		t, cm, created, err = s.inputRelay.taps.acquireOrManifest(g.rootTapKey(raw, headers, mediaHeaders), source, limit, g, func() *cachedManifest {
 			return g.consumeManifest(raw)
 		})
 		if err != nil {
@@ -1382,6 +1390,13 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	}
 	// The stall watchdog replaces the idle timeout for a transport stream.
 	idle.Stop()
+	if g.finite {
+		go func() {
+			err := t.fillTS(body)
+			t.close(err)
+		}()
+		return
+	}
 	go s.pumpTap(t, raw, body)
 	go t.watch()
 }
@@ -2416,7 +2431,7 @@ func (s *Service) sniffInputAttempt(ctx context.Context, ss *session, n int, ref
 	}
 	source, limit := s.tapSource(g)
 	_, headers, mediaHeaders := g.requestScope()
-	t, cm, created, err := r.taps.acquireOrManifest(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g, func() *cachedManifest {
+	t, cm, created, err := r.taps.acquireOrManifest(g.rootTapKey(raw, headers, mediaHeaders), source, limit, g, func() *cachedManifest {
 		return g.peekManifest(raw)
 	})
 	if err != nil {
@@ -2447,7 +2462,7 @@ func (s *Service) sniffInputAttempt(ctx context.Context, ss *session, n int, ref
 		return nil, "", Diagnose("upstream_headers", t.openErr)
 	}
 	if t.status != http.StatusOK && t.status != http.StatusPartialContent {
-		if g.login != nil && (t.status == 401 || t.status == 403) && ctx.Err() == nil {
+		if !g.finite && g.login != nil && (t.status == 401 || t.status == 403) && ctx.Err() == nil {
 			src := ss.inputSource
 			src.URL = ss.inputURL
 			s.revokeInput(ss)

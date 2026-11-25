@@ -151,6 +151,7 @@ type Client struct {
 
 	scMu     sync.Mutex
 	lastScro map[scrobbleKey]scrobbleState
+	stops    map[scrobbleKey]*pendingStop // final stops being sent or awaiting a retry
 
 	devMu   sync.Mutex
 	devices map[int64]*deviceFlow
@@ -206,7 +207,7 @@ func New(opts Options) *Client {
 		http: opts.HTTPClient, log: opts.Logger, now: opts.Now, maxWait: opts.MaxRetryAfter,
 		notify: make(chan struct{}, 1), done: make(chan struct{}), qsize: opts.QueueSize,
 		minPost: opts.MinPostInterval, cache: map[string]*cacheEntry{}, ttl: opts.CacheTTL,
-		lastScro: map[scrobbleKey]scrobbleState{}, devices: map[int64]*deviceFlow{},
+		lastScro: map[scrobbleKey]scrobbleState{}, stops: map[scrobbleKey]*pendingStop{}, devices: map[int64]*deviceFlow{},
 		pollUnit: time.Second, claimID: opts.NodeID, onTokenExpired: opts.OnTokenExpired,
 	}
 }
@@ -386,6 +387,7 @@ func (c *Client) Disconnect(ctx context.Context, userID int64) error {
 	delete(c.devices, userID)
 	c.devMu.Unlock()
 	_, err := c.db.ExecContext(ctx, `DELETE FROM trakt_tokens WHERE user_id=?`, userID)
+	c.cancelStops(userID, 0)
 	c.invalidateUser(userID)
 	return err
 }
@@ -451,6 +453,7 @@ func (c *Client) PollDevice(ctx context.Context, userID int64, deviceCode string
 		if err := c.storeTokenResponse(ctx, userID, tr, username); err != nil {
 			return "", err
 		}
+		c.cancelStops(userID, 0)
 		c.invalidateUser(userID)
 		c.log.Info("trakt connected", "user", userID, "trakt_user", username)
 		return PollAuthorized, nil

@@ -19,6 +19,7 @@ import { SaveBar, useDraft } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { api, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import { ruleHasLimits, ruleTitle, type FallbackRow, type RuleRef } from "../../lib/qualityRules";
@@ -346,6 +347,7 @@ function PresentationsEditor({
  * `RuleDrawer` in place locked to this library.
  */
 function LibraryReleasesSection({ library }: { library: Library }) {
+  const { locale } = useLocale();
   const { config, quality, refresh } = useQuality();
   const names = useRuleNames();
   const summary = useAsync((signal) => api.qualitySummary({}, signal), [library.id]);
@@ -373,7 +375,7 @@ function LibraryReleasesSection({ library }: { library: Library }) {
         rows: summary.data?.rows,
         libraryName: names.library,
       }),
-    [quality?.rules, summary.data?.rows, names.library],
+    [quality?.rules, summary.data?.rows, names.library, locale],
   );
 
   const applicableRules = useMemo(() => {

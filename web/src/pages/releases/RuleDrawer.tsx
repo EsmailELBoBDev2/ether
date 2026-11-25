@@ -15,6 +15,7 @@ import { Segmented } from "../../components/fields";
 import { useViewers, viewerName } from "../../components/pickers";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
@@ -88,6 +89,7 @@ export function deviceMatchName(m: DeviceMatch): string {
 
 /** Names for a rule's libraries and viewers, with plain words for ones that are gone. */
 export function useRuleNames(): RuleNames & { libraries: Library[]; ready: boolean } {
+  const { locale } = useLocale();
   const libraries = useAsync((signal) => librariesApi.list(signal), []);
   const { viewers } = useViewers();
   return useMemo(
@@ -102,7 +104,7 @@ export function useRuleNames(): RuleNames & { libraries: Library[]; ready: boole
         return v ? viewerName(v) : viewers ? t("Unavailable viewer") : "…";
       },
     }),
-    [libraries.data, viewers],
+    [libraries.data, viewers, locale],
   );
 }
 

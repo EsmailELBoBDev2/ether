@@ -15,6 +15,7 @@ import { Segmented } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { useViewers, viewerName } from "../../components/pickers";
 import { t } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
@@ -309,6 +310,7 @@ function partitionExceptions(
  * rule and fallback row named here opens in the rule drawer, in place.
  */
 export function WhoGetsWhat() {
+  const { locale } = useLocale();
   const { viewers, error: viewersError } = useViewers();
   const config = useAsync(() => api.getConfig(), []);
   const quality = config.data?.quality ?? null;
@@ -336,7 +338,7 @@ export function WhoGetsWhat() {
         rows: summary.data?.rows,
         viewers,
       }),
-    [quality?.rules, summary.data?.rows, viewers],
+    [quality?.rules, summary.data?.rows, viewers, locale],
   );
 
   const unfiltered = !filterViewer && !filterDevice;
@@ -383,7 +385,7 @@ export function WhoGetsWhat() {
 
   const summaryDeviceOptions = useMemo(
     () => buildSummaryDeviceOptions(devices.data),
-    [devices.data],
+    [devices.data, locale],
   );
   const deviceName = summaryDeviceOptions.find((o) => o.value === filterDevice)?.label ?? "";
 
@@ -392,7 +394,7 @@ export function WhoGetsWhat() {
       { value: "", label: t("Anyone") },
       ...(viewers ?? []).map((v) => ({ value: String(v.id), label: viewerName(v) })),
     ],
-    [viewers],
+    [viewers, locale],
   );
 
   const libraryOptions = useMemo(
@@ -403,7 +405,7 @@ export function WhoGetsWhat() {
         label: r.library,
       })),
     ],
-    [summary.data?.rows],
+    [summary.data?.rows, locale],
   );
 
   return (

@@ -226,9 +226,13 @@ export function RulesTab() {
         <Alert variant="info" role="status" className="flex items-start justify-between gap-3">
           <AlertDescription>
             <p className="font-medium text-fg">
-              {t(
-                "Your quality settings from 0.3.20 were moved into these rules. Nothing plays differently.",
-              )}
+              {rules.some((r) => r.from?.kind === "awayLimit")
+                ? t(
+                    "Your quality settings from 0.3.20 were moved into these rules. Your away-from-home bitrate cap now also steers which release is picked.",
+                  )
+                : t(
+                    "Your quality settings from 0.3.20 were moved into these rules. Nothing plays differently.",
+                  )}
             </p>
             {rules.some((r) => r.from) ? (
               <p className="mt-1 text-fg-muted">

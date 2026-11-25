@@ -358,7 +358,7 @@ export function TrashImport({
       setName(uniqueProfileName(first.name, existingProfiles));
       setNameError(undefined);
     }
-  }, [step, presets]);
+  }, [step, presets, presetName]);
 
   const listing = open && (step === "trash" || (step === "profilarr" && dbFormMode === null));
   const profiles = useAsync(

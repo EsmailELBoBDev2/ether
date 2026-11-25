@@ -1,20 +1,24 @@
 import { Badge } from "@braedonsaunders/appkit-ui";
 import { Fragment } from "react";
 import { viewerName } from "../../components/pickers";
-import { t } from "../../i18n";
+import { t, tx } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
 import {
   fallbackOfRuleId,
+  fallbackRule,
   fallbackTitle,
-  mbps,
+  mbpsText,
   resolutionName,
   ruleTitle,
+  tidyLimits,
   type FallbackRow,
   type RuleNames,
   type RuleRef,
 } from "../../lib/qualityRules";
 import type {
+  EtherConfig,
   QualityDevices,
+  QualityLimits,
   QualityRule,
   QualitySummaryCell,
   QualitySummaryException,
@@ -29,6 +33,11 @@ export interface ResolvedRuleRef {
   /** Human-readable rule name or condition summary; never a raw rule ID. */
   summary: string;
   rule?: QualityRule;
+  /**
+   * The libraries the rule names, when it is for only some. kind is set for
+   * a library that holds only movies or only episodes.
+   */
+  libraries?: { id: number; name: string; kind?: "movie" | "episode" }[];
   /** Set when the id names a fallback row ("default" / "defaultAway"), not a rule. */
   fallback?: FallbackRow;
 }
@@ -48,7 +57,7 @@ export function formatResolutionCap(height: number): string {
 }
 
 export function formatBitrateCap(kbps: number): string {
-  return t("≤ {n} Mbps", { n: mbps(kbps) });
+  return t("≤ {n} Mbps", { n: mbpsText(kbps) });
 }
 
 export function formatExceptionEffect(ex: QualitySummaryException): string {
@@ -74,8 +83,12 @@ export function createRuleResolver(opts: {
 }): RuleResolver {
   const list = opts.rules ?? [];
   const rowLibs = new Map<number, string>();
+  const rowKinds = new Map<number, "movie" | "episode">();
   for (const r of opts.rows ?? []) {
     rowLibs.set(r.libraryId, r.library);
+    // A row with one cell of a set kind is a movies-only or episodes-only library.
+    const only = r.cells.length === 1 ? r.cells[0]!.kind : "";
+    if (only) rowKinds.set(r.libraryId, only);
   }
   const names: RuleNames = {
     library: (id) => opts.libraryName?.(id) ?? rowLibs.get(id) ?? t("Unavailable library"),
@@ -97,6 +110,13 @@ export function createRuleResolver(opts: {
         number: directIdx + 1,
         summary: ruleTitle(localizedRule(rule), names),
         rule,
+        libraries: rule.exceptLibraries
+          ? undefined
+          : rule.libraries?.map((id) => ({
+              id,
+              name: names.library(id),
+              kind: rowKinds.get(id),
+            })),
       };
     }
     const synthetic = /^r_(\d+)$/.exec(ruleId);
@@ -195,7 +215,7 @@ export function ExceptionPill({
   );
 }
 
-function LimitRuleLinks({
+function RuleLinks({
   ruleIds,
   resolveRule,
   onOpenRule,
@@ -204,10 +224,8 @@ function LimitRuleLinks({
   resolveRule: RuleResolver;
   onOpenRule: OpenRule;
 }) {
-  if (ruleIds.length === 0) return null;
   return (
-    <span className="inline-flex flex-wrap items-center gap-1 text-fg-muted">
-      <span>{t("limits from")}</span>
+    <>
       {ruleIds.map((rid, idx) => (
         <Fragment key={rid}>
           {idx > 0 ? <span>,</span> : null}
@@ -219,113 +237,263 @@ function LimitRuleLinks({
           />
         </Fragment>
       ))}
-    </span>
+    </>
   );
+}
+
+type Quality = EtherConfig["quality"];
+
+/** The lower of two ceilings, where 0 is "none". */
+function lower(a: number, b: number): number {
+  return a && b ? Math.min(a, b) : a || b;
+}
+
+/** The limits behind a limit id: a rule's own, or a fallback row's. undefined when not known. */
+function limitsOf(ref: ResolvedRuleRef, quality: Quality | null): QualityLimits | undefined {
+  if (ref.rule) return tidyLimits(ref.rule);
+  if (ref.fallback && quality) return tidyLimits(fallbackRule(quality, ref.fallback));
+  return undefined;
+}
+
+/** Which of a cell's limit rules set the result ("binding"), and which were looser. */
+export function cellLimitSources(
+  cell: QualitySummaryCell,
+  profileHeight: number,
+  resolveRule: RuleResolver,
+  quality: Quality | null,
+): { binding: { ruleId: string; sets: string[] }[]; looser: string[]; known: boolean } {
+  const binding: { ruleId: string; sets: string[] }[] = [];
+  const looser: string[] = [];
+  // A rule's resolution limit only shows when it is under the profile's own.
+  const heightBinds = Boolean(cell.maxHeight) && (!profileHeight || cell.maxHeight < profileHeight);
+  const done = { height: !heightBinds, bitrate: !cell.maxBitrateKbps, stereo: !cell.stereo };
+  for (const ruleId of cell.limitRuleIds) {
+    const limits = limitsOf(resolveRule(ruleId), quality);
+    if (!limits) return { binding: [], looser: [], known: false };
+    const sets: string[] = [];
+    if (!done.height && limits.maxHeight === cell.maxHeight) {
+      sets.push(resolutionName(cell.maxHeight));
+      done.height = true;
+    }
+    if (!done.bitrate && limits.maxBitrateKbps === cell.maxBitrateKbps) {
+      sets.push(t("{rate} Mbps", { rate: mbpsText(cell.maxBitrateKbps) }));
+      done.bitrate = true;
+    }
+    if (!done.stereo && limits.stereoAudio) {
+      sets.push(t("Stereo"));
+      done.stereo = true;
+    }
+    if (sets.length) binding.push({ ruleId, sets });
+    else looser.push(ruleId);
+  }
+  return { binding, looser, known: true };
+}
+
+export interface AlsoInEffect {
+  ruleId: string;
+  /** The other libraries a title must also be in. */
+  libraries: string[];
+  /** The profile the rule picks for those titles; "" when it only adds a limit. */
+  profile: string;
+  /** The limits it tightens: "≤ 720p", "≤ 8 Mbps", "Stereo". */
+  limits: string[];
+}
+
+/**
+ * The rules for another library that change what a title in both libraries
+ * gets. The server lists every such rule that could match; this keeps only
+ * the ones that change the result. A rule below the one that picks this
+ * library's profile never picks one, a limit no stricter than the cell's
+ * changes nothing, and an episode is never in a movies-only library.
+ */
+export function alsoInEffects(
+  cell: QualitySummaryCell,
+  chosenByPlugin: boolean,
+  profileHeight: number,
+  resolveRule: RuleResolver,
+  kind: "" | "movie" | "episode" = "",
+): AlsoInEffect[] {
+  const pickedAt =
+    cell.source === "rule" && cell.profileRuleId
+      ? resolveRule(cell.profileRuleId).number || Infinity
+      : Infinity;
+  const height = lower(profileHeight, cell.maxHeight);
+  /** Libraries an earlier rule already picks the profile for. */
+  const claimed = new Set<number>();
+  const out: AlsoInEffect[] = [];
+  const refs = cell.partialRuleIds
+    .map((id) => resolveRule(id))
+    .filter((ref) => ref.rule && ref.number > 0)
+    .sort((a, b) => a.number - b.number);
+  for (const ref of refs) {
+    const rule = ref.rule!;
+    const libraries = (ref.libraries ?? []).filter((l) => !kind || !l.kind || l.kind === kind);
+    if (!libraries.length) continue;
+    const open = libraries.filter((l) => !claimed.has(l.id));
+    const picks = !chosenByPlugin && Boolean(rule.profile) && ref.number < pickedAt;
+    const wins = picks && open.length > 0 && rule.profile !== cell.profile;
+    if (picks) for (const l of libraries) claimed.add(l.id);
+    const limits: string[] = [];
+    if (rule.maxHeight && (!height || rule.maxHeight < height)) {
+      limits.push(formatResolutionCap(rule.maxHeight));
+    }
+    if (
+      rule.maxBitrateKbps &&
+      (!cell.maxBitrateKbps || rule.maxBitrateKbps < cell.maxBitrateKbps)
+    ) {
+      limits.push(formatBitrateCap(rule.maxBitrateKbps));
+    }
+    if (rule.stereoAudio && !cell.stereo) limits.push(t("Stereo"));
+    if (!wins && !limits.length) continue;
+    out.push({
+      ruleId: ref.id,
+      libraries: (wins ? open : libraries).map((l) => l.name),
+      profile: wins ? (rule.profile ?? "") : "",
+      limits,
+    });
+  }
+  return out;
 }
 
 export function SummaryCellView({
   cell,
+  kind = "",
   where,
   chosenByPlugin,
+  quality,
   resolveRule,
   onOpenRule,
 }: {
   cell: QualitySummaryCell;
+  /** Movies or Episodes, when the cell is for only one of them. */
+  kind?: "" | "movie" | "episode";
   /** The column the cell is in: names the fallback row when no rule picked the profile. */
   where: FallbackRow;
   chosenByPlugin: boolean;
+  /** For the profile's own ceiling and the fallback rows' limits. */
+  quality: Quality | null;
   resolveRule: RuleResolver;
   onOpenRule: OpenRule;
 }) {
   const hasLimits = Boolean(cell.maxHeight || cell.maxBitrateKbps || cell.stereo);
-
-  if (chosenByPlugin) {
-    if (!hasLimits) {
-      return <span className="text-xs text-fg-muted">{t("No limits")}</span>;
-    }
-    return (
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <LimitBadges
-            maxHeight={cell.maxHeight}
-            maxBitrateKbps={cell.maxBitrateKbps}
-            stereo={cell.stereo}
-          />
-        </div>
-        {cell.limitRuleIds.length > 0 ? (
-          <div className="text-xs">
-            <LimitRuleLinks
-              ruleIds={cell.limitRuleIds}
-              resolveRule={resolveRule}
-              onOpenRule={onOpenRule}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
+  if (chosenByPlugin && !hasLimits) {
+    return <span className="text-xs text-fg-muted">{t("No limits")}</span>;
   }
 
-  // Limits from the row that also picked the profile are already on its line.
-  const extraLimitIds = cell.limitRuleIds.filter(
-    (rid) => rid !== cell.profileRuleId && !(cell.source !== "rule" && fallbackOfRuleId(rid)),
-  );
+  const profileHeight = chosenByPlugin
+    ? 0
+    : (quality?.profiles?.find((p) => p.name === cell.profile)?.maxHeight ?? 0);
+  // What plays, first: the profile's ceiling or a rule's limit, whichever is lower.
+  const height = lower(profileHeight, cell.maxHeight);
+  const sources = cellLimitSources(cell, profileHeight, resolveRule, quality);
+  const alsoIn = alsoInEffects(cell, chosenByPlugin, profileHeight, resolveRule, kind);
 
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-sm font-medium text-fg">{cell.profile || "—"}</span>
-        <LimitBadges
-          maxHeight={cell.maxHeight}
-          maxBitrateKbps={cell.maxBitrateKbps}
-          stereo={cell.stereo}
-        />
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        {cell.source === "rule" && cell.profileRuleId ? (
-          <RuleTrigger
-            ruleId={cell.profileRuleId}
-            label={ruleBadgeLabel(resolveRule(cell.profileRuleId))}
-            summary={resolveRule(cell.profileRuleId).summary}
-            onOpenRule={onOpenRule}
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => onOpenRule({ fallback: where })}
-            className="text-left text-fg-muted hover:text-fg hover:underline"
-          >
-            {where === "away" && cell.source !== "defaultAway"
-              ? t("Everyone else, away: same as at home")
-              : fallbackTitle(where)}
-          </button>
+      <div className="flex flex-wrap items-center gap-1.5" data-testid="cell-result">
+        {height ? (
+          <span className="text-sm font-medium text-fg">
+            {t("Up to {height}", { height: resolutionName(height) })}
+          </span>
+        ) : chosenByPlugin ? null : (
+          <span className="text-sm font-medium text-fg">{t("Any resolution")}</span>
         )}
-        {extraLimitIds.length > 0 ? (
-          <>
-            <span className="text-fg-muted">·</span>
-            <LimitRuleLinks
-              ruleIds={extraLimitIds}
-              resolveRule={resolveRule}
+        <LimitBadges maxHeight={0} maxBitrateKbps={cell.maxBitrateKbps} stereo={cell.stereo} />
+      </div>
+      {chosenByPlugin ? null : (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs" data-testid="cell-profile">
+          <span className="text-fg-muted">{t("Profile:")}</span>
+          <span className="text-fg">{cell.profile || "—"}</span>
+          <span className="text-fg-muted">·</span>
+          {cell.source === "rule" && cell.profileRuleId ? (
+            <RuleTrigger
+              ruleId={cell.profileRuleId}
+              label={ruleBadgeLabel(resolveRule(cell.profileRuleId))}
+              summary={resolveRule(cell.profileRuleId).summary}
               onOpenRule={onOpenRule}
             />
-          </>
-        ) : null}
-      </div>
-      {cell.partialRuleIds.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1 text-xs text-fg-muted">
-          <span>{t("Some titles:")}</span>
-          {cell.partialRuleIds.map((rid, idx) => (
-            <Fragment key={rid}>
-              {idx > 0 ? <span>,</span> : null}
-              <RuleTrigger
-                ruleId={rid}
-                label={ruleBadgeLabel(resolveRule(rid))}
-                summary={resolveRule(rid).summary}
+          ) : (
+            <button
+              type="button"
+              onClick={() => onOpenRule({ fallback: where })}
+              className="text-left text-fg-muted hover:text-fg hover:underline"
+            >
+              {where === "away" && cell.source !== "defaultAway"
+                ? t("Everyone else, away: same as at home")
+                : fallbackTitle(where)}
+            </button>
+          )}
+        </div>
+      )}
+      {cell.limitRuleIds.length > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-1 text-xs text-fg-muted"
+          data-testid="cell-limits"
+        >
+          {!sources.known ? (
+            <>
+              <span>{t("Limits from")}</span>
+              <RuleLinks
+                ruleIds={cell.limitRuleIds}
+                resolveRule={resolveRule}
                 onOpenRule={onOpenRule}
               />
-            </Fragment>
-          ))}
+            </>
+          ) : (
+            <>
+              {sources.binding.length > 0 ? (
+                <span>{sources.looser.length > 0 ? t("The strictest:") : t("Limit from")}</span>
+              ) : null}
+              {sources.binding.map(({ ruleId, sets }, idx) => (
+                <Fragment key={ruleId}>
+                  {idx > 0 ? <span>·</span> : null}
+                  <span>
+                    <RuleTrigger
+                      ruleId={ruleId}
+                      label={ruleBadgeLabel(resolveRule(ruleId))}
+                      summary={resolveRule(ruleId).summary}
+                      onOpenRule={onOpenRule}
+                    />
+                    , <span className="text-fg">{sets.join(", ")}</span>
+                  </span>
+                </Fragment>
+              ))}
+              {sources.looser.length > 0 ? (
+                <>
+                  {sources.binding.length > 0 ? <span>·</span> : null}
+                  <span>{t("Looser:")}</span>
+                  <RuleLinks
+                    ruleIds={sources.looser}
+                    resolveRule={resolveRule}
+                    onOpenRule={onOpenRule}
+                  />
+                </>
+              ) : null}
+            </>
+          )}
         </div>
       ) : null}
+      {alsoIn.map((effect) => {
+        const values = {
+          library: effect.libraries.join(", "),
+          rule: (
+            <RuleTrigger
+              ruleId={effect.ruleId}
+              label={ruleBadgeLabel(resolveRule(effect.ruleId))}
+              summary={resolveRule(effect.ruleId).summary}
+              onOpenRule={onOpenRule}
+            />
+          ),
+          result: [effect.profile, ...effect.limits].filter(Boolean).join(" · "),
+        };
+        return (
+          <p key={effect.ruleId} className="text-xs text-fg-muted" data-testid="cell-also-in">
+            {effect.profile
+              ? tx("A title that is also in {library}: {rule} wins, so it gets {result}.", values)
+              : tx("A title that is also in {library}: {rule} also limits it to {result}.", values)}
+          </p>
+        );
+      })}
     </div>
   );
 }

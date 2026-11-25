@@ -48,6 +48,7 @@ import {
   useState,
   type AnchorHTMLAttributes,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   Link,
@@ -282,6 +283,41 @@ function HealthIndicator({ mobile = false }: { mobile?: boolean } = {}) {
 }
 
 /** "v1.2.3" for releases, the raw string ("dev") otherwise. */
+/**
+ * AppShell 0.4.2 leaves its sidebar toggle named in English: it does not pass
+ * AppSidebar's expandLabel / collapseLabel through. Until AppKit does, the
+ * button is named here, again each time the shell re-renders it.
+ */
+function useSidebarToggleName(shell: RefObject<HTMLElement | null>) {
+  const collapse = t("Collapse sidebar");
+  const expand = t("Expand sidebar");
+  useEffect(() => {
+    const root = shell.current;
+    if (!root || typeof MutationObserver === "undefined") return;
+    const name = () => {
+      for (const el of root.querySelectorAll<HTMLElement>("aside button[aria-label]")) {
+        const label = el.getAttribute("aria-label");
+        if (label === "Collapse sidebar") el.dataset.sidebarToggle = "collapse";
+        else if (label === "Expand sidebar") el.dataset.sidebarToggle = "expand";
+        const kind = el.dataset.sidebarToggle;
+        if (!kind) continue;
+        const translated = kind === "collapse" ? collapse : expand;
+        if (label !== translated) el.setAttribute("aria-label", translated);
+        if (el.title !== translated) el.title = translated;
+      }
+    };
+    name();
+    const observer = new MutationObserver(name);
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-label"],
+    });
+    return () => observer.disconnect();
+  }, [shell, collapse, expand]);
+}
+
 function versionLabel(v: string): string {
   return /^\d/.test(v) ? `v${v}` : v;
 }
@@ -396,6 +432,8 @@ function Shell() {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const wideSearch = useMediaQuery("(min-width: 640px)");
   const firstRunSetupRef = useRef(false);
+  const shellRef = useRef<HTMLDivElement>(null);
+  useSidebarToggleName(shellRef);
   if (location.pathname !== "/setup") {
     firstRunSetupRef.current = false;
   } else if (!boot.setupComplete) {
@@ -444,7 +482,10 @@ function Shell() {
       }),
   };
   return (
-    <div className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}>
+    <div
+      ref={shellRef}
+      className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}
+    >
       <AppShell
         groups={hideSetupNav ? [] : buildNavigation(navDescriptors)}
         pathname={location.pathname}

@@ -400,8 +400,27 @@ export const api = {
 
   // ---- Quality: who gets what -------------------------------------------------
   /** Device kinds, device types, apps and seen devices a rule can match. */
-  qualityDevices: (signal?: AbortSignal) =>
-    apiFetch<QualityDevices>("/quality/devices", { signal }),
+  qualityDevices: async (signal?: AbortSignal): Promise<QualityDevices> => {
+    const [devices, catalogue] = await Promise.all([
+      apiFetch<QualityDevices>("/quality/devices", { signal }),
+      // The app catalogue knows which device types each app runs on, which
+      // tells two rules for different devices apart. Optional: without it
+      // an app is taken to run anywhere.
+      apiFetch<{
+        apps?: { protocol: string; name: string; devices?: string[] | null }[] | null;
+      }>("/playback/policy", { signal }).catch(() => null),
+    ]);
+    const runsOn = new Map(
+      (catalogue?.apps ?? []).map((a) => [`${a.protocol}:${a.name}`, a.devices ?? []]),
+    );
+    return {
+      ...devices,
+      apps:
+        devices.apps?.map((a) =>
+          a.devices?.length || !runsOn.get(a.id)?.length ? a : { ...a, devices: runsOn.get(a.id) },
+        ) ?? null,
+    };
+  },
   qualitySummary: (
     params: { viewer?: number | string; device?: string } = {},
     signal?: AbortSignal,

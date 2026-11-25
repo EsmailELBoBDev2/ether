@@ -1230,7 +1230,8 @@ export interface QualityDevices {
   /** Kinds of device: "tv", "mobile", "computer". */
   groups: { id: string; name: string }[] | null;
   types: { id: string; name: string; group: string }[] | null;
-  apps: { id: string; name: string; protocol?: string }[] | null;
+  /** devices: the device types the app runs on, filled in from the app catalogue. */
+  apps: { id: string; name: string; protocol?: string; devices?: string[] }[] | null;
   /** Devices the server has seen. */
   clients:
     | {

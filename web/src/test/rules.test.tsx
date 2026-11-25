@@ -6,10 +6,11 @@ import { AppProvider } from "../app-context";
 import {
   deviceFromKey,
   deviceKey,
-  overlappingRules,
+  defaultRulePosition,
+  neverPicksProfile,
   profileUses,
   ruleLimits,
-  shadowedBy,
+  ruleStanding,
   tidyRule,
   withProfileRenamed,
 } from "../lib/qualityRules";
@@ -60,15 +61,63 @@ describe("qualityRules helpers", () => {
       { id: "r_4", libraries: [1], profile: "1080p" },
     ];
     // Rule 1 (TVs) completely covers rule 3 (Living room Shield, which is a TV).
-    expect(shadowedBy(rules, 2, MOCK_QUALITY_DEVICES)).toBe(0);
+    expect(neverPicksProfile(rules, 2, MOCK_QUALITY_DEVICES)).toBe(true);
+    expect(ruleStanding(rules.slice(0, 2), rules[2], MOCK_QUALITY_DEVICES).shadowedBy).toEqual([0]);
     // Rule 2 is limits-only and never shadows a profile.
-    expect(shadowedBy(rules, 3, MOCK_QUALITY_DEVICES)).toBe(-1);
-    // Rule 4 (Movies, any device) overlaps rule 1 (any library, TVs) and rule 3 (any library, Shield).
-    const hits = overlappingRules(rules, 3, MOCK_QUALITY_DEVICES);
-    expect(hits.map((h) => ({ index: h.index, coversAll: h.coversAll }))).toEqual([
-      { index: 0, coversAll: false },
-      { index: 2, coversAll: false },
-    ]);
+    expect(neverPicksProfile(rules, 3, MOCK_QUALITY_DEVICES)).toBe(false);
+    // Rule 4 (a library, any device) overlaps rule 1 (TVs). Rule 3 never picks
+    // a profile itself and gives the same one, so it is not named.
+    expect(ruleStanding(rules.slice(0, 3), rules[3], MOCK_QUALITY_DEVICES)).toEqual({
+      shadowedBy: [],
+      overlaps: [0],
+    });
+  });
+
+  it("only names earlier rules that can match the same plays", () => {
+    const earlier: QualityRule[] = [
+      // Migrated 0.3.20 rules match by name.
+      { id: "r_1", viewers: [3], devices: [{ contains: "Roku", label: "Roku" }], profile: "720p" },
+      {
+        id: "r_2",
+        devices: [{ contains: "Plex for Android", label: "Plex for Android" }],
+        profile: "720p",
+      },
+      { id: "r_3", where: "away", profile: "1080p" },
+    ];
+    const infuse: QualityRule = {
+      id: "",
+      viewers: [3],
+      devices: [{ app: "jellyfin:Infuse", label: "Infuse" }],
+      profile: "4K",
+    };
+    // Infuse runs on Apple TV and iOS: never a Roku, never Plex for Android.
+    expect(ruleStanding(earlier, infuse, MOCK_QUALITY_DEVICES)).toEqual({
+      shadowedBy: [],
+      overlaps: [2],
+    });
+    // The same app on a kind of device it does not run on can't overlap either.
+    expect(
+      ruleStanding(
+        [{ id: "r_pc", devices: [{ group: "computer", label: "Computers" }], profile: "720p" }],
+        infuse,
+        MOCK_QUALITY_DEVICES,
+      ).overlaps,
+    ).toEqual([]);
+  });
+
+  it("sees a rule shadowed by a Movies rule and an Episodes rule together", () => {
+    const rules: QualityRule[] = [
+      { id: "r_1", where: "away", maxBitrateKbps: 8000 },
+      { id: "r_2", viewers: [2], profile: "720p" },
+      { id: "r_3", kind: "movie", profile: "4K" },
+      { id: "r_4", kind: "episode", profile: "1080p" },
+    ];
+    const fresh: QualityRule = { id: "", libraries: [4], profile: "720p" };
+    expect(ruleStanding(rules, fresh, MOCK_QUALITY_DEVICES).shadowedBy).toEqual([2, 3]);
+    // New rules start above the first catch-all that picks a profile.
+    expect(defaultRulePosition(rules)).toBe(2);
+    expect(ruleStanding(rules.slice(0, 2), fresh, MOCK_QUALITY_DEVICES).shadowedBy).toEqual([]);
+    expect(defaultRulePosition([rules[0]!, rules[1]!])).toBe(2);
   });
 
   it("tracks profile uses and renames references across defaults and rules", () => {
@@ -231,6 +280,46 @@ describe("Releases › Rules", () => {
     ).toBeInTheDocument();
     fireEvent.click(within(drawer).getByRole("button", { name: "Open rule 1" }));
     expect(await screen.findByRole("dialog", { name: "Everything 4K" })).toBeInTheDocument();
+  });
+
+  it("starts a new rule above the catch-all rules and lets the drawer place it", async () => {
+    const { fake } = renderApp("/releases/rules", {}, (f) => {
+      f.state.config.quality.rules = [
+        { id: "r_cap", name: "Away cap", where: "away", maxBitrateKbps: 8000 },
+        { id: "r_movies", name: "All movies", kind: "movie", profile: "4K" },
+        { id: "r_shows", name: "All episodes", kind: "episode", profile: "4K" },
+      ];
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add rule" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "New rule" });
+    // Above the first rule that picks a profile for anyone on any device.
+    expect(within(drawer).getByRole("button", { name: "Position" })).toHaveTextContent(
+      "Above rule 2: All movies",
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Profile" }));
+    fireEvent.click(await screen.findByRole("option", { name: "1080p" }));
+    expect(within(drawer).queryByTestId("rule-shadowed")).not.toBeInTheDocument();
+
+    // At the bottom the two rules above take every play between them; the warning says so before saving.
+    fireEvent.click(within(drawer).getByRole("button", { name: "Position" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Bottom" }));
+    expect(within(drawer).getByTestId("rule-shadowed")).toHaveTextContent(
+      "Rules 2, 3 come first for all of these, so this rule never picks a profile.",
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Insert before rule 2" }));
+    expect(within(drawer).queryByTestId("rule-shadowed")).not.toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save rule" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(1));
+    const body = calls(fake, "PUT", "/config/quality")[0]!.body as EtherConfig["quality"];
+    expect(body.rules?.map((r) => r.id || "new")).toEqual(["r_cap", "new", "r_movies", "r_shows"]);
+
+    // Rows move straight to the top.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: "Move rule 4 to top" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/quality")).toHaveLength(2));
+    const moved = calls(fake, "PUT", "/config/quality")[1]!.body as EtherConfig["quality"];
+    expect(moved.rules?.[0]?.id).toBe("r_shows");
   });
 
   it("opens rules and presets from URL query params", async () => {

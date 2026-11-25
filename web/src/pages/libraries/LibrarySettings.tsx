@@ -464,8 +464,10 @@ function LibraryReleasesSection({ library }: { library: Library }) {
                   ) : null}
                   <SummaryCellView
                     cell={pair.home}
+                    kind={pair.kind}
                     where="home"
                     chosenByPlugin={chosenByPlugin}
+                    quality={quality}
                     resolveRule={resolveRule}
                     onOpenRule={openRule}
                   />
@@ -488,8 +490,10 @@ function LibraryReleasesSection({ library }: { library: Library }) {
                   ) : null}
                   <SummaryCellView
                     cell={pair.away}
+                    kind={pair.kind}
                     where="away"
                     chosenByPlugin={chosenByPlugin}
+                    quality={quality}
                     resolveRule={resolveRule}
                     onOpenRule={openRule}
                   />

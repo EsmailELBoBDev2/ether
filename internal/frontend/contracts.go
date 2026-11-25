@@ -894,6 +894,15 @@ type TitleLyrics interface {
 	LyricsAvailable(ctx context.Context) bool
 }
 
+// TitleLyricsHint says, without asking the source, whether a title is worth
+// offering lyrics for: Jellyfin's HasLyrics and Plex's lyric stream must be
+// on the item before a viewer opens the lyrics. It reads only what Ether
+// already knows (an earlier answer, the item's kind declaration), so it is
+// safe on every item of a track list.
+type TitleLyricsHint interface {
+	TitleLyricsLikely(ctx context.Context, t core.Title) bool
+}
+
 // FavoriteTitles lists a viewer's liked titles of one role (tracks for Liked
 // Songs, albums, artists they follow, movies…) one page at a time, in the
 // viewer's order. A page reads only that viewer's likes of that role.

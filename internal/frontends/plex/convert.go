@@ -591,6 +591,9 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			withVariants = false
 		}
 		m.Media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail)
+		if s.lyricsLikely(ctx, t) {
+			addLyricStream(m.Media, t.Key)
+		}
 		applyEditionTitle(&m, editionTitle)
 		if s.downloadsAllowed(pr.User) {
 			m.AllowSync = model.Ptr(true)

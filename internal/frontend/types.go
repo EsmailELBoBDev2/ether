@@ -17,6 +17,10 @@ type RatingKey = core.RatingKey
 type ItemRef = core.ItemRef
 type Playlist = core.Playlist
 type MediaType = core.MediaType
+
+// Lyrics are a title's words, synced (Lines) or plain; LyricLine is one line.
+type Lyrics = core.Lyrics
+type LyricLine = core.LyricLine
 type MediaClass = core.MediaClass
 type MediaRole = core.MediaRole
 type TitleParent = core.TitleParent

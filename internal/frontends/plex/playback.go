@@ -3544,6 +3544,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusUnauthorized)
 		return
 	}
+	if isLyricStreamID(id) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeHTTPError(w, http.StatusBadRequest)
+			return
+		}
+		s.serveLyricStream(w, r, id)
+		return
+	}
 	pr := FromContext(r.Context())
 	format := subtitleFormat(r.URL.Query().Get("format"))
 	if _, ext, ok := strings.Cut(chi.URLParam(r, "stream"), "."); ok {

@@ -72,6 +72,29 @@ func (l *lyricsMemos) put(key core.RatingKey, memo lyricsMemo) {
 
 var kindLyrics lyricsMemos
 
+// LyricsLikely reports, without calling the plugin, whether key may have
+// lyrics: an earlier answer decides (a miss is remembered for six hours);
+// otherwise the item's kind must declare lyrics. library may be zero, then
+// the item's library is looked up. Kind declarations are cached in memory,
+// so this is cheap on every track of a list.
+func (c *KindCatalog) LyricsLikely(ctx context.Context, key core.RatingKey, library core.LibraryID) bool {
+	if c == nil || c.items == nil || !key.IsPluginKey() {
+		return false
+	}
+	if memo, ok := kindLyrics.get(key); ok {
+		return memo.found
+	}
+	if library == 0 {
+		_, lib, err := c.items.GetByKey(ctx, key)
+		if err != nil {
+			return false
+		}
+		library = lib
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, library)
+	return err == nil && rec.Decl.Lyrics
+}
+
 // Lyrics asks the item's kind plugin for its words when the kind declares
 // lyrics. The item comes from the store; the plugin is called at most once
 // per item a day (misses remembered for six hours).

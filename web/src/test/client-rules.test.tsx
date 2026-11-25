@@ -8,7 +8,7 @@ describe("client quality rules", () => {
   it("scopes a rule to shows and filters the list by media", async () => {
     const { fake } = renderApp("/quality/rules", {}, (f) => {
       const profiles = f.state.config.quality.profiles!;
-      profiles.push({ ...structuredClone(profiles[1]!), name: "Shows 1080p", mediaType: "tv" });
+      profiles.push({ ...structuredClone(profiles[1]!), name: "Shows 1080p" });
       f.state.config.quality.rules![0]!.mediaType = "movie";
     });
     const firstRule = (await screen.findByText(/1\. Plex for Apple TV/, {}, WAIT)).closest("li")!;
@@ -19,7 +19,6 @@ describe("client quality rules", () => {
     const applies = within(drawer).getByRole("radiogroup", { name: "Applies to" });
     fireEvent.click(within(applies).getByRole("radio", { name: "Shows" }));
 
-    // The profile picker offers only profiles that serve shows.
     fireEvent.click(within(drawer).getByRole("button", { name: "Profile" }));
     fireEvent.click(await screen.findByRole("option", { name: "Shows 1080p" }, WAIT));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save rule" }));

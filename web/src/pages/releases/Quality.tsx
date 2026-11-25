@@ -11,12 +11,12 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Check, Download, Film, Plus, RefreshCw, SlidersHorizontal, Tv } from "lucide-react";
+import { Download, Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import { useAsync } from "../../lib/hooks";
 import { librariesApi } from "../libraries/api";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
-import { ChipGroup, NumberInput, Segmented } from "../../components/fields";
+import { ChipGroup, NumberInput } from "../../components/fields";
 import { Section, SubtabNav } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -24,20 +24,8 @@ import { localized, t, tn } from "../../i18n";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { ApiError, api } from "../../lib/api";
 import { relativeTime } from "../../lib/format";
-import { itemName, resolutionGroups, withMediaFormats } from "../../lib/qualityRanking";
-import {
-  MEDIA_MOVIE,
-  MEDIA_TV,
-  PROFILE_MEDIA,
-  appForMedia,
-  mediaApplies,
-  mediaLabel,
-  mediaTypeForApp,
-  profileMediaType,
-  releaseConsole,
-  type ProfileMedia,
-  type QualitySyncReport,
-} from "../../lib/releases";
+import { itemName, resolutionGroups } from "../../lib/qualityRanking";
+import { releaseConsole, type QualitySyncReport } from "../../lib/releases";
 import type { CustomFormatDefinition, QualityProfile } from "../../lib/types";
 import { parseDuration } from "../settings/duration";
 import { SourceOrderSection } from "../sources/EqualQuality";
@@ -63,18 +51,18 @@ import {
 } from "./resolverDraft";
 import { TrashImport } from "./TrashImport";
 import { settleQualityRules, useQuality, type Quality } from "./useQuality";
+import { LibraryProfilesSection, librariesUsing } from "./LibraryProfiles";
 /**
- * A new profile starts as a copy of the media's first profile (its quality
- * order and format scores), so it ranks like the owner's own until changed.
+ * A new profile starts as a copy of the first profile (its quality order and
+ * format scores), so it ranks like the owner's own until changed.
  */
-function blankProfile(profiles: QualityProfile[], media: ProfileMedia): QualityProfile {
-  const taken = (name: string) => profiles.some((p) => p.name === name && p.mediaType === media);
-  let n = profiles.filter((p) => p.mediaType === media).length + 1;
+function blankProfile(profiles: QualityProfile[]): QualityProfile {
+  const taken = (name: string) => profiles.some((p) => p.name === name);
+  let n = profiles.length + 1;
   while (taken(t("Profile {n}", { n }))) n++;
-  const base = profiles.find((p) => p.mediaType === media && !p.import);
+  const base = profiles.find((p) => !p.import);
   return {
     name: t("Profile {n}", { n }),
-    mediaType: media,
     maxHeight: 1080,
     minHeight: 720,
     allowHdr: false,
@@ -124,143 +112,17 @@ function profileSummary(p: QualityProfile) {
     .join(" · ");
 }
 
-const MEDIA_OPTIONS = localized(() =>
-  PROFILE_MEDIA.map((value) => ({ value, label: mediaLabel(value) })),
-);
-/** Movies / Shows badge for a profile (Movies & shows for a rule for every media). */
-export function MediaBadge({ media }: { media?: string }) {
-  return <Badge variant={media ? "info" : "secondary"}>{mediaLabel(media)}</Badge>;
-}
-
 /**
- * The page-level scope choice. Two large, filled tabs make the selected
- * media obvious before the dependent profile/default/Away sections.
+ * Rename profile `from` to `to` in the Default, Default away and every client
+ * rule. Libraries that chose it are renamed by the caller (librariesApi).
  */
-function MediaScopeToggle({
-  media,
-  onChange,
-}: {
-  media: ProfileMedia;
-  onChange: (media: ProfileMedia) => void;
-}) {
-  const options = [
-    ...PROFILE_MEDIA.map((value) => ({
-      value,
-      label: mediaLabel(value),
-      Icon: value === MEDIA_TV ? Tv : Film,
-    })),
-  ];
-  return (
-    <div
-      role="radiogroup"
-      aria-label={t("Media")}
-      className="grid w-full max-w-sm grid-cols-2 gap-1 rounded-xl border border-border bg-bg-subtle p-1"
-    >
-      {options.map(({ value, label, Icon }, i) => {
-        const on = value === media;
-        return (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            aria-label={label}
-            tabIndex={on ? 0 : -1}
-            onClick={() => onChange(value)}
-            onKeyDown={(e) => {
-              if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-              e.preventDefault();
-              const next =
-                options[(i + (e.key === "ArrowRight" ? 1 : options.length - 1)) % options.length];
-              if (!next) return;
-              onChange(next.value);
-              (
-                e.currentTarget.parentElement?.children[options.indexOf(next)] as
-                  HTMLElement | undefined
-              )?.focus();
-            }}
-            className={[
-              "flex h-12 items-center justify-center gap-2 rounded-lg px-4 text-base font-semibold transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-              on
-                ? "bg-primary text-primary-fg shadow-sm shadow-primary/30"
-                : "text-fg-muted hover:bg-surface hover:text-fg",
-            ].join(" ")}
-          >
-            <Icon size={18} aria-hidden />
-            {label}
-            {on ? <Check size={16} aria-hidden className="ml-0.5" /> : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-const HOME_FIELD = { movie: "defaultMovie", tv: "defaultTv" } as const;
-const AWAY_FIELD = { movie: "remoteMovie", tv: "remoteTv" } as const;
-
-/** Whether a profile named name serves media. Names are unique per media. */
-const hasProfile = (profiles: QualityProfile[], name: string, media: string) =>
-  profiles.some((p) => p.name === name && p.mediaType === media);
-
-/**
- * The stored default for a media: its own field, else the media-neutral one
- * when a profile of that name serves the media.
- */
-function mediaDefault(quality: Quality, media: ProfileMedia, away: boolean): string {
-  const scoped = quality[away ? AWAY_FIELD[media] : HOME_FIELD[media]];
-  if (scoped) return scoped;
-  const neutral = (away ? quality.remote : quality.default) ?? "";
-  return neutral && hasProfile(quality.profiles ?? [], neutral, media) ? neutral : "";
-}
-
-/** First profile (optionally other than `exclude`) for media. */
-function mediaFallback(profiles: QualityProfile[], media: string, exclude?: string): string {
-  return profiles.find((p) => p.name !== exclude && p.mediaType === media)?.name ?? "";
-}
-
-/**
- * Rename media's profile `from` to `to` in every reference. A movie and a
- * show profile may share a name, so references that served both keep the
- * other media's profile: a media-neutral default becomes explicit per
- * media, and a rule for every media splits into one rule per media.
- * `profiles` is the list after the rename.
- */
-function withRenamedProfile(
-  quality: Quality,
-  profiles: QualityProfile[],
-  media: ProfileMedia,
-  from: string,
-  to: string,
-): Quality {
-  const next: Quality = { ...quality };
-  if (next[HOME_FIELD[media]] === from) next[HOME_FIELD[media]] = to;
-  if (next[AWAY_FIELD[media]] === from) next[AWAY_FIELD[media]] = to;
-  for (const [neutral, fields] of [
-    ["default", HOME_FIELD],
-    ["remote", AWAY_FIELD],
-  ] as const) {
-    if (next[neutral] !== from) continue;
-    for (const m of PROFILE_MEDIA) {
-      if (!next[fields[m]]) {
-        next[fields[m]] = m === media ? to : hasProfile(profiles, from, m) ? from : "";
-      }
-    }
-    next[neutral] = to;
-  }
-  next.rules = (quality.rules ?? []).flatMap((r) => {
-    if (r.profile !== from || (r.mediaType && r.mediaType !== media)) return [r];
-    if (r.mediaType === media) return [{ ...r, profile: to }];
-    return PROFILE_MEDIA.flatMap((m) =>
-      m === media
-        ? [{ ...r, mediaType: m, profile: to }]
-        : hasProfile(profiles, from, m)
-          ? [{ ...r, mediaType: m }]
-          : [],
-    );
-  });
-  return next;
+function withRenamedProfile(quality: Quality, from: string, to: string): Quality {
+  return {
+    ...quality,
+    default: quality.default === from ? to : quality.default,
+    remote: quality.remote === from ? to : quality.remote,
+    rules: (quality.rules ?? []).map((r) => (r.profile === from ? { ...r, profile: to } : r)),
+  };
 }
 
 /**
@@ -273,33 +135,20 @@ function withProfileNames(e: unknown, sent: QualityProfile[]): unknown {
   const fields = e.fields.map((f) => {
     const at = /^quality\.profiles\[(\d+)\]/.exec(f.field);
     const p = at ? sent[Number(at[1])] : undefined;
-    if (!p) return f;
-    return { ...f, field: t("{name} ({media})", { name: p.name, media: mediaLabel(p.mediaType) }) };
+    return p ? { ...f, field: p.name } : f;
   });
   return new ApiError(e.status, e.code, e.message, fields);
 }
 
 /**
- * Keep every stored default pointing at a profile that serves its media. An
- * At home default that outlives its profile falls back to the media's first
- * profile; an Away default falls back to the At home one.
+ * Keep the Default and Default away pointing at a profile that exists. A
+ * Default that outlives its profile falls back to the first profile; a
+ * Default away falls back to each library's At home profile.
  */
 function settleDefaults(next: Quality): Quality {
   const profiles = next.profiles ?? [];
-  for (const media of PROFILE_MEDIA) {
-    const home = HOME_FIELD[media];
-    const away = AWAY_FIELD[media];
-    if (next[home] && !hasProfile(profiles, next[home]!, media)) {
-      next[home] = mediaFallback(profiles, media);
-    }
-    if (next[away] && !hasProfile(profiles, next[away]!, media)) next[away] = "";
-    // The media-neutral default must not decide for a media it cannot serve.
-    if (!next[home] && next.default && !hasProfile(profiles, next.default, media)) {
-      next[home] = mediaFallback(profiles, media);
-    }
-  }
   if (profiles.length > 0) {
-    if (next.default && !profiles.some((p) => p.name === next.default)) next.default = "";
+    if (!profiles.some((p) => p.name === next.default)) next.default = profiles[0]!.name;
     if (next.remote && !profiles.some((p) => p.name === next.remote)) next.remote = "";
     if (next.rules) next.rules = settleQualityRules(next).rules;
   }
@@ -474,7 +323,6 @@ function SyncSection({ quality, onSaved }: { quality: Quality; onSaved: () => Pr
 
 export function QualityTab() {
   const { config, quality, commit, refresh } = useQuality();
-  const [media, setMedia] = useState<ProfileMedia>(MEDIA_MOVIE);
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (!quality) return <LoadingRows rows={4} />;
   return (
@@ -485,15 +333,13 @@ export function QualityTab() {
           resolver={config.data?.resolver ?? null}
           commit={commit}
           refresh={refresh}
-          media={media}
-          onMediaChange={setMedia}
         />
       </div>
       <div className="pt-1">
         <div className="flex items-center gap-3">
           <div className="h-px flex-1 bg-border" />
           <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-muted">
-            {t("Shared for movies and shows")}
+            {t("For every profile")}
           </span>
           <div className="h-px flex-1 bg-border" />
         </div>
@@ -519,26 +365,19 @@ function ProfileList({
   resolver,
   commit,
   refresh,
-  media,
-  onMediaChange,
 }: {
   quality: Quality;
   resolver: ResolverPolicy | null;
   commit: Commit;
   refresh: () => Promise<void>;
-  media: ProfileMedia;
-  onMediaChange: (media: ProfileMedia) => void;
 }) {
   const { fields } = useRankingRegistry();
   const libraries = useAsync((signal) => librariesApi.list(signal), []);
+  const libs = libraries.data ?? [];
   const profiles = quality.profiles ?? [];
-  const visible = profiles
-    .map((profile, index) => ({ profile, index }))
-    .filter(({ profile }) => profile.mediaType === media);
-  const homeDefault = mediaDefault(quality, media, false);
-  const awayDefault = mediaDefault(quality, media, true);
+  const homeDefault = quality.default || profiles[0]?.name || "";
+  const awayDefault = quality.remote ?? "";
   const [importing, setImporting] = useState(false);
-  const rules = quality.rules ?? [];
   const [editing, setEditing] = useState<{ index: number; draft: QualityProfile } | null>(null);
   const [defaultFor, setDefaultFor] = useState<{ home: boolean; away: boolean }>({
     home: false,
@@ -562,13 +401,10 @@ function ProfileList({
     const cloned = structuredClone(draft);
     setEditing({ index, draft: cloned });
     const isExisting = index < profiles.length;
-    const scope = (profileMediaType(cloned) || media) as ProfileMedia;
     setDefaultFor({
-      // The first profile for a media becomes its At home default.
-      home: isExisting
-        ? mediaDefault(quality, scope, false) === cloned.name
-        : !profiles.some((p) => p.mediaType === scope),
-      away: isExisting && mediaDefault(quality, scope, true) === cloned.name,
+      // The first profile becomes the Default.
+      home: isExisting ? homeDefault === cloned.name : profiles.length === 0,
+      away: isExisting && awayDefault === cloned.name,
     });
     const text = formatsJSON(resolver);
     setFormatsText(text);
@@ -591,8 +427,6 @@ function ProfileList({
       }
     }
     const old = profiles[index];
-    const scope = (profileMediaType(draft) || media) as ProfileMedia;
-    draft = withMediaFormats({ ...draft, mediaType: scope });
     const list =
       index < profiles.length
         ? profiles.map((p, j) => (j === index ? draft : p))
@@ -600,41 +434,18 @@ function ProfileList({
     const renamed = old && old.name !== draft.name ? old.name : null;
 
     let next: Quality = { ...quality, profiles: list };
-    // Moved to the other media: the rules that used it for its old media
-    // follow it. Defaults it can no longer serve are settled below.
-    const moved = old?.mediaType && old.mediaType !== scope ? old : null;
-    if (moved) {
-      next.rules = rules.map((r) =>
-        r.profile === moved.name && r.mediaType === moved.mediaType
-          ? { ...r, mediaType: scope }
-          : r,
-      );
-    }
-    if (renamed) next = withRenamedProfile(next, list, scope, renamed, draft.name);
-
-    const homeField = HOME_FIELD[scope];
-    const awayField = AWAY_FIELD[scope];
+    if (renamed) next = withRenamedProfile(next, renamed, draft.name);
     if (defaultFor.home) {
-      next[homeField] = draft.name;
-    } else if (old && mediaDefault(quality, scope, false) === old.name) {
-      next[homeField] = mediaFallback(list, scope, draft.name);
+      next.default = draft.name;
+    } else if (old && homeDefault === old.name) {
+      next.default = list.find((p) => p.name !== draft.name)?.name ?? draft.name;
     }
-    // Away is optional: with no Away profile, people away from home get
-    // the At home one.
+    // Default away is optional: with none, people away from home get each
+    // library's At home profile.
     if (defaultFor.away) {
-      next[awayField] = draft.name;
-    } else if (old && mediaDefault(quality, scope, true) === old.name) {
-      // Clearing an Away default that came from the media-neutral field
-      // keeps the other media's Away profile.
-      if (next.remote) {
-        for (const m of PROFILE_MEDIA) {
-          if (m !== scope && !next[AWAY_FIELD[m]]) {
-            next[AWAY_FIELD[m]] = mediaDefault(quality, m, true);
-          }
-        }
-        next.remote = "";
-      }
-      next[awayField] = "";
+      next.remote = draft.name;
+    } else if (old && awayDefault === old.name) {
+      next.remote = "";
     }
     if (!next.default) next.default = draft.name;
     next = settleDefaults(next);
@@ -650,6 +461,7 @@ function ProfileList({
     setErrors({});
     try {
       await commit(next, index < profiles.length ? t("Profile saved") : t("Profile added"));
+      if (renamed) await renameLibraryProfiles(renamed, draft.name);
       // Only touch the shared definitions when this drawer actually edited
       // them; otherwise a stale snapshot must not be sent back.
       if (parsed) {
@@ -659,7 +471,7 @@ function ProfileList({
           original: formatSnapshot,
           edited: parsed,
           latest,
-          app: appForMedia(scope),
+          app: null,
         });
         if (!sameFormats(merged, latest)) {
           await api.putSection("resolver", { customFormats: merged });
@@ -693,34 +505,20 @@ function ProfileList({
     if (!editing) return;
     const { index } = editing;
     const name = profiles[index]?.name ?? editing.draft.name;
-    const scope = (profileMediaType(profiles[index] ?? editing.draft) || media) as ProfileMedia;
     const rest = profiles.filter((_, j) => j !== index);
-    // A rule keeps the media that still have a profile of this name; a rule
-    // left with none is removed.
-    let usedBy = 0;
-    const nextRules = rules.flatMap((r) => {
-      if (r.profile !== name) return [r];
-      const left = PROFILE_MEDIA.filter(
-        (m) => mediaApplies(r.mediaType, m) && hasProfile(rest, name, m),
-      );
-      if (!left.length) {
-        usedBy++;
-        return [];
-      }
-      return r.mediaType || left.length === PROFILE_MEDIA.length
-        ? [r]
-        : left.map((m) => ({ ...r, mediaType: m }));
-    });
-    let next: Quality = { ...quality, profiles: rest, rules: nextRules };
-    if (!rest.some((p) => p.name === name)) {
-      if (next.default === name) next.default = rest[0]?.name ?? "";
-      if (next.remote === name) next.remote = "";
-    }
-    if (next[HOME_FIELD[scope]] === name) next[HOME_FIELD[scope]] = mediaFallback(rest, scope);
-    if (next[AWAY_FIELD[scope]] === name) next[AWAY_FIELD[scope]] = "";
+    // A device rule using it is removed; libraries that chose it go back to
+    // the Default.
+    const rules = quality.rules ?? [];
+    const usedBy = rules.filter((r) => r.profile === name).length;
+    let next: Quality = {
+      ...quality,
+      profiles: rest,
+      rules: rules.filter((r) => r.profile !== name),
+    };
+    if (next.default === name) next.default = rest[0]?.name ?? "";
+    if (next.remote === name) next.remote = "";
     next = settleDefaults(next);
-    const fallback = mediaDefault(next, scope, false) || mediaFallback(rest, scope);
-    const moves = mediaDefault(quality, scope, false) === name;
+    const usingLibraries = librariesUsing(libs, name);
     const consequences = [
       name ? t("{name} will be removed.", { name }) : t("This profile will be removed."),
       usedBy
@@ -730,8 +528,15 @@ function ProfileList({
             "{count} device rules using it will be removed.",
           )
         : "",
-      moves && fallback
-        ? t("Clients that used it as a default will use {profile}.", { profile: fallback })
+      usingLibraries.length
+        ? tn(
+            usingLibraries.length,
+            "The library using it will use the Default profile.",
+            "{count} libraries using it will use the Default profile.",
+          )
+        : "",
+      homeDefault === name && next.default
+        ? t("The Default profile will be {profile}.", { profile: next.default })
         : "",
     ]
       .filter(Boolean)
@@ -747,6 +552,7 @@ function ProfileList({
     setError(null);
     try {
       await commit(next, t("Profile removed"));
+      await renameLibraryProfiles(name, "");
       setEditing(null);
     } catch (e) {
       setError(withProfileNames(e, rest));
@@ -756,87 +562,59 @@ function ProfileList({
   }
 
   const draft = editing?.draft;
-  const draftScope = draft ? profileMediaType(draft) : "";
   const isNew = editing ? editing.index >= profiles.length : false;
+  const usedByDraft = editing ? librariesUsing(libs, profiles[editing.index]?.name ?? "") : [];
   const patch = (p: Partial<QualityProfile>) =>
     setEditing((e) => (e ? { ...e, draft: { ...e.draft, ...p } } : e));
 
-  /** Change "Applies to" and point the default checkboxes at the new media's fields. */
-  function changeApplies(nextMedia: ProfileMedia) {
-    const existing = editing ? profiles[editing.index] : undefined;
-    patch({ mediaType: nextMedia });
-    if (existing) {
-      const selected = nextMedia;
-      setDefaultFor({
-        home: mediaDefault(quality, selected, false) === existing.name,
-        away: mediaDefault(quality, selected, true) === existing.name,
-      });
-    }
+  /** Point every library that chose profile `from` at `to` ("" = Default). */
+  async function renameLibraryProfiles(from: string, to: string) {
+    const changes = libs.flatMap((lib) => {
+      const body: Record<string, string> = {};
+      if (lib.qualityProfile === from) body.qualityProfile = to;
+      if (lib.awayQualityProfile === from) body.awayQualityProfile = to;
+      return Object.keys(body).length ? [librariesApi.patch(lib.id, body)] : [];
+    });
+    if (!changes.length) return;
+    await Promise.all(changes);
+    await libraries.reload();
   }
 
   return (
     <>
-      <div>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">
-              {t("Profile scope")}
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <MediaScopeToggle media={media} onChange={onMediaChange} />
-              <p className="max-w-md text-sm text-fg-muted">
-                {t("Profiles and their At home and Away defaults apply to {media}.", {
-                  media: mediaLabel(media),
-                })}
-              </p>
-            </div>
-          </div>
-          <Button size="sm" onClick={() => open(profiles.length, blankProfile(profiles, media))}>
-            <Plus size={14} /> {t("Add profile")}
-          </Button>
-        </div>
-      </div>
-
       <Section
         title={t("Profiles")}
-        description={t("Resolution, HDR, release type and language rules used to rank releases.")}
+        description={t(
+          "Resolution, HDR, release type and language rules used to rank releases. Each library picks one.",
+        )}
+        actions={
+          <Button size="sm" onClick={() => open(profiles.length, blankProfile(profiles))}>
+            <Plus size={14} /> {t("Add profile")}
+          </Button>
+        }
         bodyClassName=""
       >
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border bg-bg-subtle/40 px-5 py-3 text-sm">
           <span className="flex items-center gap-2">
-            <span className="text-xs font-medium text-fg-muted">{t("At home default")}</span>
-            <Badge variant="info">{homeDefault || t("First compatible profile")}</Badge>
+            <span className="text-xs font-medium text-fg-muted">{t("Default profile")}</span>
+            <Badge variant="info">{homeDefault || t("First profile")}</Badge>
           </span>
           <span className="flex items-center gap-2">
-            <span className="text-xs font-medium text-fg-muted">{t("Away default")}</span>
+            <span className="text-xs font-medium text-fg-muted">{t("Default away profile")}</span>
             <Badge variant="info">{awayDefault || t("Same as at home")}</Badge>
           </span>
           <span className="text-xs text-fg-muted">{t("Set these from a profile’s editor.")}</span>
         </div>
-        {visible.length === 0 ? (
+        {profiles.length === 0 ? (
           <EmptyState
             icon={<SlidersHorizontal />}
-            title={
-              profiles.length
-                ? media === MEDIA_MOVIE
-                  ? t("No movie profiles")
-                  : t("No show profiles")
-                : t("No profiles")
-            }
-            description={
-              profiles.length
-                ? t("Switch to {media} to see its profiles.", {
-                    media: mediaLabel(media === MEDIA_MOVIE ? MEDIA_TV : MEDIA_MOVIE),
-                  })
-                : t("Add a profile so Ether knows which releases to prefer.")
-            }
+            title={t("No profiles")}
+            description={t("Add a profile so Ether knows which releases to prefer.")}
           />
         ) : (
           <ul className="divide-y divide-border">
-            {visible.map(({ profile: p, index: i }) => {
-              const usedBy = rules.filter(
-                (r) => r.profile === p.name && (!r.mediaType || r.mediaType === p.mediaType),
-              ).length;
+            {profiles.map((p, i) => {
+              const usedBy = (quality.rules ?? []).filter((r) => r.profile === p.name).length;
               return (
                 <RecordItem
                   key={`${p.name}-${i}`}
@@ -844,25 +622,15 @@ function ProfileList({
                   description={profileSummary(p)}
                   meta={
                     <>
-                      <MediaBadge media={profileMediaType(p)} />
-                      {(libraries.data ?? [])
-                        .filter(
-                          (lib) =>
-                            lib.source !== "plugin" &&
-                            lib.qualityProfile === p.name &&
-                            (lib.mediaType === "show" ? "tv" : "movie") === p.mediaType,
-                        )
-                        .map((lib) => (
-                          <Badge key={lib.id} variant="secondary">
-                            {t("Libraries")}: {lib.name}
-                          </Badge>
-                        ))}
-                      {homeDefault === p.name ? (
-                        <Badge variant="info">{t("Default at home")}</Badge>
-                      ) : null}
+                      {homeDefault === p.name ? <Badge variant="info">{t("Default")}</Badge> : null}
                       {awayDefault === p.name ? (
                         <Badge variant="info">{t("Default away")}</Badge>
                       ) : null}
+                      {librariesUsing(libs, p.name).map((lib) => (
+                        <Badge key={lib.id} variant="secondary">
+                          {lib.name}
+                        </Badge>
+                      ))}
                       {usedBy ? (
                         <Badge variant="secondary">
                           {tn(usedBy, "{count} rule", "{count} rules")}
@@ -879,12 +647,17 @@ function ProfileList({
         )}
       </Section>
 
-      <TrashImport
-        open={importing}
-        media={media}
-        onClose={() => setImporting(false)}
-        onImported={refresh}
-      />
+      {libraries.data ? (
+        <LibraryProfilesSection
+          libraries={libs}
+          profiles={profiles}
+          defaultName={homeDefault}
+          remoteName={awayDefault}
+          onChanged={() => libraries.reload()}
+        />
+      ) : null}
+
+      <TrashImport open={importing} onClose={() => setImporting(false)} onImported={refresh} />
 
       <RecordDrawer
         open={editing !== null}
@@ -946,48 +719,22 @@ function ProfileList({
                   error={errors.name}
                   onChange={(v) => patch({ name: v })}
                 />
-                <SettingsRow
-                  title={t("Applies to")}
-                  description={
-                    draft.import
-                      ? t("Set by the {app} profile it was imported from.", {
-                          app: draft.import.app === "sonarr" ? "Sonarr" : "Radarr",
-                        })
-                      : t("Movies or shows: a profile ranks releases for one of them.")
-                  }
-                  control={
-                    draft.import || isNew ? (
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant="secondary">
-                          {mediaLabel(
-                            draft.mediaType ||
-                              mediaTypeForApp(draft.import?.app === "sonarr" ? "sonarr" : "radarr"),
-                          )}
-                        </Badge>
-                        {draft.import ? (
-                          <Badge variant="outline">
-                            {draft.import.source === "dictionarry"
-                              ? "Profilarr (Dictionarry)"
-                              : "TRaSH Guides"}
-                          </Badge>
-                        ) : null}
-                      </span>
-                    ) : (
-                      <Segmented
-                        ariaLabel={t("Applies to")}
-                        size="sm"
-                        value={profileMediaType(draft) as ProfileMedia}
-                        options={MEDIA_OPTIONS}
-                        onChange={changeApplies}
-                      />
-                    )
-                  }
-                />
+                {draft.import ? (
+                  <SettingsRow
+                    title={t("Imported from")}
+                    control={
+                      <Badge variant="outline">
+                        {draft.import.source === "dictionarry"
+                          ? "Profilarr (Dictionarry)"
+                          : "TRaSH Guides"}
+                      </Badge>
+                    }
+                  />
+                ) : null}
                 <SettingsRow
                   title={t("Default for")}
                   description={t(
-                    "Used when no device rule matches for {media}. With no profile for Away, people away from home get the At home profile.",
-                    { media: mediaLabel(draftScope || media) },
+                    "Used by every library that has not picked a profile. With no Default away, people away from home get each library's At home profile.",
                   )}
                   control={
                     <ChipGroup
@@ -1010,6 +757,25 @@ function ProfileList({
                     />
                   }
                 />
+                {!isNew ? (
+                  <SettingsRow
+                    title={t("Used by")}
+                    description={t("Libraries pick their profile under Used by on this page.")}
+                    control={
+                      <span className="flex flex-wrap justify-end gap-1.5">
+                        {usedByDraft.length ? (
+                          usedByDraft.map((lib) => (
+                            <Badge key={lib.id} variant="secondary">
+                              {lib.name}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-sm text-fg-muted">{t("No library")}</span>
+                        )}
+                      </span>
+                    }
+                  />
+                ) : null}
               </SettingsSection>
 
               <QualityOrderSection draft={draft} patch={patch} />
@@ -1058,22 +824,16 @@ function ProfileList({
                   </span>
                 }
               />
-              <div
-                className={
-                  (draftScope || media) === MEDIA_TV
-                    ? "grid gap-6 px-5 py-4 sm:grid-cols-2"
-                    : "px-5 py-4"
-                }
-              >
+              <div className="grid gap-6 px-5 py-4 sm:grid-cols-2">
                 <fieldset className="min-w-0 space-y-2">
-                  <legend className="text-sm font-medium text-fg">{t("Movies")}</legend>
+                  <legend className="text-sm font-medium text-fg">{t("Size")}</legend>
                   {errors.minSizeMbPerMin || errors.maxSizeMbPerMin ? (
                     <p className="text-xs text-danger">
                       {errors.minSizeMbPerMin || errors.maxSizeMbPerMin}
                     </p>
                   ) : (
                     <p className="text-xs text-fg-muted">
-                      {t("Lowest and highest MB per minute for a film. 0 means no limit.")}
+                      {t("Lowest and highest MB per minute of runtime. 0 means no limit.")}
                     </p>
                   )}
                   <span className="flex flex-wrap items-center gap-2">
@@ -1095,38 +855,36 @@ function ProfileList({
                     <span className="text-sm text-fg-muted">MB</span>
                   </span>
                 </fieldset>
-                {(draftScope || media) === MEDIA_TV ? (
-                  <fieldset className="min-w-0 space-y-2">
-                    <legend className="text-sm font-medium text-fg">{t("TV episodes")}</legend>
-                    {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin ? (
-                      <p className="text-xs text-danger">
-                        {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-fg-muted">
-                        {t("Optional override for TV episodes. 0 uses the movie limits.")}
-                      </p>
-                    )}
-                    <span className="flex flex-wrap items-center gap-2">
-                      <NumberInput
-                        aria-label={t("Episode minimum MB per minute")}
-                        value={draft.episodeMinSizeMbPerMin ?? 0}
-                        min={0}
-                        className="w-20"
-                        onChange={(n) => patch({ episodeMinSizeMbPerMin: n })}
-                      />
-                      <span className="text-sm text-fg-muted">{t("to")}</span>
-                      <NumberInput
-                        aria-label={t("Episode maximum MB per minute")}
-                        value={draft.episodeMaxSizeMbPerMin ?? 0}
-                        min={0}
-                        className="w-20"
-                        onChange={(n) => patch({ episodeMaxSizeMbPerMin: n })}
-                      />
-                      <span className="text-sm text-fg-muted">MB</span>
-                    </span>
-                  </fieldset>
-                ) : null}
+                <fieldset className="min-w-0 space-y-2">
+                  <legend className="text-sm font-medium text-fg">{t("Episodes")}</legend>
+                  {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin ? (
+                    <p className="text-xs text-danger">
+                      {errors.episodeMinSizeMbPerMin || errors.episodeMaxSizeMbPerMin}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-fg-muted">
+                      {t("Only for libraries with episodes. 0 uses the size limits beside it.")}
+                    </p>
+                  )}
+                  <span className="flex flex-wrap items-center gap-2">
+                    <NumberInput
+                      aria-label={t("Episode minimum MB per minute")}
+                      value={draft.episodeMinSizeMbPerMin ?? 0}
+                      min={0}
+                      className="w-20"
+                      onChange={(n) => patch({ episodeMinSizeMbPerMin: n })}
+                    />
+                    <span className="text-sm text-fg-muted">{t("to")}</span>
+                    <NumberInput
+                      aria-label={t("Episode maximum MB per minute")}
+                      value={draft.episodeMaxSizeMbPerMin ?? 0}
+                      min={0}
+                      className="w-20"
+                      onChange={(n) => patch({ episodeMaxSizeMbPerMin: n })}
+                    />
+                    <span className="text-sm text-fg-muted">MB</span>
+                  </span>
+                </fieldset>
               </div>
               <BoolRow
                 label={t("Allow HDR")}

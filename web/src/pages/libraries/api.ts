@@ -335,8 +335,10 @@ export interface Library {
   present?: Presentations;
   /** Server-resolved per-app presentations separating HOW (plugin/inferred/unavailable) from WHETHER (owner switches). */
   presentations?: ResolvedPresentations;
-  /** Quality profile titles in this library rank with; "" = Default. */
+  /** Release profile titles in this library rank with at home; "" = Default. */
   qualityProfile?: string;
+  /** Release profile away from home; "" = Default away. */
+  awayQualityProfile?: string;
   tabs?: LibraryTab[];
   tabsCustomized?: boolean;
   effectiveTabs?: LibraryTab[];

@@ -88,9 +88,8 @@ export function createQualityMock() {
     const profiles = quality.profiles ?? [];
     const media = q.mediaType === "movie" || q.mediaType === "tv" ? (q.mediaType as string) : "";
     const applies = (scope: string | undefined) => !media || !scope || scope === media;
-    // Names are unique per media: the title's media picks the profile.
     const pick = (name: string | undefined) =>
-      name ? profiles.find((p) => p.name === name && applies(p.mediaType)) : undefined;
+      name ? profiles.find((p) => p.name === name) : undefined;
     const rules = quality.rules ?? [];
     const ruleIndex = rules.findIndex(
       (r) =>
@@ -104,17 +103,7 @@ export function createQualityMock() {
     );
     const rule = ruleIndex >= 0 ? rules[ruleIndex] : undefined;
     let source: NonNullable<QualityLayer["source"]> = "first";
-    let profile = profiles.find((p) => applies(p.mediaType));
-    const scoped = media
-      ? media === "movie"
-        ? quality.defaultMovie
-        : quality.defaultTv
-      : undefined;
-    const scopedRemote = media
-      ? media === "movie"
-        ? quality.remoteMovie
-        : quality.remoteTv
-      : undefined;
+    let profile = profiles[0];
     if (rule) {
       const found = pick(rule.profile);
       if (found) {
@@ -122,13 +111,13 @@ export function createQualityMock() {
         profile = found;
       }
     } else if (q.remote) {
-      const found = pick(scopedRemote || quality.remote);
+      const found = pick(quality.remote);
       if (found) {
         source = "remote";
         profile = found;
       }
     } else {
-      const found = pick(scoped || quality.default);
+      const found = pick(quality.default);
       if (found) {
         source = "default";
         profile = found;

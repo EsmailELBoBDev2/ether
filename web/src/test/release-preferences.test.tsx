@@ -145,19 +145,15 @@ describe("profile rules and custom formats", () => {
     }, WAIT);
   });
 
-  it("sets a movie default without changing the legacy or show defaults", async () => {
+  it("sets the Default profile from a profile's editor", async () => {
     const { fake } = renderApp("/quality/profiles");
     fireEvent.click(await screen.findByRole("button", { name: "Edit 4K" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "4K" }, WAIT);
     const defaults = within(drawer).getByRole("group", { name: "Default for" });
-    // The profile applies to movies, so checking At home writes defaultMovie.
     fireEvent.click(within(defaults).getByRole("button", { name: "At home" }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), WAIT);
-    expect(fake.state.config.quality.defaultMovie).toBe("4K");
-    expect(fake.state.config.quality.default).toBe("1080p");
-    expect(fake.state.config.quality.defaultTv).toBeUndefined();
-    expect(screen.getAllByText("Default at home").length).toBeGreaterThan(0);
+    expect(fake.state.config.quality.default).toBe("4K");
   });
 
   it("merges a custom format added by a concurrent import", async () => {
@@ -184,8 +180,8 @@ describe("profile rules and custom formats", () => {
       customFormats: { trash_id?: string; app?: string }[];
     };
     expect(body.customFormats.map((f) => f.trash_id)).toEqual(["concurrent", "mine"]);
-    // The new definition is tagged for the profile's movie app.
-    expect(body.customFormats[1]).toMatchObject({ app: "radarr" });
+    // Profiles have no media, so a new definition keeps the default dialect.
+    expect(body.customFormats[1]?.app).toBeUndefined();
   });
 
   it("flags conflicting requirements before save", () => {

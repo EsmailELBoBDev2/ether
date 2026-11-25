@@ -351,7 +351,7 @@ func (g *Grants) Resolve(ctx context.Context, surface, credential string) (*core
 	window := int64((30 * time.Second).Milliseconds())
 	if now-lastUsed < window && expires >= now+g.ttl.Milliseconds()-window {
 		if !frontend.QuietIdentity(ctx) {
-			_ = g.times.Observe(ctx, viewer.ID)
+			g.times.observeAsync(viewer.ID)
 		}
 		return viewer, nil
 	}
@@ -364,7 +364,7 @@ func (g *Grants) Resolve(ctx context.Context, surface, credential string) (*core
 	)
 	// Activity is an observation, never a reason to reject a valid credential.
 	if !frontend.QuietIdentity(ctx) {
-		_ = g.times.Observe(ctx, viewer.ID)
+		g.times.observeAsync(viewer.ID)
 	}
 	return viewer, nil
 }

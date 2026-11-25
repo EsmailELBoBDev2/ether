@@ -145,7 +145,7 @@ func (b *Broker) retiredAccess(ctx context.Context, a frontend.SessionAccess, id
 // never ends a static stream on PlaybackInfo; the same request now updates
 // and returns the session that is playing. The caller holds the owner gate.
 func (b *Broker) reuseDirectFileSession(v *core.Viewer, req frontend.OpenRequest, p brokerPlan, ps *core.PlaySession) (frontend.Session, bool) {
-	if p.external || p.live || p.request.Multiview != nil || p.decision.Kind != core.DecisionDirectPlay || ps == nil {
+	if !b.policy(req.Protocol).ReopenKeepsDirectFile || p.external || p.live || p.request.Multiview != nil || p.decision.Kind != core.DecisionDirectPlay || ps == nil {
 		return frontend.Session{}, false
 	}
 	b.mu.Lock()

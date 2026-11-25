@@ -35,13 +35,25 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	if strings.HasSuffix(r.URL.Path, "/match") {
-		guid, ok := strings.CutPrefix(q.Get("guid"), "tmdb://")
-		id, err := strconv.ParseInt(guid, 10, 64)
-		if !ok || err != nil || id <= 0 {
+		source, id, ok := strings.Cut(q.Get("guid"), "://")
+		if !ok || id == "" || strings.ContainsAny(id, "/?#") {
 			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
-		next, err := matcher.ApplyTitleMatch(ctx, key, id)
+		switch source {
+		case string(core.MetadataTMDB), string(core.MetadataTVDB):
+			n, err := strconv.ParseInt(id, 10, 64)
+			if err != nil || n <= 0 || strconv.FormatInt(n, 10) != id {
+				writeHTTPError(w, http.StatusBadRequest)
+				return
+			}
+		default:
+			if !strings.HasPrefix(source, "plugin:") {
+				writeHTTPError(w, http.StatusBadRequest)
+				return
+			}
+		}
+		next, err := matcher.ApplyTitleMatch(ctx, key, core.ProviderRef{Source: core.MetadataSourceID(source), ID: id, Type: title.Type})
 		if err != nil {
 			writeMatchError(w, err)
 			return
@@ -55,7 +67,7 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 		name = title.Title
 	}
 	year, _ := strconv.Atoi(q.Get("year"))
-	matches, err := matcher.SearchTitleMatches(ctx, title.Type, name, year)
+	matches, err := matcher.SearchTitleMatches(ctx, title.Type, name, year, nil)
 	if err != nil {
 		writeMatchError(w, err)
 		return
@@ -63,9 +75,9 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 	mc := &model.MediaContainer{Size: len(matches), Identifier: model.LibraryIdentifier}
 	for n, candidate := range matches {
 		mc.SearchResult = append(mc.SearchResult, model.SearchResult{
-			Name: candidate.Title, Year: candidate.Year,
-			Lifespan: strconv.Itoa(candidate.Year),
-			GUID:     "tmdb://" + strconv.FormatInt(candidate.IDs.TMDB, 10),
+			Name: candidate.Title.Title, Year: candidate.Title.Year,
+			Lifespan: strconv.Itoa(candidate.Title.Year),
+			GUID:     string(candidate.Ref.Source) + "://" + candidate.Ref.ID,
 			Score:    float64(max(1, 100-n)),
 		})
 	}

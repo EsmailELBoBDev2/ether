@@ -388,7 +388,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		return a.catalog.RecentAirFiltered(ctx, typ, f, offset, limit)
-	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Franchises: a.catalog, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
+	}, CountUnplayedAired: countUnplayedAired, SimilarSource: a.catalog.Similar, FilterRecommendations: a.personalize.FilterRecommendations, Collections: a.collections, Franchises: a.catalog, CollectionMemberCounts: a.catalog.CollectionMemberCounts, Playlists: a.playlists, Scheduled: a.scheduledEpisodes, Grouped: a.groupedShows, Search: a.experienceSearch(vis, stepAside), CachedGet: a.catalog.CachedGet, CachedGetMany: a.catalog.CachedGetMany, ArtworkGet: a.catalog.ArtworkTitle, ArtworkGetMany: a.catalog.ArtworkTitles, ArtworkRows: a.catalog.ArtworkRows, VisibilityRows: a.catalog.CachedVisibilityRows, ParentTitles: func(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]core.Title, error) {
 		return a.catalog.ResolveShowParents(ctx, keys)
 	}, Get: func(ctx context.Context, u *core.User, k core.RatingKey) (*core.Title, error) {
 		if a.episodeorder != nil {
@@ -1166,6 +1166,7 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			titleKeys = append(titleKeys, k)
 		}
 	}
+	var collections []core.Collection
 	if len(smartKeys) > 0 && s.artwork != nil {
 		cols, err := s.PageArtworkSmartCollections(ctx, viewer, smartKeys)
 		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
@@ -1180,12 +1181,13 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 			if !ok {
 				continue
 			}
-			listCtx := ctx
-			if !col.Upcoming && col.PosterPath != "" {
-				c := col
-				listCtx = frontend.WithArtworkCollection(ctx, &c)
+			if col.Key == k {
+				collections = append(collections, col)
+				continue
 			}
-			imgs, _, err := s.artwork.List(listCtx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
+			// A promoted ephemeral collection can still be addressed
+			// by its original key. Keep that key on the artwork request.
+			imgs, _, err := s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
 			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
 				continue
 			}
@@ -1207,19 +1209,9 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 		}
 		if handled {
 			for _, k := range franchiseKeys {
-				col, ok := cols[k]
-				if !ok {
-					continue
+				if col, ok := cols[k]; ok {
+					collections = append(collections, col)
 				}
-				c := col
-				imgs, _, err := s.artwork.List(frontend.WithArtworkCollection(ctx, &c), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: k})
-				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
-					continue
-				}
-				if err != nil {
-					return nil, err
-				}
-				out[k] = imgs
 			}
 		} else {
 			for _, k := range franchiseKeys {
@@ -1233,6 +1225,35 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 				if ok {
 					out[k] = imgs
 				}
+			}
+		}
+	}
+	if len(collections) > 0 {
+		if batch, ok := s.artwork.(interface {
+			ListCollectionPage(context.Context, *core.Viewer, core.Device, []core.Collection) (map[core.RatingKey][]frontend.Image, error)
+		}); ok {
+			listed, err := batch.ListCollectionPage(ctx, viewer, device, collections)
+			if err != nil {
+				return nil, err
+			}
+			for key, images := range listed {
+				out[key] = images
+			}
+		} else {
+			for i := range collections {
+				col := &collections[i]
+				listCtx := ctx
+				if col.Key.Kind() == core.KindCollection || (!col.Upcoming && col.PosterPath != "") {
+					listCtx = frontend.WithArtworkCollection(ctx, col)
+				}
+				imgs, _, err := s.artwork.List(listCtx, frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: col.Key})
+				if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				out[col.Key] = imgs
 			}
 		}
 	}

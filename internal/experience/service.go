@@ -187,8 +187,9 @@ type ServiceDeps struct {
 	// visibility counts, metadata and fallback artwork from the indexed
 	// catalog_franchises summary table. Optional; tests with fake
 	// core.Collections leave it nil.
-	Franchises FranchiseStore
-	Playlists  core.Playlists
+	Franchises             FranchiseStore
+	CollectionMemberCounts func(context.Context, core.Filter, []int64) (map[int64]int, error)
+	Playlists              core.Playlists
 	// Scheduled lists metadata-only future episodes for one season. Nil means
 	// the host has not opted in. Callers must not resolve a release from it.
 	Scheduled func(context.Context, core.RatingKey) ([]core.Title, error)
@@ -1677,7 +1678,7 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		if !s.d.Visibility.CollectionAllowed(u, c) || (c.OwnerUserID != 0 && c.OwnerUserID != u.ID) {
 			return core.ErrNotFound
 		}
-		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c, nil)
+		ok, err := s.smartCollectionHasVisibleMember(ctx, u, *c)
 		if err != nil {
 			return err
 		}

@@ -225,7 +225,8 @@ func (s *ImageGrantService) resolveCredential(ctx context.Context, credential st
 	}
 	memoKey := "image-grant:" + string(s.surface) + ":" + source + ":" + strconv.FormatUint(s.grants.Generation(), 10)
 	viewer, err := reqmemo.Do(ctx, memoKey, func() (*core.Viewer, error) {
-		return s.grants.Resolve(ctx, string(s.surface), credential)
+		// Artwork is on read paths, including portrait signing on people detail.
+		return s.grants.resolve(ctx, string(s.surface), credential, true)
 	})
 	if err != nil || viewer == nil {
 		if err == nil {

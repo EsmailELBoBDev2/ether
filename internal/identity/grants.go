@@ -303,6 +303,10 @@ func (g *Grants) viewerMatchesUsername(ctx context.Context, viewer *core.Viewer,
 
 // Resolve rejects malformed, expired, revoked, inactive and cross-surface grants.
 func (g *Grants) Resolve(ctx context.Context, surface, credential string) (*core.Viewer, error) {
+	return g.resolve(ctx, surface, credential, false)
+}
+
+func (g *Grants) resolve(ctx context.Context, surface, credential string, asyncActivity bool) (*core.Viewer, error) {
 	hash, ok := grantHash(credential)
 	if !ok || surface == "" {
 		return nil, core.ErrUnauthorized
@@ -343,28 +347,21 @@ func (g *Grants) Resolve(ctx context.Context, surface, credential string) (*core
 	copyViewer := *viewer
 	copyViewer.IsOwner = owner == 1
 	viewer = &copyViewer
-	// The SELECT already rejected a revoked, expired, or inactive grant.
-	// Extending a grant that was touched moments ago is bookkeeping, and a
-	// play must not take a write lock to do it. Activity is still observed:
-	// a fresh grant is always inside this window, and that first resolve is
-	// the authenticated request the activity time records.
 	window := int64((30 * time.Second).Milliseconds())
-	if now-lastUsed < window && expires >= now+g.ttl.Milliseconds()-window {
-		if !frontend.QuietIdentity(ctx) {
+	if now-lastUsed >= window || expires < now+g.ttl.Milliseconds()-window {
+		// Sliding expiry is bookkeeping. Queue it for the coalescing
+		// drainer so a valid grant never waits on the SQLite writer (#648).
+		g.enqueueTouch(
+			grantTouchKey{hash: hash, surface: surface},
+			grantTouch{viewerID: id, now: now, expires: now + g.ttl.Milliseconds()},
+		)
+	}
+	if !frontend.QuietIdentity(ctx) {
+		if asyncActivity {
+			g.times.observeAsync(viewer.ID)
+		} else {
 			_ = g.times.Observe(ctx, viewer.ID)
 		}
-		return viewer, nil
-	}
-	// The SELECT accepted this grant; sliding its expiry forward is
-	// bookkeeping and must never fail or stall the request when the
-	// write slot is busy (#648). Queue it for the coalescing drainer.
-	g.enqueueTouch(
-		grantTouchKey{hash: hash, surface: surface},
-		grantTouch{viewerID: id, now: now, expires: now + g.ttl.Milliseconds()},
-	)
-	// Activity is an observation, never a reason to reject a valid credential.
-	if !frontend.QuietIdentity(ctx) {
-		_ = g.times.Observe(ctx, viewer.ID)
 	}
 	return viewer, nil
 }

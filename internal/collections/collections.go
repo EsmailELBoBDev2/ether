@@ -701,6 +701,10 @@ func (s *Service) serve(ctx context.Context, row *specRow, user *core.User, wait
 	if err != nil {
 		return nil, err
 	}
+	return s.serveMembers(ctx, row, user, ms, snap), nil
+}
+
+func (s *Service) serveMembers(ctx context.Context, row *specRow, user *core.User, ms *memberSet, snap *snapshot) []core.RatingKey {
 	present := make([]core.RatingKey, 0, len(ms.keys))
 	for _, k := range ms.keys {
 		if snap.entries[k] != nil {
@@ -737,7 +741,7 @@ func (s *Service) serve(ctx context.Context, row *specRow, user *core.User, wait
 	if sp.Rotate != nil && sp.Rotate.Size > 0 {
 		keys = rotate(keys, sp.Rotate.Size, sp.Rotate.Every, row.publicID(), s.now())
 	}
-	return keys, nil
+	return keys
 }
 
 const personalTTL = 10 * time.Minute
@@ -830,6 +834,10 @@ func sectionKeys(keys []core.RatingKey, typ core.MediaType) []core.RatingKey {
 }
 
 func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.User, t core.MediaType, keys []core.RatingKey) core.Collection {
+	return s.collectionWithArt(ctx, row, t, keys, nil)
+}
+
+func (s *Service) collectionWithArt(ctx context.Context, row *specRow, t core.MediaType, keys []core.RatingKey, art map[core.RatingKey]core.Title) core.Collection {
 	if row.spec.MediaType == MediaMixed && t != "" {
 		keys = sectionKeys(keys, t)
 	}
@@ -878,20 +886,29 @@ func (s *Service) collectionFor(ctx context.Context, row *specRow, user *core.Us
 		}
 	}
 	if (c.PosterPath == "" || c.BackdropPath == "" || c.Type == "") && len(keys) > 0 {
-		if ts, err := s.mirror.ArtSummary(ctx, keys[:min(len(keys), 4)]); err == nil {
-			for _, mt := range ts {
-				if c.Type == "" {
-					c.Type = mt.Type
+		head := keys[:min(len(keys), 4)]
+		var ts []core.Title
+		if art == nil {
+			ts, _ = s.mirror.ArtSummary(ctx, head)
+		} else {
+			for _, key := range head {
+				if title, ok := art[key]; ok {
+					ts = append(ts, title)
 				}
-				if c.PosterPath == "" && mt.PosterPath != "" {
-					c.PosterPath = mt.PosterPath
-				}
-				if c.BackdropPath == "" && mt.BackdropPath != "" {
-					c.BackdropPath = mt.BackdropPath
-				}
-				if c.PosterPath != "" && c.BackdropPath != "" {
-					break
-				}
+			}
+		}
+		for _, mt := range ts {
+			if c.Type == "" {
+				c.Type = mt.Type
+			}
+			if c.PosterPath == "" && mt.PosterPath != "" {
+				c.PosterPath = mt.PosterPath
+			}
+			if c.BackdropPath == "" && mt.BackdropPath != "" {
+				c.BackdropPath = mt.BackdropPath
+			}
+			if c.PosterPath != "" && c.BackdropPath != "" {
+				break
 			}
 		}
 	}
@@ -1279,6 +1296,33 @@ func (s *Service) CheckMembersBatch(ctx context.Context, user *core.User, keys [
 	rowsByID, err := s.rowsByIDs(ctx, smartIDs)
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(want) == 0 || scanLimit <= 0 {
+		bySection := make(map[core.MediaType][]*specRow)
+		for _, key := range uniqueKeys {
+			base, section := key.CollectionSection()
+			if key.IsEphemeral() || base.Kind() != core.KindSmart {
+				if c, err := s.Get(ctx, user, key); err == nil && c != nil {
+					cols[key] = c
+				}
+				continue
+			}
+			row := rowsByID[base.TMDB()]
+			if row == nil || !visible(row, user) || section != "" && (row.spec.MediaType != MediaMixed || !typeMatches(row.spec, section)) {
+				continue
+			}
+			bySection[section] = append(bySection[section], row)
+		}
+		for section, rows := range bySection {
+			headers, err := s.collectionHeaders(ctx, rows, user, section)
+			if err != nil {
+				return nil, nil, err
+			}
+			for i := range headers {
+				cols[headers[i].Key] = &headers[i]
+			}
+		}
+		return cols, matched, nil
 	}
 	type pendingSmart struct {
 		key      core.RatingKey

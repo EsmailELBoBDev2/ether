@@ -54,16 +54,20 @@ func (r *KindResolver) PeekUsenetCheck(q core.SourceQuery) (core.SourceCandidate
 	}
 	cand := core.SourceCandidate{
 		NZBURL: strings.TrimSpace(q.NZBURL),
+		NZBRef: strings.TrimSpace(q.NZBRef),
 	}
 	if q.Candidate != nil {
 		cand = *q.Candidate
+		if q.NZBRef != "" {
+			cand.NZBRef = strings.TrimSpace(q.NZBRef)
+		}
 		cand.NZBURL = strings.TrimSpace(cand.NZBURL)
 		if strings.TrimSpace(q.NZBURL) != "" {
 			cand.NZBURL = strings.TrimSpace(q.NZBURL)
 		}
 	}
 	cand = r.stripCandidateAuth(cand)
-	releaseKey := normalizeNZBKey(cand.NZBURL)
+	releaseKey := candidateNZBKey(cand)
 	if releaseKey == "" {
 		return core.SourceCandidate{}, false
 	}
@@ -72,12 +76,12 @@ func (r *KindResolver) PeekUsenetCheck(q core.SourceQuery) (core.SourceCandidate
 		return core.SourceCandidate{}, false
 	}
 	cand.UsenetCheck = &verdict
-	return cand, true
+	return r.publicReleaseLinks(cand), true
 }
 
 func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.SourceCandidate) (core.UsenetCheckResult, error) {
 	cand = r.stripCandidateAuth(cand)
-	releaseKey := normalizeNZBKey(cand.NZBURL)
+	releaseKey := candidateNZBKey(cand)
 	if releaseKey == "" {
 		return core.UsenetCheckResult{}, fmt.Errorf("kindresolver: usenet_check requires an nzbUrl")
 	}
@@ -118,7 +122,7 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 	defer endWork()
 
 	raw, joined, err := r.runDetachedSourceFlight(baseCtx, workKey, usenetCheckTimeout, func(checkCtx context.Context) (any, error) {
-		data, err := r.indexer.FetchNZB(checkCtx, rel)
+		data, err := r.fetchPluginNZB(checkCtx, rel)
 		if err != nil {
 			return core.UsenetCheckResult{}, err
 		}
@@ -413,8 +417,12 @@ func (r *KindResolver) usenetPlaybackFailed(src core.PlayableSource) bool {
 		return false
 	}
 	nzbURL := src.Release.NZBURL
+	ref := src.Release.NZBRef
 	var indexer, indexerID string
 	if src.Release.Candidate != nil {
+		if ref == "" {
+			ref = src.Release.Candidate.NZBRef
+		}
 		if nzbURL == "" {
 			nzbURL = src.Release.Candidate.NZBURL
 		}
@@ -429,7 +437,7 @@ func (r *KindResolver) usenetPlaybackFailed(src core.PlayableSource) bool {
 			Protocol:  core.ProtocolUsenet,
 		}).NZBURL
 	}
-	key := normalizeNZBKey(nzbURL)
+	key := candidateNZBKey(core.SourceCandidate{NZBURL: nzbURL, NZBRef: ref})
 	if key == "" {
 		return false
 	}

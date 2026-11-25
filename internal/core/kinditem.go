@@ -505,7 +505,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -523,9 +523,12 @@ type SourceQuery struct {
 	// TorrentURL carries a torrent download or details page link for torrent
 	// indexers that do not emit an info hash or magnet in search results.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
 	// not pass a full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
+	NZBURL      string       `json:"nzbUrl,omitempty"`
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
 	// back for release_files or usenet_check, so an NZB or torrent link is
 	// resolved through its originating indexer.
@@ -784,7 +787,9 @@ type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -811,7 +816,7 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query: the files inside
+	// Files is populated by release_files and nzb_request: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
@@ -827,6 +832,18 @@ type SourceCandidate struct {
 	// no info hash, magnet or NZB: release_files asks that plugin for the
 	// files and a release source opens it through the plugin's open route.
 	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
+}
+
+// Deprecated link fields use these non-HTTP schemes for Ether references.
+const (
+	PluginNZBRefPrefix     = "ether-nzb:"
+	PluginTorrentRefPrefix = "ether-torrent:"
+)
+
+// NZBIdentity identifies a native indexer release when no search reference is available.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
 }
 
 // PluginReleaseRef identifies one release of a stream_source plugin: the
@@ -962,9 +979,11 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`

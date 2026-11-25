@@ -40,6 +40,7 @@ import type {
   KindResolveRequest,
   KindResolveResponse,
   MaybePromise,
+  NZBIdentity,
   RawRequest,
   RawResponse,
   SetupTestRequest,
@@ -110,10 +111,26 @@ export interface SetupTester<S = Record<string, unknown>> {
   testSetup(req: SetupTestRequest, ctx: PluginContext<S>): MaybePromise<SetupTestResult>;
 }
 
+/** Request an indexer NZB through Ether and get its file list and vault reference. */
+export async function requestNzb<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  release: string | NZBIdentity,
+): Promise<SourceCandidate> {
+  if (!ctx.ether?.kinds) throw new Error("NZB request: no host service available");
+  const candidates = await ctx.ether.kinds.resolveSources(typeof release === "string"
+    ? { kind: "nzb_request", nzbRef: release }
+    : { kind: "nzb_request", nzbIdentity: release });
+  const result = candidates[0];
+  if (!result?.nzbRef) throw new Error("nzb_request returned no vault reference");
+  return result;
+}
+
 /** The stable ref matchers report for a source candidate. */
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentRef) return `torrentref:${c.torrentRef}`;
+  if (c.nzbRef) return `nzbref:${c.nzbRef}`;
   if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";

@@ -43,8 +43,9 @@ type Manager struct {
 	detachedCount int
 	bgWG          sync.WaitGroup
 
-	flightMu sync.Mutex
-	flights  map[string]*searchFlight
+	flightMu   sync.Mutex
+	flights    map[string]*searchFlight
+	pluginRefs sync.Map // standalone managers without a database
 }
 
 // Close cancels any detached background cache-fill searches started by

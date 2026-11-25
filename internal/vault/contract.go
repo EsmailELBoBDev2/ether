@@ -48,7 +48,8 @@ const (
 
 var (
 	// ErrNotFound: no index row.
-	ErrNotFound = errors.New("vault: not found")
+	ErrNotFound    = errors.New("vault: not found")
+	ErrNZBRetained = errors.New("vault: NZBs are permanently retained")
 	// ErrPayloadMissing: the index row exists but this node cannot read the
 	// payload (pack lost, restored without packs, or held only by an
 	// unreachable peer). Callers re-grab as if the vault had nothing.
@@ -164,12 +165,18 @@ type Entry struct {
 type PutRequest struct {
 	Release core.Release // the resolved release (indexer id, guid, name, title ids)
 	NZB     []byte       // Usenet
+	Aliases []string     // additional identities scoped to Release.IndexerID
 	Torrent *Torrent     // torrent (debrid)
 	Source  string
 	Private bool
 	// ProfileFP fingerprints the quality profile plus the viewer's audio
 	// and language rules at choice time (library-first rule).
 	ProfileFP string
+}
+
+// NZBIdentityLookup finds an unambiguous exact release name and size.
+type NZBIdentityLookup interface {
+	ByNZBName(ctx context.Context, name string, size int64) (Key, bool, error)
 }
 
 // Stats for the console.
@@ -286,6 +293,7 @@ const LegacyAliasIndexer = "legacy:nzb"
 // ReplicaStore is what the cluster layer needs from a node-local vault.
 type ReplicaStore interface {
 	Store
+	NZBIdentityLookup
 	// ReadFrame returns the record's stored compressed frame.
 	ReadFrame(ctx context.Context, key Key) ([]byte, error)
 	// InstallFrame verifies the frame's CRC and content key, appends it to

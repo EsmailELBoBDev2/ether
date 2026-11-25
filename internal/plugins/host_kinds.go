@@ -838,10 +838,17 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.NZBURL == "" && q.NZBRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+				Message: "release_files needs a release reference, info hash, magnet or candidate",
+			}}}
+		}
+	case "nzb_request":
+		if strings.TrimSpace(q.NZBRef) == "" && (q.NZBIdentity == nil ||
+			strings.TrimSpace(q.NZBIdentity.IndexerID) == "" || strings.TrimSpace(q.NZBIdentity.GUID) == "") {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field: "nzbRef", Message: "nzb_request needs an nzbRef or indexer release identity",
 			}}}
 		}
 	case "usenet_check":
@@ -849,15 +856,15 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
 		}
-		if nzbURL == "" {
+		if nzbURL == "" && q.NZBRef == "" && (q.Candidate == nil || q.Candidate.NZBRef == "") {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "nzbUrl",
-				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+				Message: "usenet_check needs an nzbRef, candidate or legacy nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
@@ -875,7 +882,8 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}); err != nil {
 		return core.SourceResolveResult{}, err
 	}
-	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	nzbQuery := q.Kind == "usenet_check" || q.Kind == "nzb_request"
+	bgUsenetCheck := nzbQuery && isBackgroundCall(ctx)
 	if bgUsenetCheck {
 		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
 			return core.SourceResolveResult{}, err
@@ -888,11 +896,11 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	callCtx := ctx
 	var refundCheck func()
 	var resetAt time.Time
-	if q.Kind == "usenet_check" {
+	if nzbQuery {
 		if bgUsenetCheck {
 			// Reuse a live verdict from the shared cache before spending the
 			// plugin's daily background allowance.
-			if backends.PeekUsenetCheck != nil {
+			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
 					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
 				}

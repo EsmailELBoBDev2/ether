@@ -167,10 +167,32 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 	return bs, nil
 }
 
+// NormalizeNZBSource recognizes legacy NZB locators before network routing.
+func NormalizeNZBSource(src core.PlayableSource) core.PlayableSource {
+	locator, legacy := strings.CutPrefix(strings.TrimSpace(src.URL), "nzb:")
+	if !legacy && !strings.EqualFold(strings.TrimSpace(src.Pattern), "nzb") {
+		return src
+	}
+	if !legacy {
+		locator = strings.TrimSpace(src.URL)
+	}
+	if locator != "" {
+		hint := core.ReleaseHint{}
+		if src.Release != nil {
+			hint = *src.Release
+		}
+		hint.NZBURL = locator
+		src.Release = &hint
+	}
+	src.Pattern, src.URL = PatternRelease, ""
+	return src
+}
+
 func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	src = NormalizeNZBSource(src)
 	pattern := strings.ToLower(strings.TrimSpace(src.Pattern))
 	if pattern == "" {
 		if src.Container != nil {
@@ -237,6 +259,7 @@ func openSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSo
 }
 
 func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool {
+	cand = NormalizeNZBSource(cand)
 	if strings.TrimSpace(cand.BlobRef) != "" {
 		return false
 	}
@@ -263,7 +286,7 @@ func isNonVideoUsenetRelease(cand core.PlayableSource, defaultMIME string) bool 
 	}
 
 	r := cand.Release
-	hasNZB := strings.TrimSpace(r.NZBURL) != "" || (r.Candidate != nil && strings.TrimSpace(r.Candidate.NZBURL) != "")
+	hasNZB := r.NZBURL != "" || r.NZBRef != "" || (r.Candidate != nil && (r.Candidate.NZBURL != "" || r.Candidate.NZBRef != ""))
 	hasTorrent := strings.TrimSpace(r.InfoHash) != "" || strings.TrimSpace(r.Magnet) != "" || strings.TrimSpace(r.TorrentURL) != "" ||
 		(r.Candidate != nil && (strings.TrimSpace(r.Candidate.InfoHash) != "" || strings.TrimSpace(r.Candidate.Magnet) != "" || strings.TrimSpace(r.Candidate.TorrentURL) != ""))
 	return hasNZB && !hasTorrent
@@ -316,6 +339,8 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 		rel.MagnetURL = strings.TrimSpace(r.Candidate.Magnet)
 		torrentURL = strings.TrimSpace(r.Candidate.TorrentURL)
 		rel.NZBURL = strings.TrimSpace(r.Candidate.NZBURL)
+		rel.NZBRef = r.Candidate.NZBRef
+		rel.TorrentRef = r.Candidate.TorrentRef
 		if rel.Name == "" {
 			rel.Name = strings.TrimSpace(r.Candidate.Title)
 		}
@@ -335,6 +360,12 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 	if t := strings.TrimSpace(r.TorrentURL); t != "" {
 		torrentURL = t
 	}
+	if r.TorrentRef != "" {
+		rel.TorrentRef = r.TorrentRef
+	}
+	if r.NZBRef != "" {
+		rel.NZBRef = r.NZBRef
+	}
 	if u := strings.TrimSpace(r.NZBURL); u != "" {
 		rel.NZBURL = u
 	}
@@ -350,20 +381,20 @@ func ReleaseForSource(src core.PlayableSource) core.Release {
 		}
 	}
 	switch {
-	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "":
+	case rel.InfoHash != "" || rel.MagnetURL != "" || torrentURL != "" || rel.TorrentRef != "":
 		rel.Protocol = core.ProtocolTorrent
 		if torrentURL != "" {
 			rel.NZBURL = torrentURL
 		} else {
 			rel.NZBURL = ""
 		}
-	case rel.NZBURL != "":
+	case rel.NZBURL != "" || rel.NZBRef != "":
 		rel.Protocol = core.ProtocolUsenet
 	default:
 		rel.Protocol = core.ProtocolHTTP
 	}
 	if rel.ID == "" {
-		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBURL, rel.MagnetURL)
+		rel.ID = firstNonEmptyStr(rel.InfoHash, rel.NZBRef, rel.TorrentRef, rel.MagnetURL)
 	}
 	return rel
 }

@@ -92,6 +92,8 @@ type Release struct {
 	Indexer    string      `json:"indexer"`              // indexer name
 	Name       string      `json:"name"`                 // release name
 	NZBURL     string      `json:"nzbUrl"`
+	NZBRef     string      `json:"-"` // opaque plugin NZB reference
+	TorrentRef string      `json:"-"` // opaque plugin torrent descriptor reference
 	Size       int64       `json:"size"`
 	PubDate    time.Time   `json:"pubDate"`
 	Grabs      int         `json:"grabs,omitempty"`
@@ -153,6 +155,7 @@ type Release struct {
 	// the addon answered with; it and StreamHeaders (request headers the
 	// addon requires) can carry the addon's credentials, so they never
 	// leave the server. StreamOrigin is the owner-configured addon origin
+	PluginStream bool `json:"-"` // direct HTTP link supplied by an Ether plugin
 	// (scheme://host:port), the only private address the URL may reach.
 	StreamProvider string            `json:"streamProvider,omitempty"` // stored provider connection budget
 	StreamURL      string            `json:"streamUrl,omitempty"`

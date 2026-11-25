@@ -1184,6 +1184,12 @@ func sourceCandidateFromPlayable(src core.PlayableSource) core.SourceCandidate {
 		if c.Magnet == "" {
 			c.Magnet = strings.TrimSpace(src.Release.Magnet)
 		}
+		if c.TorrentRef == "" {
+			c.TorrentRef = strings.TrimSpace(src.Release.TorrentRef)
+		}
+		if c.NZBRef == "" {
+			c.NZBRef = strings.TrimSpace(src.Release.NZBRef)
+		}
 		if c.TorrentURL == "" {
 			c.TorrentURL = strings.TrimSpace(src.Release.TorrentURL)
 		}
@@ -1237,6 +1243,10 @@ func candidateRefForPlayable(src core.PlayableSource, c core.SourceCandidate) st
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentRef != "":
+		return "torrentref:" + c.TorrentRef
+	case c.NZBRef != "":
+		return "nzbref:" + c.NZBRef
 	case c.TorrentURL != "":
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":

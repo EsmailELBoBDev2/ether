@@ -291,8 +291,8 @@ same ranked sliding window it uses for movies and TV: two opens stay in
 flight in rank order, failing opens advance immediately, a ready
 equivalent backup may overtake a stalled lead after the 2 s grace
 period, two confirmed permanent failures widen the window to four for
-equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
-or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+equivalent candidates, and sources that spend an indexer grab (`nzbRef`,
+or `torrentRef` without an `infoHash`/`magnet`) join a single healthy
 in-flight open only as a hedge after the learned health-hedge delay
 (default 1.5 s) so a healthy open normally costs one grab. Losing opens
 are cancelled and their readers closed before playback starts.
@@ -509,18 +509,40 @@ TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
 `{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
 `ether.sources.resolve` returns that envelope directly).
 
+### Request an NZB
+
+Call `ether.sources.resolve({kind: "nzb_request", nzbRef})` with a reference
+returned by indexer search. A native release can also be requested with
+`nzbIdentity: {indexerId, guid}`. The single candidate in the response contains
+`files` (up to 2,000 descriptor entries, with estimated sizes), `fileCount`,
+and an `nzbRef` for the stored NZB. Save that reference for future playback
+using `{pattern: "release", release: {nzbRef}}`. Pass the original candidate
+to `release_files` when you need Ether to inspect files inside archives, or to
+`usenet_check` to sample article availability.
+
+Ether checks the NZB vault first. A miss uses the originating indexer's normal
+grab limits and stores the NZB in the vault. A temporary grab refusal leaves
+other candidates available. Installed plugins with `kind_resolver` and
+`permissions.sources` can request NZBs. Background requests also need the
+`+check` grant and use the background allowance. Plugin HTTP calls to configured
+indexers are refused. Existing `nzb:<download link>` sources for supported
+configured indexer endpoints still use the shared grab path.
+
+Use `Context.RequestNZB` in Go, `requestNzb(ctx, ref)` in TypeScript, or
+`client.kinds.request_nzb(ref)` in Python. The SDKs also expose the
+`nzb_request` query through their source resolver methods.
+
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
-names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
-`indexer_search` have the indexer's API key and secrets stripped (standard
-`apikey` query parameters are removed; non-standard credential placements use
-URL-safe origin-confined tokens), and Ether re-attaches credentials only at
-fetch time on the originating indexer's origin when the candidate is handed
-back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
-keyed on the key-less link, so plugins can persist candidates in KV without
-storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio add-ons and
+names are rejected. Usenet candidates carry an opaque `nzbRef`, and torrent
+candidates that need a descriptor download carry a `torrentRef`. The deprecated
+`nzbUrl` and `torrentUrl` fields mirror those stable references as
+`ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>`. Existing plugins can pass
+those values back in the deprecated fields. New code should use the reference
+fields directly.
+Invalid categories are rejected. Stremio add-ons and
 source plugins are asked by title id only, so they reject scoped searches,
 unless a source plugin declared the category (see "Source plugins that answer
 category searches" below). Omit `category` for the default media search.
@@ -562,13 +584,13 @@ and `debrid_acquire` results carry the same `cachedBy` field (for
 `debrid_acquire`, the service that actually served the acquisition).
 
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
-`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+`torrentRef`, or `candidate` carrying an `indexer_search` result back) returns
 one candidate whose `files` lists what is inside the release:
 `[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
 file selection counts (provider file-list order for torrents, NZB document order
 for Usenet). Torrent candidates carry their download or details page link in
-`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
-`torrentUrl` through the originating indexer first, populates `infoHash` and
+`torrentRef`: when `infoHash` is absent, Ether resolves
+`torrentRef` through the originating indexer first, populates `infoHash` and
 `magnet` on the returned candidate, lists files from a debrid provider when
 cached, and falls back to `.torrent` metainfo files (with `cached: false`)
 when uncached or when no debrid provider is configured. NZBs are fetched
@@ -637,7 +659,7 @@ every other add-on keeps refusing scoped searches:
 A `pluginRelease` handed back by a caller is honoured only for an enabled
 plugin that declares `source.search`.
 
-`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbRef`) checks an
 NZB's article availability before your resolver offers it, returning a single
 candidate with `usenetCheck: {available, checked, missing, cached?,
 playbackFailed?, reason?, checkedAt?}`:

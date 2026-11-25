@@ -255,9 +255,22 @@ func (h *host) SecretDelete(ctx context.Context, name string) error {
 	return h.m.store.deleteDerivedSecret(ctx, h.plugin, name)
 }
 
+var errIndexerNetwork = fmt.Errorf("%w: configured indexers must use the indexer host API (sources.resolve with kind nzb_request)", ErrPermissionDenied)
+
+// CheckIndexerNetwork rejects a plugin network request to a configured indexer.
+func (m *Manager) CheckIndexerNetwork(hostName string) error {
+	if m.deps.IsIndexerHost != nil && m.deps.IsIndexerHost(hostName) {
+		return errIndexerNetwork
+	}
+	return nil
+}
+
 // AllowNetworkHost reports whether pluginID is enabled, still holds its
 // network grant, and declared hostName in permissions.network.
 func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName string) bool {
+	if m.CheckIndexerNetwork(hostName) != nil {
+		return false
+	}
 	h := &host{m: m, plugin: pluginID}
 	r, g, err := h.record(ctx)
 	if err != nil || r.Manifest.Ether == nil {
@@ -319,6 +332,9 @@ func fetchError(host string, err error) error {
 	var blockedOp *BlockedOperatorHostError
 	if errors.As(err, &blockedOp) {
 		return blockedOp
+	}
+	if errors.Is(err, errIndexerNetwork) {
+		return errIndexerNetwork
 	}
 	reason := "network error"
 	var netErr net.Error
@@ -411,6 +427,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
+	if err := h.m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return nil, err
+	}
 	if g.revoked("network") {
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
@@ -476,6 +495,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
+		if err := h.m.CheckIndexerNetwork(next.URL.Hostname()); err != nil {
+			return err
+		}
 		redirectHeaders.Apply(next)
 		current, grants, err := h.record(next.Context())
 		if err != nil {

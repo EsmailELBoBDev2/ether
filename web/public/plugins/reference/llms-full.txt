@@ -472,6 +472,10 @@ const { candidates, indexers } = ether.sources.resolve({
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients (`kinds.resolveSources` returns candidates; `kinds.resolveSourcesWithResult` returns `{ candidates, indexers }`). See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
+### Request an NZB
+
+Use `sources.resolve({kind: "nzb_request", nzbRef})` with an opaque indexer search reference, or supply `nzbIdentity: {indexerId, guid}`. The single candidate contains a parsed `files` list, `fileCount`, and a permanent vault `nzbRef` for a playback source’s `release.nzbRef`. Ether uses the vault before spending any indexer grab. Search mirrors stable references in the deprecated fields as `ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>` for older plugins. Direct plugin HTTP calls to configured indexers are refused. Background requests require the `+check` grant and use its daily allowance.
+
 ## Library blob cache
 
 Cache refs are content addressed blob:<sha256>, never filesystem paths. A library defaults to 2 GiB under a shared min(10 GiB, 5% of cache disk) cap; manifest and owner settings can override it. Remote blob uploads cap at 256 MiB. Call `cache.delete(blobRef)` to remove a temporary blob from your own cache namespaces and free its quota immediately so large temporaries do not evict smaller kept files; deleting an absent or already evicted ref succeeds. Use kinds for metadata and cache for bytes.
@@ -1081,8 +1085,8 @@ same ranked sliding window it uses for movies and TV: two opens stay in
 flight in rank order, failing opens advance immediately, a ready
 equivalent backup may overtake a stalled lead after the 2 s grace
 period, two confirmed permanent failures widen the window to four for
-equivalent candidates, and sources that spend an indexer grab (`nzbUrl`,
-or `torrentUrl` without an `infoHash`/`magnet`) join a single healthy
+equivalent candidates, and sources that spend an indexer grab (`nzbRef`,
+or `torrentRef` without an `infoHash`/`magnet`) join a single healthy
 in-flight open only as a hedge after the learned health-hedge delay
 (default 1.5 s) so a healthy open normally costs one grab. Losing opens
 are cancelled and their readers closed before playback starts.
@@ -1299,18 +1303,40 @@ TypeScript, and Python SDKs, `ResolveSources` / `kinds.resolveSources` /
 `{candidates, indexers?, pending?, searchId?, done?}` envelope (raw hosted
 `ether.sources.resolve` returns that envelope directly).
 
+### Request an NZB
+
+Call `ether.sources.resolve({kind: "nzb_request", nzbRef})` with a reference
+returned by indexer search. A native release can also be requested with
+`nzbIdentity: {indexerId, guid}`. The single candidate in the response contains
+`files` (up to 2,000 descriptor entries, with estimated sizes), `fileCount`,
+and an `nzbRef` for the stored NZB. Save that reference for future playback
+using `{pattern: "release", release: {nzbRef}}`. Pass the original candidate
+to `release_files` when you need Ether to inspect files inside archives, or to
+`usenet_check` to sample article availability.
+
+Ether checks the NZB vault first. A miss uses the originating indexer's normal
+grab limits and stores the NZB in the vault. A temporary grab refusal leaves
+other candidates available. Installed plugins with `kind_resolver` and
+`permissions.sources` can request NZBs. Background requests also need the
+`+check` grant and use the background allowance. Plugin HTTP calls to configured
+indexers are refused. Existing `nzb:<download link>` sources for supported
+configured indexer endpoints still use the shared grab path.
+
+Use `Context.RequestNZB` in Go, `requestNzb(ctx, ref)` in TypeScript, or
+`client.kinds.request_nzb(ref)` in Python. The SDKs also expose the
+`nzb_request` query through their source resolver methods.
+
 Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
-names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
-`indexer_search` have the indexer's API key and secrets stripped (standard
-`apikey` query parameters are removed; non-standard credential placements use
-URL-safe origin-confined tokens), and Ether re-attaches credentials only at
-fetch time on the originating indexer's origin when the candidate is handed
-back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
-keyed on the key-less link, so plugins can persist candidates in KV without
-storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio add-ons and
+names are rejected. Usenet candidates carry an opaque `nzbRef`, and torrent
+candidates that need a descriptor download carry a `torrentRef`. The deprecated
+`nzbUrl` and `torrentUrl` fields mirror those stable references as
+`ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>`. Existing plugins can pass
+those values back in the deprecated fields. New code should use the reference
+fields directly.
+Invalid categories are rejected. Stremio add-ons and
 source plugins are asked by title id only, so they reject scoped searches,
 unless a source plugin declared the category (see "Source plugins that answer
 category searches" below). Omit `category` for the default media search.
@@ -1352,13 +1378,13 @@ and `debrid_acquire` results carry the same `cachedBy` field (for
 `debrid_acquire`, the service that actually served the acquisition).
 
 `ResolveSources({kind: "release_files", infoHash})` (or `magnet`,
-`torrentUrl`, or `candidate` carrying an `indexer_search` result back) returns
+`torrentRef`, or `candidate` carrying an `indexer_search` result back) returns
 one candidate whose `files` lists what is inside the release:
 `[{index, path, size, sizeApproximate?, members?}]` in the order Ether's own
 file selection counts (provider file-list order for torrents, NZB document order
 for Usenet). Torrent candidates carry their download or details page link in
-`torrentUrl` (never in `nzbUrl`): when `infoHash` is absent, Ether resolves
-`torrentUrl` through the originating indexer first, populates `infoHash` and
+`torrentRef`: when `infoHash` is absent, Ether resolves
+`torrentRef` through the originating indexer first, populates `infoHash` and
 `magnet` on the returned candidate, lists files from a debrid provider when
 cached, and falls back to `.torrent` metainfo files (with `cached: false`)
 when uncached or when no debrid provider is configured. NZBs are fetched
@@ -1427,7 +1453,7 @@ every other add-on keeps refusing scoped searches:
 A `pluginRelease` handed back by a caller is honoured only for an enabled
 plugin that declares `source.search`.
 
-`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbRef`) checks an
 NZB's article availability before your resolver offers it, returning a single
 candidate with `usenetCheck: {available, checked, missing, cached?,
 playbackFailed?, reason?, checkedAt?}`:
@@ -3017,7 +3043,7 @@ type KindMatchResponse struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check\|nzb_request |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
 | `lookup` | `*SourceLookup` | may be omitted (see validation for conditions) | Lookup, on an indexer_search with a Category, adds a typed lookup (e.g. {type: "album", fields: {artist, title}}) for plugin sources that declared it. Every other indexer searches Query alone. |
@@ -3026,7 +3052,10 @@ type KindMatchResponse struct {
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link for torrent indexers that do not emit an info hash or magnet in search results. |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when the plugin does not pass a full Candidate from indexer_search. |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
+| `nzbIdentity` | `*NZBIdentity` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when Ether has not seen its file list yet (e.g. a magnet for a large collection), so zip-only debrid caches are checked via cached-only add. |
 | `stream` | `bool` | may be omitted (see validation for conditions) | Stream, when true on indexer_search, starts the indexer fan-out and returns immediately with a searchId handle to poll via indexer_search_results or stop via indexer_search_cancel. |
@@ -3046,7 +3075,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -3064,9 +3093,12 @@ type SourceQuery struct {
 	// TorrentURL carries a torrent download or details page link for torrent
 	// indexers that do not emit an info hash or magnet in search results.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
 	// not pass a full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
+	NZBURL      string       `json:"nzbUrl,omitempty"`
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
 	// back for release_files or usenet_check, so an NZB or torrent link is
 	// resolved through its originating indexer.
@@ -3444,7 +3476,9 @@ type DebridServiceRef struct {
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
@@ -3458,7 +3492,7 @@ type DebridServiceRef struct {
 | `resolution` | `int` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
-| `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query: the files inside this candidate release. |
+| `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated by release_files and nzb_request: the files inside this candidate release. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query, allowing zip-only debrid caches to be probed by cached-only add even when Files is omitted. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query: the sampled article availability verdict and any recorded playback failure for this NZB release. |
 | `pluginRelease` | `*PluginReleaseRef` | may be omitted (see validation for conditions) | PluginRelease names a release a stream_source plugin answered for a category search it declared (ether.contributes.source.search). It has no info hash, magnet or NZB: release_files asks that plugin for the files and a release source opens it through the plugin's open route. |
@@ -3478,7 +3512,9 @@ type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -3505,7 +3541,7 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query: the files inside
+	// Files is populated by release_files and nzb_request: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
@@ -3521,6 +3557,34 @@ type SourceCandidate struct {
 	// no info hash, magnet or NZB: release_files asks that plugin for the
 	// files and a release source opens it through the plugin's open route.
 	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#PluginNZBRefPrefix
+
+``````
+// Deprecated link fields use these non-HTTP schemes for Ether references.
+const (
+	PluginNZBRefPrefix     = "ether-nzb:"
+	PluginTorrentRefPrefix = "ether-torrent:"
+)
+``````
+
+## Source: internal/core/kinditem.go#NZBIdentity.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `indexerId` | `string` | emitted (validation may require a value) |  |
+| `guid` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/core/kinditem.go#NZBIdentity
+
+``````
+// NZBIdentity identifies a native indexer release when no search reference is available.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
 }
 ``````
 
@@ -3763,9 +3827,11 @@ type TrackHint struct {
 |---|---|---|---|
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback. |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) |  |
 | `file` | `string` | may be omitted (see validation for conditions) | File selects an exact torrent path or unique basename, including non-video files. |
 | `fileHint` | `string` | may be omitted (see validation for conditions) |  |
@@ -3785,9 +3851,11 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Candidate  *SourceCandidate `json:"candidate,omitempty"`
 	// File selects an exact torrent path or unique basename, including non-video files.
 	File           string     `json:"file,omitempty"`
@@ -4193,10 +4261,39 @@ type LiveEventMatchHints struct {
 }
 ``````
 
+## Source: internal/core/liveevent.go#LiveEventWatchProgramme.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `id` | `string` | emitted (validation may require a value) |  |
+| `start` | `time.Time` | emitted (validation may require a value) |  |
+| `end` | `time.Time` | emitted (validation may require a value) |  |
+| `catchUp` | `bool` | may be omitted (see validation for conditions) |  |
+| `startOver` | `bool` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/liveevent.go#LiveEventWatchProgramme
+
+``````
+// LiveEventWatchTarget links a live event to a playable channel, add-on, or
+// plugin-provided stream target. Ether attaches this; plugins do not emit it.
+// Available is omitted when playable and set to false when the only matching
+// channels are currently unhealthy so clients can show "Unavailable right now".
+type LiveEventWatchProgramme struct {
+	ArchiveDays int       `json:"-"`
+	ID          string    `json:"id"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	CatchUp     bool      `json:"catchUp,omitempty"`
+	StartOver   bool      `json:"startOver,omitempty"`
+}
+``````
+
 ## Source: internal/core/liveevent.go#LiveEventWatchTarget.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `programme` | `*LiveEventWatchProgramme` | may be omitted (see validation for conditions) |  |
 | `kind` | `string` | emitted (validation may require a value) | channel\|addon\|plugin |
 | `channelId` | `string` | may be omitted (see validation for conditions) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
@@ -4212,21 +4309,18 @@ type LiveEventMatchHints struct {
 ## Source: internal/core/liveevent.go#LiveEventWatchTarget
 
 ``````
-// LiveEventWatchTarget links a live event to a playable channel, add-on, or
-// plugin-provided stream target. Ether attaches this; plugins do not emit it.
-// Available is omitted when playable and set to false when the only matching
-// channels are currently unhealthy so clients can show "Unavailable right now".
 type LiveEventWatchTarget struct {
-	Kind       string                 `json:"kind"` // channel|addon|plugin
-	ChannelID  string                 `json:"channelId,omitempty"`
-	Name       string                 `json:"name"`
-	Number     string                 `json:"number,omitempty"`
-	Logo       string                 `json:"logo,omitempty"`
-	Live       bool                   `json:"live"`
-	Confidence float64                `json:"confidence,omitempty"`
-	URL        string                 `json:"url,omitempty"`
-	Available  *bool                  `json:"available,omitempty"`
-	Alternates []LiveEventWatchTarget `json:"alternates,omitempty"`
+	Programme  *LiveEventWatchProgramme `json:"programme,omitempty"`
+	Kind       string                   `json:"kind"` // channel|addon|plugin
+	ChannelID  string                   `json:"channelId,omitempty"`
+	Name       string                   `json:"name"`
+	Number     string                   `json:"number,omitempty"`
+	Logo       string                   `json:"logo,omitempty"`
+	Live       bool                     `json:"live"`
+	Confidence float64                  `json:"confidence,omitempty"`
+	URL        string                   `json:"url,omitempty"`
+	Available  *bool                    `json:"available,omitempty"`
+	Alternates []LiveEventWatchTarget   `json:"alternates,omitempty"`
 }
 ``````
 
@@ -4247,6 +4341,10 @@ func (t LiveEventWatchTarget) IsAvailable() bool {
 // collapsed alternate feeds.
 func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
 	out := t
+	if t.Programme != nil {
+		programme := *t.Programme
+		out.Programme = &programme
+	}
 	if t.Available != nil {
 		av := *t.Available
 		out.Available = &av
@@ -11057,12 +11155,33 @@ func (h *host) SecretDelete(ctx context.Context, name string) error {
 }
 ``````
 
+## Source: internal/plugins/host.go#errIndexerNetwork
+
+``````
+var errIndexerNetwork = fmt.Errorf("%w: configured indexers must use the indexer host API (sources.resolve with kind nzb_request)", ErrPermissionDenied)
+``````
+
+## Source: internal/plugins/host.go#*Manager.CheckIndexerNetwork
+
+``````
+// CheckIndexerNetwork rejects a plugin network request to a configured indexer.
+func (m *Manager) CheckIndexerNetwork(hostName string) error {
+	if m.deps.IsIndexerHost != nil && m.deps.IsIndexerHost(hostName) {
+		return errIndexerNetwork
+	}
+	return nil
+}
+``````
+
 ## Source: internal/plugins/host.go#*Manager.AllowNetworkHost
 
 ``````
 // AllowNetworkHost reports whether pluginID is enabled, still holds its
 // network grant, and declared hostName in permissions.network.
 func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName string) bool {
+	if m.CheckIndexerNetwork(hostName) != nil {
+		return false
+	}
 	h := &host{m: m, plugin: pluginID}
 	r, g, err := h.record(ctx)
 	if err != nil || r.Manifest.Ether == nil {
@@ -11136,6 +11255,9 @@ func fetchError(host string, err error) error {
 	var blockedOp *BlockedOperatorHostError
 	if errors.As(err, &blockedOp) {
 		return blockedOp
+	}
+	if errors.Is(err, errIndexerNetwork) {
+		return errIndexerNetwork
 	}
 	reason := "network error"
 	var netErr net.Error
@@ -11258,6 +11380,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
+	if err := h.m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return nil, err
+	}
 	if g.revoked("network") {
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
@@ -11323,6 +11448,9 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
+		if err := h.m.CheckIndexerNetwork(next.URL.Hostname()); err != nil {
+			return err
+		}
 		redirectHeaders.Apply(next)
 		current, grants, err := h.record(next.Context())
 		if err != nil {
@@ -18583,10 +18711,17 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.NZBURL == "" && q.NZBRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+				Message: "release_files needs a release reference, info hash, magnet or candidate",
+			}}}
+		}
+	case "nzb_request":
+		if strings.TrimSpace(q.NZBRef) == "" && (q.NZBIdentity == nil ||
+			strings.TrimSpace(q.NZBIdentity.IndexerID) == "" || strings.TrimSpace(q.NZBIdentity.GUID) == "") {
+			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
+				Field: "nzbRef", Message: "nzb_request needs an nzbRef or indexer release identity",
 			}}}
 		}
 	case "usenet_check":
@@ -18594,15 +18729,15 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 		if nzbURL == "" && q.Candidate != nil {
 			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
 		}
-		if nzbURL == "" {
+		if nzbURL == "" && q.NZBRef == "" && (q.Candidate == nil || q.Candidate.NZBRef == "") {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "nzbUrl",
-				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+				Message: "usenet_check needs an nzbRef, candidate or legacy nzbUrl",
 			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
 				Message: "debrid_acquire needs an info hash, magnet, torrentUrl or candidate",
@@ -18620,7 +18755,8 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	}); err != nil {
 		return core.SourceResolveResult{}, err
 	}
-	bgUsenetCheck := q.Kind == "usenet_check" && isBackgroundCall(ctx)
+	nzbQuery := q.Kind == "usenet_check" || q.Kind == "nzb_request"
+	bgUsenetCheck := nzbQuery && isBackgroundCall(ctx)
 	if bgUsenetCheck {
 		if err := h.deny(r, g, "sources.check", level, SourcesPermissionAllowsBackgroundCheck); err != nil {
 			return core.SourceResolveResult{}, err
@@ -18633,11 +18769,11 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 	callCtx := ctx
 	var refundCheck func()
 	var resetAt time.Time
-	if q.Kind == "usenet_check" {
+	if nzbQuery {
 		if bgUsenetCheck {
 			// Reuse a live verdict from the shared cache before spending the
 			// plugin's daily background allowance.
-			if backends.PeekUsenetCheck != nil {
+			if q.Kind == "usenet_check" && backends.PeekUsenetCheck != nil {
 				if cand, ok := backends.PeekUsenetCheck(q); ok {
 					return core.SourceResolveResult{Candidates: []core.SourceCandidate{cand}}, nil
 				}
@@ -24681,6 +24817,9 @@ func isNonPublicBlockError(err error) bool {
 
 ``````
 func (h *host) allowNetworkURL(ctx context.Context, u *url.URL) error {
+	if err := h.m.CheckIndexerNetwork(u.Hostname()); err != nil {
+		return err
+	}
 	r, g, err := h.record(ctx)
 	if err != nil {
 		return err
@@ -39590,7 +39729,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
             "debrid_check",
             "debrid_acquire",
             "release_files",
-            "usenet_check"
+            "usenet_check",
+            "nzb_request"
           ]
         },
         "query": {
@@ -39599,7 +39739,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases. Stremio add-ons and source plugins are asked only when the plugin declared one of the categories in ether.contributes.source.search."
+          "description": "Comma-separated Newznab category IDs (1000–8999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases. Stremio add-ons and source plugins are asked only when the plugin declared one of the categories in ether.contributes.source.search."
         },
         "lookup": {
           "type": "object",
@@ -39694,11 +39834,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
+          "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
+          "deprecated": true
         },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
@@ -39708,6 +39850,29 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "integer",
           "minimum": 0,
           "description": "Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list, so zip-only debrid caches (e.g. TorBox at 100+ files) are checked via cached-only add."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
+        },
+        "nzbIdentity": {
+          "type": "object",
+          "required": [
+            "indexerId",
+            "guid"
+          ],
+          "properties": {
+            "indexerId": {
+              "type": "string"
+            },
+            "guid": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -39983,11 +40148,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Key-less torrent download or details page link for torrent indexers (same-origin indexer credentials are stripped and re-attached by Ether at fetch time when handed back with indexerId); torrent candidates never populate nzbUrl."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
+          "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Key-less Usenet NZB download link populated only for Usenet candidates. Same-origin indexer API keys and secrets are stripped so candidates are safe to cache in plugin storage; Ether re-attaches credentials on same-origin fetches when handed back with indexerId."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
+          "deprecated": true
         },
         "title": {
           "type": "string"
@@ -40067,6 +40234,14 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
             }
           },
           "description": "A release a stream_source plugin answered for a category it declared (ether.contributes.source.search): the plugin id and its lazy stream id. It has no infoHash, magnet or nzbUrl; release_files asks the plugin for the files and a release source opens it through the plugin's open route with the chosen file."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
         }
       }
     },
@@ -40074,7 +40249,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
       "type": "object",
       "properties": {
         "nzbUrl": {
-          "type": "string"
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input."
         },
         "magnet": {
           "type": "string"
@@ -40083,7 +40260,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "string"
         },
         "torrentUrl": {
-          "type": "string"
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef."
         },
         "passwordSecret": {
           "type": "string"
@@ -40116,6 +40295,14 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
           "type": "integer",
           "minimum": 0,
           "description": "Optional torrent file count hint when Ether has not seen the torrent's file list yet (e.g. a magnet from a large collection), so providers whose cache check cannot see zip-only 100+-file torrents (TorBox) try a cached-only add instead of trusting a checkcached miss."
+        },
+        "nzbRef": {
+          "type": "string",
+          "description": "Opaque Ether NZB search or vault reference."
+        },
+        "torrentRef": {
+          "type": "string",
+          "description": "Opaque Ether torrent descriptor reference."
         }
       }
     },
@@ -40906,6 +41093,14 @@ return in input order: each item has either `{status, headers, body, bodyBase64?
 timeout, permission, redirect, size, or transport failure. Canceling the parent
 request or exceeding its deadline aborts all in-flight batch fetches promptly
 without consuming extra WASM pool lanes.
+
+Indexer search results give you `nzbRef` for Usenet and `torrentRef` when a
+torrent needs a descriptor lookup. The deprecated link fields mirror these
+references with an `ether-nzb:` or `ether-torrent:` prefix. Call
+`ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
+permanent vault reference. Use that reference in a release source's
+`release.nzbRef`, and use `release_files` for files inside archives.
+Configured indexer hosts reject direct plugin HTTP calls.
 
 Across all host HTTP paths (`http.fetch`, `http.fetchMany`, `http.fetchToCache`, `http.hash`, and
 playable `range`/`download`/`direct`/`container` sources), redirects recheck
@@ -57418,7 +57613,7 @@ type KindChangesRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|indexer_search_results\|indexer_search_cancel\|indexers\|debrid_check\|debrid_acquire\|release_files\|usenet_check\|nzb_request |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. Source plugins that declared the category answer it too. |
 | `lookup` | `*SourceLookup` | may be omitted (see validation for conditions) | Lookup (indexer_search with Category) adds a typed lookup, such as an album by artist and title, for source plugins that declared its type. Other indexers search Query alone. |
@@ -57435,8 +57630,11 @@ type KindChangesRequest struct {
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
-| `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when not passing a full Candidate from indexer_search. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: use TorrentRef for an Ether torrent descriptor reference. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: use NZBRef. NZBURL also accepts legacy download links. |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
+| `nzbIdentity` | `*NZBIdentity` | may be omitted (see validation for conditions) |  |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files or usenet_check. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when passing a magnet or infoHash without a file list (e.g. large collection torrents held as zip-only caches on TorBox). |
 
@@ -57446,7 +57644,7 @@ type KindChangesRequest struct {
 ``````
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check
+	Kind  string `json:"kind"` // indexer_search|indexer_search_results|indexer_search_cancel|indexers|debrid_check|debrid_acquire|release_files|usenet_check|nzb_request
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -57497,12 +57695,13 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download or details page link when an
-	// indexer did not supply an infoHash or magnet.
+	// Deprecated: use TorrentRef for an Ether torrent descriptor reference.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
-	// full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
+	// Deprecated: use NZBRef. NZBURL also accepts legacy download links.
+	NZBURL      string       `json:"nzbUrl,omitempty"`
+	NZBRef      string       `json:"nzbRef,omitempty"`
+	TorrentRef  string       `json:"torrentRef,omitempty"`
+	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
@@ -57811,14 +58010,34 @@ type DebridServiceRef struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#NZBIdentity.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `indexerId` | `string` | emitted (validation may require a value) |  |
+| `guid` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/kinds.go#NZBIdentity
+
+``````
+// NZBIdentity identifies a release by its native configured indexer and GUID.
+type NZBIdentity struct {
+	IndexerID string `json:"indexerId"`
+	GUID      string `json:"guid"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#SourceCandidate.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
-| `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef. |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
 | `title` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
@@ -57831,7 +58050,7 @@ type DebridServiceRef struct {
 | `resolution` | `int` | may be omitted (see validation for conditions) |  |
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
-| `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query. |
+| `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated by release_files or nzb_request. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount is the torrent's known file count when reported by an indexer or release_files query. |
 | `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query. |
 | `pluginRelease` | `*PluginReleaseRef` | may be omitted (see validation for conditions) | PluginRelease names a release a source plugin answered for a declared category search. It has no infoHash or nzbUrl: hand the candidate back to release_files to list its files and in a release source to open it. |
@@ -57841,16 +58060,16 @@ type DebridServiceRef struct {
 
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank.
-// Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
-// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
-// indexer_search are stripped of indexer API keys and secrets so candidates
-// can be cached safely; Ether re-attaches credentials at fetch time on the
-// originating indexer's origin using indexerId.
+// NZBRef and TorrentRef are opaque references returned by indexer search.
 type SourceCandidate struct {
-	InfoHash   string `json:"infoHash,omitempty"`
-	Magnet     string `json:"magnet,omitempty"`
+	InfoHash string `json:"infoHash,omitempty"`
+	Magnet   string `json:"magnet,omitempty"`
+	// Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	// Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef.
 	NZBURL     string `json:"nzbUrl,omitempty"`
+	NZBRef     string `json:"nzbRef,omitempty"`
+	TorrentRef string `json:"torrentRef,omitempty"`
 	// FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection.
 	FileIndex *int   `json:"fileIndex,omitempty"`
 	Title     string `json:"title,omitempty"`
@@ -57869,7 +58088,7 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
-	// Files is populated only by a release_files query.
+	// Files is populated by release_files or nzb_request.
 	Files []ReleaseFile `json:"files,omitempty"`
 	// FileCount is the torrent's known file count when reported by an indexer
 	// or release_files query.
@@ -57899,6 +58118,10 @@ func (c SourceCandidate) CandidateRef() string {
 		return "infohash:" + strings.ToLower(c.InfoHash)
 	case c.Magnet != "":
 		return "magnet:" + c.Magnet
+	case c.TorrentRef != "":
+		return "torrentref:" + c.TorrentRef
+	case c.NZBRef != "":
+		return "nzbref:" + c.NZBRef
 	case c.TorrentURL != "":
 		return "torrent:" + c.TorrentURL
 	case c.NZBURL != "":
@@ -58166,6 +58389,8 @@ type TrackHint struct {
 |---|---|---|---|
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback. |
 | `nzbUrl` | `string` | may be omitted (see validation for conditions) |  |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
+| `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
@@ -58186,6 +58411,8 @@ type ReleaseHint struct {
 	// FileIndex overrides candidate.fileIndex; out-of-range indices fail without fallback.
 	FileIndex  *int             `json:"fileIndex,omitempty"`
 	NZBURL     string           `json:"nzbUrl,omitempty"`
+	NZBRef     string           `json:"nzbRef,omitempty"`
+	TorrentRef string           `json:"torrentRef,omitempty"`
 	Magnet     string           `json:"magnet,omitempty"`
 	InfoHash   string           `json:"infoHash,omitempty"`
 	TorrentURL string           `json:"torrentUrl,omitempty"`
@@ -58996,6 +59223,22 @@ func (c *Context) StreamURLWithOptions(itemRef string, opts StreamURLOptions) (s
 		return u + sep + "part=" + strconv.Itoa(*opts.PartIndex), nil
 	}
 	return c.Ether.StreamURL(ctx, viewerID, itemRef)
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.RequestNZB
+
+``````
+// RequestNZB opens an indexer search reference and returns a file list and vault reference.
+func (c *Context) RequestNZB(ref string) (SourceCandidate, error) {
+	res, err := c.ResolveSourcesWithResult(SourceQuery{Kind: "nzb_request", NZBRef: ref})
+	if err != nil {
+		return SourceCandidate{}, err
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].NZBRef == "" {
+		return SourceCandidate{}, errors.New("nzb_request returned no vault reference")
+	}
+	return res.Candidates[0], nil
 }
 ``````
 
@@ -71619,16 +71862,17 @@ class DebridServiceRef(TypedDict):
 class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
-    Same-origin ``nzbUrl`` and ``torrentUrl`` links returned by ``indexer_search``
-    have indexer API keys and secrets stripped; Ether re-attaches credentials at
-    fetch time on the originating indexer's origin when handed back with
-    ``indexerId``.
+    Search returns opaque ``nzbRef`` and ``torrentRef`` values. The deprecated
+    ``nzbUrl`` and ``torrentUrl`` fields mirror them with an ``ether-nzb:``
+    or ``ether-torrent:`` prefix.
     """
 
     infoHash: str
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     fileIndex: int
     title: str
     size: int
@@ -71679,6 +71923,11 @@ class SourceResolveResult(TypedDict, total=False):
     done: bool
 
 
+class NZBIdentity(TypedDict):
+    indexerId: str
+    guid: str
+
+
 class SourceQuery(TypedDict, total=False):
     """Host sources.resolve query payload."""
 
@@ -71691,6 +71940,7 @@ class SourceQuery(TypedDict, total=False):
         "debrid_acquire",
         "release_files",
         "usenet_check",
+        "nzb_request",
     ]
     query: str
     category: str
@@ -71709,6 +71959,9 @@ class SourceQuery(TypedDict, total=False):
     magnet: str
     torrentUrl: str
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
+    nzbIdentity: NZBIdentity
     candidate: SourceCandidate
     fileCount: int
 
@@ -71746,6 +71999,8 @@ class ReleaseHint(TypedDict, total=False):
 
     fileIndex: int
     nzbUrl: str
+    nzbRef: str
+    torrentRef: str
     magnet: str
     infoHash: str
     torrentUrl: str
@@ -71988,9 +72243,9 @@ class _KindsClient:
           name for video release scoring; default uses owner default). Video
           candidates include ``score``, ``resolution``, ``source`` and ``codec``
           alongside ``indexer``/``indexerId``; non-video candidates omit those
-          video fields. Same-origin ``nzbUrl`` and ``torrentUrl`` links are
-          key-less so candidates can be cached in KV without storing indexer API
-          keys (Ether re-attaches credentials at fetch time using ``indexerId``).
+          video fields. Use the result's opaque ``nzbRef`` or ``torrentRef``.
+        - ``nzb_request``: return a file list and a vault reference using
+          ``nzbRef`` or ``nzbIdentity``.
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
         - ``usenet_check``: sampled NNTP article check for a Usenet
@@ -72007,6 +72262,18 @@ class _KindsClient:
         """
         result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
+
+    def request_nzb(self, release: Union[str, NZBIdentity]) -> SourceCandidate:
+        """Return a file list and permanent vault reference for an indexer NZB."""
+        query: SourceQuery = {"kind": "nzb_request"}
+        if isinstance(release, str):
+            query["nzbRef"] = release
+        else:
+            query["nzbIdentity"] = release
+        result = self.resolve_sources(query)
+        if not result or not result[0].get("nzbRef"):
+            raise ValueError("nzb_request returned no vault reference")
+        return result[0]
 
     def resolve_sources_with_result(self, query: Union[SourceQuery, Dict[str, Any]]) -> SourceResolveResult:
         """Run ``sources.resolve`` and return the full envelope (``candidates``, ``indexers``, ``pending``, ``searchId``, ``done``) (#733)."""
@@ -74601,6 +74868,7 @@ export {
 } from "./testing.ts";
 export {
   candidateRef,
+  requestNzb,
   streamUrl,
   kindsVisible,
   kindsBrowse,
@@ -74671,6 +74939,7 @@ import type {
   KindResolveRequest,
   KindResolveResponse,
   MaybePromise,
+  NZBIdentity,
   RawRequest,
   RawResponse,
   SetupTestRequest,
@@ -74741,10 +75010,26 @@ export interface SetupTester<S = Record<string, unknown>> {
   testSetup(req: SetupTestRequest, ctx: PluginContext<S>): MaybePromise<SetupTestResult>;
 }
 
+/** Request an indexer NZB through Ether and get its file list and vault reference. */
+export async function requestNzb<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  release: string | NZBIdentity,
+): Promise<SourceCandidate> {
+  if (!ctx.ether?.kinds) throw new Error("NZB request: no host service available");
+  const candidates = await ctx.ether.kinds.resolveSources(typeof release === "string"
+    ? { kind: "nzb_request", nzbRef: release }
+    : { kind: "nzb_request", nzbIdentity: release });
+  const result = candidates[0];
+  if (!result?.nzbRef) throw new Error("nzb_request returned no vault reference");
+  return result;
+}
+
 /** The stable ref matchers report for a source candidate. */
 export function candidateRef(c: SourceCandidate): string {
   if (c.infoHash) return `infohash:${c.infoHash.toLowerCase()}`;
   if (c.magnet) return `magnet:${c.magnet}`;
+  if (c.torrentRef) return `torrentref:${c.torrentRef}`;
+  if (c.nzbRef) return `nzbref:${c.nzbRef}`;
   if (c.torrentUrl) return `torrent:${c.torrentUrl}`;
   if (c.nzbUrl) return `nzb:${c.nzbUrl}`;
   return c.title ?? "";
@@ -78696,6 +78981,11 @@ export interface KindChangePage {
   complete: boolean;
 }
 
+export interface NZBIdentity {
+  indexerId: string;
+  guid: string;
+}
+
 export interface SourceQuery {
   kind:
     | "indexer_search"
@@ -78705,7 +78995,8 @@ export interface SourceQuery {
     | "debrid_check"
     | "debrid_acquire"
     | "release_files"
-    | "usenet_check";
+    | "usenet_check"
+    | "nzb_request";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. Source plugins that declared the category answer it too. */
   category?: string;
@@ -78734,10 +79025,13 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  /** @deprecated Use torrentRef for an Ether torrent descriptor reference. */
   torrentUrl?: string;
-  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  /** @deprecated Use nzbRef. Accepts an ether-nzb: reference or legacy download link. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
+  nzbIdentity?: NZBIdentity;
   /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
   /** Optional torrent file count hint for release_files or debrid_acquire when passing a magnet or infoHash without a file list. */
@@ -78841,10 +79135,12 @@ export interface DebridServiceRef {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
+  /** @deprecated Opaque ether-torrent: reference. Use torrentRef. */
   torrentUrl?: string;
-  /** Key-less Usenet NZB download link; Ether strips same-origin indexer API keys and re-attaches them at fetch time using indexerId so candidates are safe to cache in KV. */
+  /** @deprecated Opaque ether-nzb: reference. Use nzbRef. */
   nzbUrl?: string;
+  nzbRef?: string;
+  torrentRef?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;
   title?: string;
@@ -78947,6 +79243,8 @@ export interface PlayableSource {
   };
   release?: {
     nzbUrl?: string;
+    nzbRef?: string;
+    torrentRef?: string;
     magnet?: string;
     infoHash?: string;
     torrentUrl?: string;

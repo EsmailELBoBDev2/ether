@@ -3,8 +3,10 @@ package trakt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -164,14 +166,36 @@ func (c *Client) Scrobble(ctx context.Context, userID int64, key core.RatingKey,
 	}
 	payload["progress"] = progress
 	status, b, err := c.authed(ctx, userID, http.MethodPost, "/scrobbling/"+action, payload)
-	if err != nil {
+	if err != nil && (status == 0 || ctx.Err() != nil) {
 		return err
 	}
+	// A status whose body could not be read is judged by the status.
 	// 409 = a scrobble is already in progress; not an error for us.
 	if status != http.StatusCreated && status != http.StatusOK && status != http.StatusConflict {
-		return fmt.Errorf("trakt scrobble %s: HTTP %d: %s", action, status, truncate(string(b), 200))
+		detail := truncate(string(b), 200)
+		if err != nil {
+			detail = err.Error()
+		}
+		return fmt.Errorf("trakt scrobble %s: %w: %s", action, scrobbleStatus(status), detail)
 	}
 	return nil
+}
+
+// scrobbleStatus is the error status Trakt answered a scrobble with.
+type scrobbleStatus int
+
+func (s scrobbleStatus) Error() string { return fmt.Sprintf("HTTP %d", int(s)) }
+
+// retryableScrobble reports a 5xx, a 429 that outlasted do's own retry, or
+// a network error on the scrobble request itself; anything else, a failed
+// token refresh included, is permanent.
+func retryableScrobble(err error) bool {
+	var st scrobbleStatus
+	if errors.As(err, &st) {
+		return st == http.StatusTooManyRequests || st >= 500 && st <= 599
+	}
+	var ue *url.Error
+	return errors.As(err, &ue) && strings.Contains(ue.URL, "/scrobbling/") && !errors.Is(err, context.Canceled)
 }
 
 func syncBody(kind string, item map[string]any, extra map[string]any) map[string]any {
@@ -365,6 +389,22 @@ type scrobbleState struct {
 	at     time.Time
 }
 
+// pendingStop is a final scrobble/stop being sent or awaiting a retry, bound
+// to the Trakt account of its first send, whose stamp stays meanwhile.
+type pendingStop struct {
+	progress float64
+	account  string // Trakt username at the first send
+	attempts int
+	first    time.Time
+	next     time.Time
+}
+
+const (
+	stopAttempts    = 3                // sends of one final stop, the first included
+	stopRetrySpace  = 30 * time.Second // times the attempts made so far
+	stopRetryMaxAge = 10 * time.Minute
+)
+
 // startRefresh is how often a continuing "playing" timeline re-sends
 // scrobble/start; Trakt expires an un-refreshed scrobble after the item's
 // runtime, so this only matters for very long sessions.
@@ -442,7 +482,12 @@ func (c *Client) handleEvent(ctx context.Context, ev state.Event) error {
 				action = "start"
 			}
 		}
-		if action != "" && c.shouldScrobble(ev.UserID, ev.Key, action) {
+		if action == "stop" {
+			err = c.stop(ctx, scrobbleKey{ev.UserID, ev.Key}, progress)
+		} else if action != "" || ev.State == "playing" || ev.State == "buffering" {
+			c.cancelStops(ev.UserID, ev.Key) // playback went on, even at zero progress
+		}
+		if action != "" && action != "stop" && c.shouldScrobble(ev.UserID, ev.Key, action) {
 			err = c.Scrobble(ctx, ev.UserID, ev.Key, action, progress)
 		}
 		if ev.Completed {
@@ -451,9 +496,13 @@ func (c *Client) handleEvent(ctx context.Context, ev state.Event) error {
 	case state.EventCompleted:
 		// Already recorded by the scrobble/stop of the progress event.
 	case state.EventScrobble:
+		if !ev.Imported {
+			c.cancelStops(ev.UserID, ev.Key)
+		}
 		err = c.AddHistory(ctx, ev.UserID, ev.Key, ev.At)
 		c.invalidateUser(ev.UserID)
 	case state.EventUnscrobble:
+		c.cancelStops(ev.UserID, ev.Key)
 		err = c.RemoveHistory(ctx, ev.UserID, ev.Key)
 		c.invalidateUser(ev.UserID)
 	case state.EventRated:
@@ -464,6 +513,119 @@ func (c *Client) handleEvent(ctx context.Context, ev state.Event) error {
 		}
 	}
 	return err
+}
+
+// stop sends a scrobble/stop. While one is pending for k, it only raises
+// that stop's progress (a completed stop keeps its 100%); retryStops sends.
+func (c *Client) stop(ctx context.Context, k scrobbleKey, progress float64) error {
+	c.scMu.Lock()
+	p := c.stops[k]
+	if p != nil {
+		p.progress = max(p.progress, progress)
+	}
+	c.scMu.Unlock()
+	if p != nil || !c.shouldScrobble(k.user, k.key, "stop") {
+		return nil
+	}
+	p = &pendingStop{progress: progress, first: c.now()}
+	c.scMu.Lock()
+	c.stops[k] = p
+	c.scMu.Unlock()
+	return c.sendStop(ctx, k, p)
+}
+
+// sendStop sends p if it is still k's pending stop and, after its first
+// send, the viewer is still connected to the same Trakt account. Unless p
+// was cancelled meanwhile, a temporary failure then keeps it for retryStops
+// until the last attempt; only a permanent failure clears its stamp.
+func (c *Client) sendStop(ctx context.Context, k scrobbleKey, p *pendingStop) error {
+	connected, account, err := c.currentTokens(ctx, k.user)
+	c.scMu.Lock()
+	if c.stops[k] == p && err == nil && p.attempts > 0 && (!connected || account != p.account) {
+		c.dropStopLocked(k) // disconnected or relinked
+	}
+	if c.stops[k] != p || err != nil {
+		c.scMu.Unlock()
+		return err
+	}
+	p.account = account
+	progress := p.progress
+	c.scMu.Unlock()
+	err = c.Scrobble(ctx, k.user, k.key, "stop", progress)
+	c.scMu.Lock()
+	defer c.scMu.Unlock()
+	if c.stops[k] != p {
+		return err
+	}
+	p.attempts++
+	switch {
+	case err != nil && !retryableScrobble(err):
+		c.dropStopLocked(k)
+	case err != nil && p.attempts < stopAttempts:
+		p.next = c.now().Add(time.Duration(p.attempts) * stopRetrySpace)
+	default:
+		delete(c.stops, k)
+		if err != nil {
+			c.log.Warn("trakt scrobble stop failed; giving up", "user", k.user, "key", k.key, "attempts", p.attempts, "err", err)
+		}
+	}
+	return err
+}
+
+// cancelStops drops the viewer's pending stop for key, or all of them for
+// key 0 when the Trakt connection changes.
+func (c *Client) cancelStops(userID int64, key core.RatingKey) {
+	c.scMu.Lock()
+	defer c.scMu.Unlock()
+	for k := range c.stops {
+		if k.user == userID && (key == 0 || k.key == key) {
+			c.dropStopLocked(k)
+		}
+	}
+}
+
+// dropStopLocked drops k's pending stop and its stamp, so the next stop is sent.
+func (c *Client) dropStopLocked(k scrobbleKey) {
+	delete(c.stops, k)
+	if c.lastScro[k].action == "stop" {
+		delete(c.lastScro, k)
+	}
+}
+
+// retryStops drops pending stops older than stopRetryMaxAge and sends the
+// due ones. It runs on the worker after the live queue and returns once a
+// live event is queued, so a newer event for the title is handled first.
+func (c *Client) retryStops(ctx context.Context) {
+	now := c.now()
+	due := map[scrobbleKey]*pendingStop{}
+	c.scMu.Lock()
+	for k, p := range c.stops {
+		if now.Sub(p.first) > stopRetryMaxAge {
+			delete(c.stops, k)
+			c.log.Warn("trakt scrobble stop expired; giving up", "user", k.user, "key", k.key, "attempts", p.attempts)
+		} else if !now.Before(p.next) {
+			due[k] = p
+		}
+	}
+	c.scMu.Unlock()
+	for k, p := range due {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+		c.evMu.Lock()
+		live := len(c.queue) > 0
+		c.evMu.Unlock()
+		if live || ctx.Err() != nil || !c.Enabled() {
+			return // the live queue has signalled notify
+		}
+		ectx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if c.sendStop(ectx, k, p) == nil {
+			c.invalidateUser(k.user)
+		}
+		cancel()
+	}
 }
 
 // SubscribeTo feeds state events into the scrobble queue (non-blocking).
@@ -527,6 +689,7 @@ func (c *Client) Start(ctx context.Context) {
 			c.HandleEvent(ectx, ev)
 			cancel()
 		}
+		c.retryStops(ctx)
 		if err := c.drainImports(ctx); err != nil && ctx.Err() == nil {
 			c.log.Warn("trakt imported history sync deferred", "err", err)
 		}

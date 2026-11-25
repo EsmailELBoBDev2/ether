@@ -30,6 +30,25 @@ type fakeTrakt struct {
 	deviceSeq     []int
 	refreshStatus int    // non-zero: /oauth/token responds with it
 	rejectToken   string // Bearer token answered with 401
+	// scrobbleSeq, when set, is the sequence of statuses /scrobbling/
+	// answers before it accepts again; only accepted calls are recorded.
+	// scrobbleCut closes the connection unanswered; scrobbleLost records
+	// the call and then closes the connection, losing the response;
+	// scrobbleShort503 sends 503 headers and a truncated body.
+	scrobbleSeq []int
+}
+
+const (
+	scrobbleCut      = -1
+	scrobbleLost     = -2
+	scrobbleShort503 = -3
+)
+
+// closeUnanswered drops the connection without writing a response.
+func closeUnanswered(w http.ResponseWriter) {
+	if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+		conn.Close()
+	}
 }
 
 func (f *fakeTrakt) hit(path string) {
@@ -118,6 +137,26 @@ func (f *fakeTrakt) handler(t *testing.T) http.Handler {
 		json.NewDecoder(r.Body).Decode(&body)
 		body["_action"] = strings.TrimPrefix(r.URL.Path, "/scrobbling/")
 		f.mu.Lock()
+		if len(f.scrobbleSeq) > 0 {
+			code := f.scrobbleSeq[0]
+			f.scrobbleSeq = f.scrobbleSeq[1:]
+			if code == scrobbleLost {
+				f.scrobbles = append(f.scrobbles, body)
+			}
+			f.mu.Unlock()
+			if code == scrobbleShort503 {
+				w.Header().Set("Content-Length", "64")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte("unavail"))
+				return
+			}
+			if code < 0 {
+				closeUnanswered(w)
+				return
+			}
+			w.WriteHeader(code)
+			return
+		}
 		f.scrobbles = append(f.scrobbles, body)
 		f.mu.Unlock()
 		w.WriteHeader(201)

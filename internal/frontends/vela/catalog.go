@@ -83,13 +83,27 @@ func titleWireForRegions(t frontend.Title, regions []string) object {
 			out["ratingCountry"] = country
 		}
 	}
-	if t.ShowKey != 0 && (t.MediaClass == "" || t.MediaClass == frontend.MediaClassVideo) {
-		out["showId"] = ids.RatingKeyGUID(t.ShowKey)
-		if kind == "season" || kind == "episode" {
-			out["seasonNumber"] = t.Season
+	if !nonVideoMedia(t) {
+		showKey := videoShowKey(t)
+		if showKey != 0 {
+			out["showId"] = ids.RatingKeyGUID(showKey)
+			if kind == "season" || kind == "episode" {
+				season := t.Season
+				if season == 0 && !t.Key.IsPluginKey() && (t.Key.Kind() == frontend.KindSeason || t.Key.Kind() == frontend.KindEpisode) {
+					season = t.Key.Season()
+				}
+				out["seasonNumber"] = season
+			}
+			if kind == "episode" {
+				episode := t.Episode
+				if episode == 0 && !t.Key.IsPluginKey() && t.Key.Kind() == frontend.KindEpisode {
+					episode = t.Key.Episode()
+				}
+				out["episodeNumber"] = episode
+			}
 		}
-		if kind == "episode" {
-			out["episodeNumber"] = t.Episode
+		if name := videoShowName(t); name != "" && (showKey != 0 || kind == "season" || kind == "episode") {
+			out["showName"] = name
 		}
 	}
 	if media := titleMediaWire(t); media != nil {
@@ -124,6 +138,7 @@ func watchWire(s frontend.WatchStatus) object {
 }
 
 type homeTitlesKey struct{}
+type showNamesKey struct{}
 
 func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title) ([]object, error) {
 	if cached, ok := r.Context().Value(homeTitlesKey{}).(map[frontend.RatingKey]object); ok {
@@ -273,10 +288,16 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 	if source, ok := i.host.Experience.(frontend.CachedRatings); ok {
 		ratings = source.PageCachedRatings(r.Context(), v, ts)
 	}
+	showNames := i.resolveShowNames(r, v, ts)
 	regions := i.preferredRatingRegions(r)
 	loud := i.pageLoudness(r, ts)
 	out := []object{}
 	for _, t := range ts {
+		if showKey := videoShowKey(t); showKey != 0 && videoShowName(t) == "" {
+			if name := showNames[showKey]; name != "" {
+				t.ShowTitle = name
+			}
+		}
 		item := titleWireForRegions(t, regions)
 		if l, ok := loud[t.Key]; ok {
 			if media, ok := item["media"].(object); ok {
@@ -297,6 +318,126 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// videoShowKey resolves the parent show key for a video season or episode.
+// Non-video media classes never emit showId/showName/seasonNumber/episodeNumber.
+func videoShowKey(t frontend.Title) frontend.RatingKey {
+	if nonVideoMedia(t) {
+		return 0
+	}
+	if t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	if !t.Key.IsPluginKey() && t.Key.TMDB() > 0 {
+		switch t.Key.Kind() {
+		case frontend.KindEpisode, frontend.KindSeason:
+			return frontend.ShowKey(t.Key.TMDB())
+		}
+	}
+	if t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason {
+		for _, p := range t.MediaParents {
+			if p.Key != 0 && (p.Role == frontend.MediaRoleShow || p.Role == frontend.MediaRoleSeries) {
+				return p.Key
+			}
+		}
+	}
+	return 0
+}
+
+func videoShowName(t frontend.Title) string {
+	if nonVideoMedia(t) {
+		return ""
+	}
+	if name := strings.TrimSpace(t.ShowTitle); name != "" {
+		return name
+	}
+	if t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason || t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason {
+		for _, p := range t.MediaParents {
+			if p.Role == frontend.MediaRoleShow || p.Role == frontend.MediaRoleSeries {
+				if name := strings.TrimSpace(p.Title); name != "" {
+					return name
+				}
+			}
+		}
+		if t.ShowKey != 0 {
+			for _, p := range t.MediaParents {
+				if p.Key == t.ShowKey {
+					if name := strings.TrimSpace(p.Title); name != "" {
+						return name
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// resolveShowNames batch-loads missing parent show names for any video episodes
+// or seasons in ts using at most one TitleBatchReader lookup per response.
+// Shows already present in ts are reused without a lookup.
+func (i *instance) resolveShowNames(r *http.Request, v *frontend.Viewer, ts []frontend.Title) map[frontend.RatingKey]string {
+	cache, _ := r.Context().Value(showNamesKey{}).(map[frontend.RatingKey]string)
+	var missing []frontend.RatingKey
+	seenMissing := map[frontend.RatingKey]bool{}
+	for _, t := range ts {
+		showKey := videoShowKey(t)
+		if showKey == 0 || videoShowName(t) != "" || seenMissing[showKey] {
+			continue
+		}
+		seenMissing[showKey] = true
+		missing = append(missing, showKey)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	names := make(map[frontend.RatingKey]string, len(missing))
+	resolved := make(map[frontend.RatingKey]bool, len(missing))
+	for _, k := range missing {
+		if cache != nil {
+			if name, ok := cache[k]; ok {
+				names[k] = name
+				resolved[k] = true
+			}
+		}
+	}
+	for _, t := range ts {
+		if seenMissing[t.Key] && !resolved[t.Key] {
+			if name := strings.TrimSpace(t.Title); name != "" {
+				names[t.Key] = name
+				resolved[t.Key] = true
+				if cache != nil {
+					cache[t.Key] = name
+				}
+			}
+		}
+	}
+	var need []frontend.RatingKey
+	for _, k := range missing {
+		if !resolved[k] {
+			need = append(need, k)
+		}
+	}
+	if len(need) > 0 && v != nil && i.host.Experience != nil {
+		if batch, ok := i.host.Experience.(frontend.TitleBatchReader); ok {
+			if shows, err := batch.BatchTitles(r.Context(), v, need); err == nil {
+				if cache != nil {
+					for _, k := range need {
+						cache[k] = ""
+					}
+				}
+				for _, sh := range shows {
+					if name := strings.TrimSpace(sh.Title); name != "" {
+						names[sh.Key] = name
+						if cache != nil {
+							cache[sh.Key] = name
+						}
+					}
+				}
+			}
+		}
+	}
+	return names
 }
 
 // episodePosterShow requests a show fallback only when the episode has no
@@ -582,6 +723,9 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 }
 
 func (i *instance) rowsToWire(r *http.Request, v *frontend.Viewer, token string, rows []frontend.Row, view *frontend.View, excludedHeroes []string, hasViews bool, itemLimit int, sources ...map[string]heroSource) ([]object, error) {
+	if _, ok := r.Context().Value(showNamesKey{}).(map[frontend.RatingKey]string); !ok {
+		r = r.WithContext(context.WithValue(r.Context(), showNamesKey{}, map[frontend.RatingKey]string{}))
+	}
 	// Share card state, ratings and artwork across all shelves in this page.
 	var pageTitles []frontend.Title
 	seenTitles := map[frontend.RatingKey]bool{}
@@ -762,6 +906,7 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 }
 
 func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string, avatar object, spoilerFree bool, refresh bool) (object, error) {
+	r = r.WithContext(context.WithValue(r.Context(), showNamesKey{}, map[frontend.RatingKey]string{}))
 	sources := map[string]heroSource{}
 	rows, _, e := i.homeVisit(r, v, t, refresh, sources)
 	if e != nil {

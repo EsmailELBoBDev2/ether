@@ -47,6 +47,8 @@ type RowPresentation struct {
 type RowSurface struct {
 	// Plugin is the plugin id.
 	Plugin string `json:"plugin"`
+	// PluginName is the plugin's display name for console labels.
+	PluginName string `json:"pluginName,omitempty"`
 	// Surface is the surface's wire id ("sports.tonight"), the same value
 	// as bootstrap.surfaces[].id and the /vela/v0/surfaces/{wireId} URLs.
 	Surface string `json:"surface"`

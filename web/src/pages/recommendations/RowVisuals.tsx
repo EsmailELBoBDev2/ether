@@ -213,7 +213,7 @@ export function RowBody({
         <span>
           {t(
             "Drawn by {plugin} in Vela. Vela hides it when there's nothing to show, and it doesn't count toward the page length.",
-            { plugin: pluginName || row.present.surface.plugin },
+            { plugin: pluginName || row.present.surface.pluginName || row.present.surface.plugin },
           )}
         </span>
       </div>

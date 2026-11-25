@@ -102,8 +102,8 @@ export function CollectionDetail({
             <div className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-t from-surface via-surface/80 to-surface/40" />
           </>
         ) : null}
-        <div className="flex items-start gap-5 p-5 sm:gap-6 sm:p-6 xl:p-8">
-          <div className="hidden w-28 shrink-0 sm:block xl:w-32">
+        <div className="flex items-start gap-5 p-5 sm:gap-5 sm:p-6">
+          <div className="hidden w-28 shrink-0 sm:block">
             {!template && spec.id ? (
               <Artwork
                 src={api.artworkUrl(
@@ -181,10 +181,10 @@ export function CollectionDetail({
                 </>
               ) : null}
             </div>
-            <div className="mt-5 flex flex-wrap items-center gap-2">{actions}</div>
+            <div className="mt-5 flex flex-wrap items-center gap-1.5">{actions}</div>
           </div>
         </div>
-        <dl className="grid grid-cols-3 border-t border-border bg-surface/60 px-5 py-4 sm:px-6 xl:px-8">
+        <dl className="grid grid-cols-3 border-t border-border bg-surface/60 px-5 py-4 sm:px-6">
           <Readout
             icon={<LayoutList size={13} />}
             label={t("Used on")}
@@ -219,7 +219,7 @@ export function CollectionDetail({
           />
         </dl>
       </section>
-      <div className="space-y-6 p-5 sm:p-6 xl:p-8">
+      <div className="space-y-6 p-5 sm:p-6">
         {!template && spec.addonSync?.removed ? (
           <Alert variant="warning">
             <AlertDescription>

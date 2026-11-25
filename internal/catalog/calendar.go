@@ -45,7 +45,7 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 			args = append(args, int64(k))
 		}
 		args = append(args, from.Unix(), until.Unix(), limit)
-		got, err := c.scheduleRows(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND season>0 AND adult=0 AND show_key IN (`+placeholders(len(batch))+`) AND released_ts>=? AND released_ts<? ORDER BY released_ts, key LIMIT ?`, args...)
+		got, err := c.scheduleRows(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND release_known=1 AND season>0 AND adult=0 AND show_key IN (`+placeholders(len(batch))+`) AND released_ts>=? AND released_ts<? ORDER BY released_ts, key LIMIT ?`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -178,38 +178,123 @@ func (c *Catalog) scheduleRows(ctx context.Context, q string, args ...any) ([]co
 	return out, rows.Err()
 }
 
+type scheduleShowMeta struct {
+	title, contentRating, enforcementRating string
+	certifications                          map[string]string
+	adult                                   bool
+	poster, backdrop                        string
+}
+
+func (c *Catalog) scheduleShowParents(ctx context.Context, items []core.Title) (map[core.RatingKey]*scheduleShowMeta, error) {
+	seen := map[core.RatingKey]bool{}
+	var keys []any
+	for i := range items {
+		if k := items[i].ShowKey; k != 0 && !seen[k] {
+			seen[k] = true
+			keys = append(keys, int64(k))
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	shows := make(map[core.RatingKey]*scheduleShowMeta, len(keys))
+	for start := 0; start < len(keys); start += scheduleBatch {
+		batch := keys[start:min(start+scheduleBatch, len(keys))]
+		rows, err := c.db.QueryContext(ctx, `SELECT key, title, content_rating, enforcement_rating, certifications, adult, poster, backdrop FROM catalog_titles WHERE key IN (`+placeholders(len(batch))+`)`, batch...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key int64
+			var adult int
+			var certsRaw string
+			var meta scheduleShowMeta
+			if err := rows.Scan(&key, &meta.title, &meta.contentRating, &meta.enforcementRating, &certsRaw, &adult, &meta.poster, &meta.backdrop); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			meta.adult = adult != 0
+			meta.certifications = decodeCertifications(certsRaw)
+			shows[core.RatingKey(key)] = &meta
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return shows, nil
+}
+
+// GenresOf reads only the stored genre tags of non-adult mirrored titles.
+// Calendar taste scoring uses it to avoid full title hydration (credits,
+// trailers, aired counts) for hundreds of followed shows and movies.
+func (c *Catalog) GenresOf(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey][]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make(map[core.RatingKey][]string, len(keys))
+	for start := 0; start < len(keys); start += scheduleBatch {
+		batch := keys[start:min(start+scheduleBatch, len(keys))]
+		args := make([]any, len(batch))
+		for i, k := range batch {
+			args[i] = int64(k)
+		}
+		rows, err := c.db.QueryContext(ctx, `SELECT g.key, g.genre FROM catalog_genres g JOIN catalog_titles t ON t.key = g.key WHERE t.adult=0 AND g.key IN (`+placeholders(len(batch))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key int64
+			var genre string
+			if err := rows.Scan(&key, &genre); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rk := core.RatingKey(key)
+			out[rk] = append(out[rk], genre)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (c *Catalog) scheduleEntries(ctx context.Context, items []core.Title) ([]ScheduleEntry, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	if err := c.hydrateSlice(ctx, items); err != nil {
+	if err := c.hydrateVisibilityFacts(ctx, items); err != nil {
 		return nil, err
 	}
-	shows := map[core.RatingKey]*core.Title{}
+	shows, err := c.scheduleShowParents(ctx, items)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ScheduleEntry, 0, len(items))
 	for i := range items {
 		t := items[i]
-		if t.ShowKey != 0 {
-			show, ok := shows[t.ShowKey]
-			if !ok {
-				if st, err := c.loadByKey(ctx, t.ShowKey); err == nil {
-					show = &st.t
-				}
-				shows[t.ShowKey] = show
+		if show := shows[t.ShowKey]; show != nil {
+			if t.ContentRating == "" {
+				t.ContentRating = show.contentRating
 			}
-			if show != nil {
-				if t.ContentRating == "" {
-					t.ContentRating = show.ContentRating
-				}
-				if show.Adult {
-					t.Adult = true
-				}
-				if t.ShowTitle == "" {
-					t.ShowTitle = show.Title
-				}
-				if t.BackdropPath == "" {
-					t.BackdropPath = show.BackdropPath
-				}
+			if t.EnforcementRating == "" {
+				t.EnforcementRating = show.enforcementRating
+			}
+			if len(t.ContentRatings) == 0 && len(show.certifications) > 0 {
+				t.ContentRatings = show.certifications
+			}
+			if show.adult {
+				t.Adult = true
+			}
+			if t.ShowTitle == "" {
+				t.ShowTitle = show.title
+			}
+			if t.BackdropPath == "" {
+				t.BackdropPath = show.backdrop
 			}
 		}
 		if t.Adult {
@@ -217,7 +302,7 @@ func (c *Catalog) scheduleEntries(ctx context.Context, items []core.Title) ([]Sc
 		}
 		e := ScheduleEntry{Title: t, Playable: c.visibleTitle(&t)}
 		if show := shows[t.ShowKey]; show != nil {
-			e.ShowPoster = show.PosterPath
+			e.ShowPoster = show.poster
 		}
 		out = append(out, e)
 	}

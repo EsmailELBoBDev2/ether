@@ -49,8 +49,7 @@ import type { ActivityDay, RowInsight, Viewer } from "../lib/contract";
 import { fixed, formatNumber, formatPercent, formatRate, relativeTime } from "../lib/format";
 import { channelLabel, isPausedSession, type HealthItem, type NowPlaying } from "../lib/health";
 import { useAsync, useInterval } from "../lib/hooks";
-import { fetchLiveSessions, useLiveSessionsRefresh } from "../lib/sessions";
-import { useStreamEvent } from "../lib/stream";
+import { fetchLiveSessions, useLiveSessionsRefresh, useSessionsChanged } from "../lib/sessions";
 import { useTitle } from "../lib/titles";
 import type { EtherConfig } from "../lib/types";
 import { useLocale } from "../i18n/react";
@@ -226,7 +225,7 @@ export default function Home() {
     void activity.reload();
     void rows.reload();
   };
-  useStreamEvent("sessions.changed", reloadSlow);
+  useSessionsChanged(reloadSlow);
   useInterval(reloadSlow, OVERVIEW_POLL_MS);
   const [playId, openPlay] = usePlayParam();
   const sessions = live.data ?? [];

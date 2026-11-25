@@ -1772,46 +1772,8 @@
       "navGroup": "system",
       "inNav": true,
       "keywords": {
-        "source": "settings"
-      },
-      "sections": [
-        {
-          "key": "server",
-          "label": {
-            "source": "Server"
-          },
-          "keywords": {
-            "source": "name port listen log level stream limit"
-          }
-        },
-        {
-          "key": "downloads",
-          "label": {
-            "source": "Downloads"
-          },
-          "keywords": {
-            "source": "offline sync friends remux"
-          }
-        },
-        {
-          "key": "personalize",
-          "label": {
-            "source": "Personalization"
-          },
-          "keywords": {
-            "source": "post-play up next match finish time clock"
-          }
-        },
-        {
-          "key": "extras",
-          "label": {
-            "source": "Trailers \u0026 extras"
-          },
-          "keywords": {
-            "source": "cinema trailers yt-dlp resolver"
-          }
-        }
-      ]
+        "source": "settings server name app ports local remote URLs listen proxy vpn setup wizard"
+      }
     }
   },
   {

@@ -149,13 +149,7 @@ func consolePages() []consolePage {
 		}},
 		{id: "general", label: T("General"), icon: "Server", order: 10, meta: extend.PageMeta{
 			Route: "/server", NavGroup: extend.NavGroupSystem, InNav: true,
-			Keywords: T("settings"),
-			Sections: []extend.PageSection{
-				section("server", T("Server"), T("name port listen log level stream limit")),
-				section("downloads", T("Downloads"), T("offline sync friends remux")),
-				section("personalize", T("Personalization"), T("post-play up next match finish time clock")),
-				section("extras", T("Trailers & extras"), T("cinema trailers yt-dlp resolver")),
-			},
+			Keywords: T("settings server name app ports local remote URLs listen proxy vpn setup wizard"),
 		}},
 		{id: "apps", label: T("Apps"), icon: "Globe", order: 10, meta: extend.PageMeta{
 			Route: "/apps", NavGroup: extend.NavGroupConnect, InNav: true,

@@ -2138,6 +2138,13 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	return merged, nil
 }
 
+func nzbFlightKey(r core.Release) string {
+	if r.Target != nil && r.Target.PackID != "" {
+		return r.Target.PackID
+	}
+	return r.ID
+}
+
 // FetchNZB implements core.Indexer. Every call returns a slice of its own,
 // which the caller may keep or modify.
 func (c *Client) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
@@ -2161,21 +2168,22 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	if r.ID == "" {
+	flightKey := nzbFlightKey(r)
+	if flightKey == "" {
 		started := time.Now()
 		body, reserved, err := c.fetchNZB(ctx, r)
 		c.emitGrab(ctx, r.Name, started, reserved, err, true)
 		return body, true, err
 	}
 	for {
-		f, leader := c.joinNZBFlight(ctx, r)
+		f, leader := c.joinNZBFlight(ctx, flightKey, r)
 		select {
 		case <-f.done:
 		case <-ctx.Done():
 			// The shared fetch carries on for the other callers; once
 			// none is left it is cancelled (a losing health check must
 			// not finish a grab nobody will read).
-			c.leaveNZB(r.ID, f)
+			c.leaveNZB(flightKey, f)
 			return nil, leader, ctx.Err()
 		}
 		body := c.takeNZB(f)
@@ -2230,15 +2238,15 @@ func (c *Client) leaveNZB(id string, f *nzbFlight) {
 	f.cancel()
 }
 
-// joinNZBFlight attaches to the in-flight fetch for r.ID, or starts one.
+// joinNZBFlight attaches to the in-flight fetch for key, or starts one.
 // The shared fetch keeps ctx's values (budget class, trust) but not its
 // cancellation: it ends when the last caller leaves (leaveNZB), and is
 // bounded by nzbFlightTimeout. The flight is forgotten as soon as it ends,
 // so errors are not cached past it.
-func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight, bool) {
+func (c *Client) joinNZBFlight(ctx context.Context, key string, r core.Release) (*nzbFlight, bool) {
 	c.nzbFlightMu.Lock()
 	defer c.nzbFlightMu.Unlock()
-	if f, ok := c.nzbFlights[r.ID]; ok {
+	if f, ok := c.nzbFlights[key]; ok {
 		f.waiters++
 		f.readers++
 		return f, false
@@ -2248,15 +2256,15 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 	}
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nzbFlightTimeout)
 	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), waiters: 1, readers: 1, cancel: cancel}
-	c.nzbFlights[r.ID] = f
+	c.nzbFlights[key] = f
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
 				f.err = fmt.Errorf("newznab: fetch NZB panic: %v", p)
 			}
 			c.nzbFlightMu.Lock()
-			if c.nzbFlights[r.ID] == f {
-				delete(c.nzbFlights, r.ID)
+			if c.nzbFlights[key] == f {
+				delete(c.nzbFlights, key)
 			}
 			c.nzbFlightMu.Unlock()
 			close(f.done)
@@ -2635,20 +2643,34 @@ func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
 		_ = c.vault.Touch(ctx, key, true)
 		return bytes.Clone(record.XML)
 	}
-	if body := lookup(c.indexerID(), r.ID); body != nil {
-		return body
+	var ids []string
+	if r.ID != "" {
+		ids = append(ids, r.ID)
 	}
-	hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + r.ID))
-	id := hex.EncodeToString(hash[:])
-	if c.legacyDir != nil {
-		if dir := c.legacyDir(); dir != "" {
-			if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
-				c.keepNZB(ctx, r, body)
-				return body
-			}
+	if r.Target != nil && r.Target.PackID != "" && r.Target.PackID != r.ID {
+		ids = append(ids, r.Target.PackID)
+	}
+	for _, id := range ids {
+		if body := lookup(c.indexerID(), id); body != nil {
+			return body
 		}
 	}
-	return lookup(vault.LegacyAliasIndexer, id)
+	for _, rid := range ids {
+		hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + rid))
+		id := hex.EncodeToString(hash[:])
+		if c.legacyDir != nil {
+			if dir := c.legacyDir(); dir != "" {
+				if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
+					c.keepNZB(ctx, r, body)
+					return body
+				}
+			}
+		}
+		if body := lookup(vault.LegacyAliasIndexer, id); body != nil {
+			return body
+		}
+	}
+	return nil
 }
 
 func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {

@@ -3679,20 +3679,38 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.Protocol = "direct"
 		rel.GUID = fmt.Sprintf("plugin:%s:lazy:%s", ref.Plugin, ref.ID)
 	}
-	rel.ID = releaseIDWithTarget(rel)
+	assignKindReleaseID(&rel)
 	if rel.Name == "" {
 		rel.Name = firstNonEmpty(hint.FileHint, defaultTitle, rel.InfoHash, "kind-release")
 	}
 	return rel, nil
 }
 
+func baseKindReleaseID(rel core.Release) string {
+	return "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
+}
+
 func releaseIDWithTarget(rel core.Release) string {
-	id := "kind:" + firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
+	id := baseKindReleaseID(rel)
 	if rel.Target != nil {
-		selection, _ := json.Marshal(rel.Target)
+		sel := *rel.Target
+		sel.PackID = ""
+		selection, _ := json.Marshal(&sel)
 		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
 	}
 	return id
+}
+
+func assignKindReleaseID(rel *core.Release) {
+	if rel == nil {
+		return
+	}
+	if rel.Target != nil {
+		t := *rel.Target
+		t.PackID = baseKindReleaseID(*rel)
+		rel.Target = &t
+	}
+	rel.ID = releaseIDWithTarget(*rel)
 }
 
 func kindDefaultCategoryForLevel(decl plugins.MediaKindMeta, level string) int {
@@ -3856,7 +3874,7 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 		}
 	}
 	if rel.Target != nil {
-		rel.ID = releaseIDWithTarget(rel)
+		assignKindReleaseID(&rel)
 	}
 	return rel, nil
 }
@@ -4013,7 +4031,7 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 		resolved.FileCount = rel.FileCount
 	}
 	if resolved.InfoHash != "" {
-		resolved.ID = releaseIDWithTarget(resolved)
+		assignKindReleaseID(&resolved)
 	}
 	return resolved, nil
 }
@@ -4035,7 +4053,7 @@ func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
 	}
 	stripped := s.StripLinkAuth(rel)
 	if stripped.NZBURL != rel.NZBURL {
-		stripped.ID = releaseIDWithTarget(stripped)
+		assignKindReleaseID(&stripped)
 	}
 	return stripped
 }

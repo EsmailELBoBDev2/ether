@@ -70,7 +70,7 @@ func (c *Catalog) orderManifest(ctx context.Context, show core.RatingKey, order 
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT season,season_key,title,summary,poster,air_date,episode_count,fetched_at FROM catalog_order_seasons WHERE show_key=? AND provider=? AND order_kind=? ORDER BY season`, show, order.Source, order.Kind)
+	rows, err := c.db.QueryContext(ctx, `SELECT season,season_key,title,summary,poster,air_date,episode_count,fetched_at,provider_id FROM catalog_order_seasons WHERE show_key=? AND provider=? AND order_kind=? ORDER BY season`, show, order.Source, order.Kind)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -78,9 +78,10 @@ func (c *Catalog) orderManifest(ctx context.Context, show core.RatingKey, order 
 	seasons := []orderSeason{}
 	for rows.Next() {
 		var row orderSeason
-		if err := rows.Scan(&row.Season, &row.key, &row.Title, &row.Summary, &row.PosterPath, &row.AirDate, &row.EpisodeCount, &row.fetched); err != nil {
+		if err := rows.Scan(&row.Season, &row.key, &row.Title, &row.Summary, &row.PosterPath, &row.AirDate, &row.EpisodeCount, &row.fetched, &row.Ref.ID); err != nil {
 			return nil, 0, err
 		}
+		row.Ref.Source, row.Ref.Type = order.Source, core.TypeSeason
 		seasons = append(seasons, row)
 	}
 	return seasons, fetched, rows.Err()
@@ -192,11 +193,11 @@ func (c *Catalog) storeOrderManifest(ctx context.Context, show *core.Title, orde
 		} else if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_seasons(show_key,provider,order_kind,season,season_key,title,summary,poster,air_date,episode_count)
- VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(show_key,provider,order_kind,season) DO UPDATE SET
+		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_seasons(show_key,provider,order_kind,season,season_key,title,summary,poster,air_date,episode_count,provider_id)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(show_key,provider,order_kind,season) DO UPDATE SET
  season_key=excluded.season_key,title=excluded.title,summary=excluded.summary,poster=excluded.poster,air_date=excluded.air_date,
- fetched_at=CASE WHEN catalog_order_seasons.episode_count<>excluded.episode_count THEN 0 ELSE catalog_order_seasons.fetched_at END,episode_count=excluded.episode_count`,
-			show.Key, order.Source, order.Kind, row.Season, key, row.Title, row.Summary, row.PosterPath, row.AirDate, row.EpisodeCount)
+ fetched_at=CASE WHEN catalog_order_seasons.episode_count<>excluded.episode_count THEN 0 ELSE catalog_order_seasons.fetched_at END,episode_count=excluded.episode_count,provider_id=excluded.provider_id`,
+			show.Key, order.Source, order.Kind, row.Season, key, row.Title, row.Summary, row.PosterPath, row.AirDate, row.EpisodeCount, row.Ref.ID)
 		if err != nil {
 			return err
 		}
@@ -433,8 +434,8 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 				return err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_episodes(show_key,provider,order_kind,season,episode,episode_key,absolute,air_date) VALUES (?,?,?,?,?,?,?,?)`,
-			show.Key, order.Source, order.Kind, row.Season, row.Episode, key, row.Absolute, row.AirDate)
+		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_episodes(show_key,provider,order_kind,season,episode,episode_key,absolute,air_date,title,summary,still,runtime_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			show.Key, order.Source, order.Kind, row.Season, row.Episode, key, row.Absolute, row.AirDate, row.Title, row.Summary, row.StillPath, row.RuntimeMinutes)
 		if err != nil {
 			return err
 		}
@@ -478,6 +479,14 @@ func orderedSeasonTitle(show *core.Title, order core.EpisodeOrder, row orderSeas
 	date := metadataDate(row.AirDate)
 	t := core.Title{Key: row.key, Type: core.TypeSeason, ShowKey: show.Key, ShowIDs: show.IDs, ShowTitle: show.Title, ParentKey: show.Key,
 		Season: row.Season, Title: row.Title, SeasonTitle: row.Title, Summary: row.Summary, PosterPath: row.PosterPath, Released: date, ChildCount: row.EpisodeCount, LeafCount: row.EpisodeCount, EpisodeOrder: order}
+	id, _ := strconv.ParseInt(row.Ref.ID, 10, 64)
+	switch order.Source {
+	case core.MetadataTMDB:
+		t.IDs.TMDB = id
+	case core.MetadataTVDB:
+		t.IDs.TVDB = id
+	}
+
 	if !date.IsZero() {
 		t.Year = date.Year()
 	}

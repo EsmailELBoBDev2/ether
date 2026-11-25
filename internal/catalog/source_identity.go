@@ -27,6 +27,30 @@ CREATE INDEX catalog_identity_key ON catalog_identity(key,seq);
 `)
 }
 
+func init() {
+	store.Register("catalog", 82, `
+CREATE TABLE catalog_identity_alias (
+ old_key INTEGER PRIMARY KEY,
+ canonical_key INTEGER NOT NULL
+);
+CREATE TABLE catalog_title_detail_source (
+ key INTEGER PRIMARY KEY,
+ provider TEXT NOT NULL,
+ fetched_at INTEGER NOT NULL
+);`)
+}
+
+type sourceIdentityRekey func(context.Context, *sql.Tx, *core.Title, *core.Title, []core.TitleKeyRange) (func(), error)
+
+func (c *Catalog) SetSourceIdentityRekey(rekey func(context.Context, *sql.Tx, *core.Title, *core.Title, []core.TitleKeyRange) (func(), error)) {
+	if rekey == nil {
+		c.sourceIdentityRekey.Store(nil)
+		return
+	}
+	fn := sourceIdentityRekey(rekey)
+	c.sourceIdentityRekey.Store(&fn)
+}
+
 func (c *Catalog) MetadataSources() *core.MetadataSources { return c.metadataSources }
 
 type identityDB interface {
@@ -122,13 +146,14 @@ func (c *Catalog) sourceTitleKey(ctx context.Context, ref core.ProviderRef, ids 
 			canonical = core.MovieKey(ids.TMDB)
 		}
 	}
-	if ref.Source == core.MetadataTMDB && ids.TVDB == 0 && ids.IMDB == "" {
-		return canonical, nil
-	}
 	key, err := sourceIdentity(ctx, c.db, kind, ref.Source, ref.ID)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return key, err
 	}
+	if ref.Source == core.MetadataTMDB && ids.TVDB == 0 && ids.IMDB == "" {
+		return canonical, nil
+	}
+
 	if canonical != 0 {
 		err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key=?`, canonical).Scan(&key)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -162,6 +187,93 @@ func (c *Catalog) sourceTitleKey(ctx context.Context, ref core.ProviderRef, ids 
 	return c.saveSourceIdentity(ctx, kind, ref.Source, ref.ID, key)
 }
 
+// canonicalSourceKey resolves published aliases while retaining the old key
+// in the durable allocation namespace.
+func (c *Catalog) canonicalSourceKey(ctx context.Context, key core.RatingKey) (core.RatingKey, error) {
+	if !key.Allocated() || !key.IsTitleKey() {
+		return key, nil
+	}
+	var canonical core.RatingKey
+	err := c.db.QueryRowContext(ctx, `SELECT canonical_key FROM catalog_identity_alias WHERE old_key=?`, key).Scan(&canonical)
+	if errors.Is(err, sql.ErrNoRows) {
+		return key, nil
+	}
+	return canonical, err
+}
+
+func (c *Catalog) reconcileTitleIdentity(ctx context.Context, t *core.Title) error {
+	oldKey := t.Key
+	if !oldKey.Allocated() || t.IDs.TMDB <= 0 {
+		return nil
+	}
+	candidate := core.MovieKey(t.IDs.TMDB)
+	if t.Type == core.TypeShow {
+		candidate = core.ShowKey(t.IDs.TMDB)
+	}
+	row, err := c.loadByKey(ctx, candidate)
+	if errors.Is(err, core.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rekey := c.sourceIdentityRekey.Load()
+	if rekey == nil {
+		return fmt.Errorf("catalog: source identity rematch service unavailable")
+	}
+	old := *t
+	ranges := []core.TitleKeyRange{{First: int64(oldKey), Last: int64(oldKey), Delta: int64(candidate - oldKey)}}
+	if prior, err := c.loadByKey(ctx, oldKey); err == nil {
+		old = prior.t
+		ranges, err = c.EpisodeMatchRanges(ctx, oldKey, candidate)
+		if err != nil {
+			return err
+		}
+	} else if !errors.Is(err, core.ErrNotFound) {
+		return err
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, key := range []core.RatingKey{min(oldKey, candidate), max(oldKey, candidate)} {
+		if err := store.LockKey(ctx, store.DialectOf(c.db), tx, "title-match:"+key.String()); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO catalog_identity_alias(old_key,canonical_key) VALUES (?,?) ON CONFLICT(old_key) DO NOTHING`, oldKey, candidate)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return tx.QueryRowContext(ctx, `SELECT canonical_key FROM catalog_identity_alias WHERE old_key=?`, oldKey).Scan(&t.Key)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE catalog_identity SET key=? WHERE key=?`, candidate, oldKey); err != nil {
+		return err
+	}
+	after, err := (*rekey)(ctx, tx, &old, &row.t, ranges)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE catalog_titles SET browsable=0 WHERE key=?`, oldKey); err != nil {
+		return err
+	}
+	if err := c.commitOrderWrite(tx); err != nil {
+		return err
+	}
+	t.Key = candidate
+	if after != nil {
+		after()
+	}
+	return nil
+}
+
 // SourceSummary assigns the identity of a hit without fetching or persisting title details.
 func (c *Catalog) SourceSummary(ctx context.Context, hit core.MetadataHit) (core.Title, error) {
 	if hit.Adult {
@@ -193,15 +305,43 @@ func (c *Catalog) MaterializeSourceTitle(ctx context.Context, ref core.ProviderR
 		return nil, err
 	}
 	t.Key = key
+	if err := c.reconcileTitleIdentity(ctx, t); err != nil {
+		return nil, err
+	}
+	key = t.Key
 	if old, err := c.loadByKey(ctx, key); err == nil {
 		t.IDs = mergeSourceIDs(t.IDs, old.t.IDs)
 	} else if !errors.Is(err, core.ErrNotFound) {
 		return nil, err
 	}
-	if err := c.upsert(ctx, *t, upsertOpts{browsable: t.IsReleased(c.now()), detail: true}); err != nil {
+	if err := c.storeSourceDetails(ctx, t, ref.Source, false); err != nil {
 		return nil, err
 	}
+
 	return t, nil
+}
+
+func (c *Catalog) storeSourceDetails(ctx context.Context, t *core.Title, source core.MetadataSourceID, replace bool) error {
+	now := c.now().Unix()
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := upsertOne(ctx, tx, *t, upsertOpts{browsable: t.IsReleased(c.now()), detail: true, replaceMetadata: replace}, now); err != nil {
+		return err
+	}
+	if t.Key.Allocated() && t.IDs.TMDB > 0 {
+		if _, err := putSourceIdentity(ctx, tx, t.Key.Kind(), core.MetadataTMDB, strconv.FormatInt(t.IDs.TMDB, 10), t.Key, now); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO catalog_title_detail_source(key,provider,fetched_at) VALUES (?,?,?)
+ ON CONFLICT(key) DO UPDATE SET provider=excluded.provider,fetched_at=excluded.fetched_at`, t.Key, source, now)
+	if err != nil {
+		return err
+	}
+	return c.commitOrderWrite(tx)
 }
 
 func mergeSourceIDs(ids, more core.IDs) core.IDs {

@@ -581,8 +581,8 @@ func (h *Handler) handleTestTMDB(w http.ResponseWriter, r *http.Request) {
 	key := body.Key
 	// TMDB is a fixed destination: an empty or placeholder key tests the
 	// stored (or bundled) key.
-	if isRedacted(key) || key == "" {
-		key = h.deps.Config.Get().Catalog.TMDBKey
+	if isRedacted(key) || strings.TrimSpace(key) == "" {
+		key = tmdb.ResolveKey(h.deps.Config.Get().Catalog)
 	}
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestTMDB(ctx, key) })
 }

@@ -3346,7 +3346,33 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const tr = trash.handle(method, seg, body, state.config);
     if (tr) return json(tr.body, tr.status);
 
-    const qm = qualityMock.handle(method, seg, body, state.config, (id) => safetyPolicies.get(id));
+    const qm = qualityMock.handle(
+      method,
+      seg,
+      q,
+      body,
+      state.config,
+      mockLibs.map((l) => ({
+        id: Number(l.id),
+        name: String(l.name ?? ""),
+        source: String(l.source ?? "builtin"),
+        mediaType: l.mediaType ? String(l.mediaType) : undefined,
+        pluginId: l.pluginId ? String(l.pluginId) : undefined,
+        pluginName: l.pluginName ? String(l.pluginName) : undefined,
+        sort: Number(l.sort ?? 0),
+        hidden: Boolean(l.hidden),
+      })),
+      (id) => safetyPolicies.get(id),
+      (key) => {
+        const hit = byKey.get(key);
+        if (!hit) return null;
+        const isEpisode = hit.type === "episode" || hit.type === "show";
+        return {
+          kind: isEpisode ? "episode" : "movie",
+          libraryIds: isEpisode ? [2] : [1, 4],
+        };
+      },
+    );
     if (qm) return json(qm.body, qm.status);
 
     const rc = releaseConsole.handle(method, seg, q, body);

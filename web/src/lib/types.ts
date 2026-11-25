@@ -1222,25 +1222,61 @@ export interface QualityDevices {
     | null;
 }
 
-/** One viewer on one app, at home or away (POST /quality/explain). */
+export type QualityDecisionSource = "rule" | "default" | "defaultAway" | "plugin";
+
+export interface QualitySummaryCell {
+  profile: string;
+  source: QualityDecisionSource;
+  profileRuleId?: string;
+  maxHeight: number;
+  maxBitrateKbps: number;
+  stereo: boolean;
+  limitRuleIds: string[];
+  partialRuleIds: string[];
+}
+
+export interface QualitySummaryCellPair {
+  kind: "" | "movie" | "episode";
+  home: QualitySummaryCell;
+  away: QualitySummaryCell;
+}
+
+export interface QualitySummaryException {
+  ruleId: string;
+  profile: string;
+  maxHeight: number;
+  maxBitrateKbps: number;
+  stereo: boolean;
+}
+
+export interface QualitySummaryRow {
+  libraryId: number;
+  library: string;
+  plugin: string;
+  chosenByPlugin: boolean;
+  cells: QualitySummaryCellPair[];
+  exceptions: QualitySummaryException[];
+}
+
+/** Symbolic per-library rule evaluation (GET /quality/summary). */
+export interface QualitySummary {
+  rows: QualitySummaryRow[];
+}
+
+/** One viewer on one device or app, at home or away (POST /quality/explain). */
 export interface QualityQuestion {
   userId: number;
   clientId?: string;
+  libraryId?: number;
   titleKey?: string;
-  /** "movie" or "tv"; sent when no title is picked. */
-  mediaType?: string;
+  /** "movie" or "episode"; sent when no title is picked. */
+  kind?: "movie" | "episode" | "";
   client?: { product: string; platform?: string; device?: string };
   remote: boolean;
 }
 
-type QualityLayerKind =
-  | "profile"
-  | "device"
-  | "rule-height"
-  | "android-lift"
-  | "remote-cap"
-  | "viewer-cap"
-  | "remote-blocked";
+export type QualityLayerKind =
+  "profile" | "rule-limit" | "device" | "android-lift" | "remote-blocked";
 
 /** One layer that took part in a quality answer, in the order playback applies them. */
 export interface QualityLayer {
@@ -1248,35 +1284,39 @@ export interface QualityLayer {
   /** Plain English from the server; the console renders its own translated copy. */
   reason: string;
   profile?: string;
-  source?: "rule" | "remote" | "default" | "first" | "builtin";
+  source?: QualityDecisionSource;
   /** 1-based quality rule number. */
   rule?: number;
-  ruleUserId?: number;
-  /** A rule won over the Away profile. */
-  beatsRemote?: boolean;
+  ruleId?: string;
+  ruleName?: string;
   /** Ceiling this layer sets; absent or 0 = none. */
   maxHeight?: number;
   hdr?: boolean;
   dolbyVision?: boolean;
   bitrateKbps?: number;
+  stereo?: boolean;
   /** An App compatibility edit changed this device. */
   edited?: boolean;
   /** The layer had a setting that did not apply. */
   ignored?: boolean;
-  /** Set the final resolution ceiling, the final bitrate cap, or blocked playback. */
+  /** Set the final resolution ceiling, the final bitrate cap, stereo, or blocked playback. */
   decisive: boolean;
 }
 
 export interface QualityAnswer {
   profile: string;
-  /** "movie" or "tv" when the answer is scoped to one media. */
-  mediaType?: string;
+  /** "movie" or "episode" when the answer is scoped to one kind. */
+  kind?: string;
+  profileSource: QualityDecisionSource;
+  profileRuleId?: string;
+  limitRuleIds: string[];
   /** 0 = no ceiling. */
   maxHeight: number;
   hdr: boolean;
   dolbyVision: boolean;
   /** 0 = no cap. */
   bitrateKbps: number;
+  stereo?: boolean;
   blocked: boolean;
   layers: QualityLayer[];
 }

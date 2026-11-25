@@ -10,7 +10,7 @@ import (
 
 func TestChannelArchiveURL(t *testing.T) {
 	const server = "https://example.invalid"
-	start := time.Date(2026, 11, 23, 14, 5, 6, 0, time.UTC)
+	start := time.Date(2026, 11, 23, 14, 5, 6, 0, time.UTC).In(time.FixedZone("viewer", -5*60*60))
 	const dur = 61 * time.Second
 	const utc, end = "1795442706", "1795442767"
 	tests := []struct {
@@ -18,6 +18,7 @@ func TestChannelArchiveURL(t *testing.T) {
 	}{
 		{name: "xtream", mode: "xtream", live: server + "/panel/live/view%2Fer/test%3F/123.m3u8?token=demo", timezone: "America/Toronto", want: server + "/panel/timeshift/view%2Fer/test%3F/2/2026-11-23:09-05/123.ts"},
 		{name: "xtream UTC fallback", mode: "xtream", live: server + "/live/viewer/test/123.ts", want: server + "/timeshift/viewer/test/2/2026-11-23:14-05/123.ts"},
+		{name: "xtream panel UTC", mode: "xtream", live: server + "/live/viewer/test/123.ts", timezone: "UTC", want: server + "/timeshift/viewer/test/2/2026-11-23:14-05/123.ts"},
 		{name: "xc", mode: "xc", live: server + "/live/viewer/test/123.ts", want: server + "/timeshift/viewer/test/2/2026-11-23:14-05/123.ts"},
 		{name: "xc explicit template", mode: "xc", live: server + "/channel.ts", template: server + "/archive/{utc}", want: server + "/archive/" + utc},
 		{name: "default", mode: "default", template: server + "/{(b)YmdHMS}/${(b)Y-m-d}/{Y}{m}{d}{H}{M}{S}?t={utc},{start},${start}&e={utcend},{end},${end}&n={lutc},${now},{timestamp}&d={duration},${duration},{duration:60}&o={offset}",

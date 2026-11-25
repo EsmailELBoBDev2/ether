@@ -550,3 +550,62 @@ func TestArchiveReExport(t *testing.T) {
 		}
 	}
 }
+
+type archiveHLSFixture struct {
+	*frontendtest.CatchUpLive
+	starts int
+	served string
+}
+
+func (f *archiveHLSFixture) StartCatchUp(ctx context.Context, u *frontend.User, req frontend.CatchUpRequest, caps frontend.ClientCaps, session string) (frontend.CatchUpInfo, error) {
+	f.starts++
+	return f.CatchUpLive.StartCatchUp(ctx, u, req, caps, session)
+}
+
+func (f *archiveHLSFixture) LibraryCatchUpSession(access frontend.SessionAccess, id string) (frontend.CatchUpInfo, bool) {
+	p := f.Item.Programme
+	ok := id == "archive-session" && f.starts == 1 && access.Viewer.ID == 1 && access.Protocol == "xtream" && access.Device.ID != ""
+	return frontend.CatchUpInfo{ID: id, ChannelID: p.ChannelID, Start: p.Start, End: p.End}, ok
+}
+
+func (f *archiveHLSFixture) ServeResource(w http.ResponseWriter, r *http.Request, _ string, file string, _ *frontend.User) {
+	f.served = r.URL.Path
+	_, _ = io.WriteString(w, file)
+}
+
+func TestArchiveHLSRoutesPartsOnTheSameSession(t *testing.T) {
+	host, auth := testHost(t)
+	live := &archiveHLSFixture{CatchUpLive: frontendtest.NewCatchUpLive()}
+	p := live.Item.Programme
+	host.Now = func() time.Time { return p.End.Add(time.Hour) }
+	host.Capabilities = frontendtest.Capabilities{}
+	live.LiveTV = frontendtest.LiveTV{
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{{ID: p.ChannelID, Name: "Archive", Kind: "iptv", ArchiveDays: 2}}, nil
+		},
+	}
+	host.LiveTV = live
+	h := mount(t, host)
+	w := request(h, "/player_api.php?"+authQuery()+"&action=get_live_streams")
+	var streams []struct {
+		ID int `json:"stream_id"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &streams) != nil || len(streams) != 1 {
+		t.Fatal("failed to list archived channel")
+	}
+	archive := fmt.Sprintf("/timeshift/%s/eg1_test/60/%d/%d.m3u8",
+		frontend.XtreamUsername("eg1_test"), p.Start.Unix(), streams[0].ID)
+	w = request(h, archive)
+	part := "?part=0.ts&session=archive-session"
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), part) || strings.Contains(w.Body.String(), "eg1_test") {
+		t.Fatal("playlist did not contain a credential-free relative segment URI")
+	}
+	w = request(h, archive+part)
+	if w.Code != http.StatusOK || live.starts != 1 || live.served != "/0.ts" {
+		t.Fatal("segment did not use the authorized archive session")
+	}
+	auth.revoked = true
+	if w = request(h, archive+part); w.Code != http.StatusUnauthorized {
+		t.Fatalf("segment status after revocation = %d", w.Code)
+	}
+}

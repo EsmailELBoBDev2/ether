@@ -187,3 +187,42 @@ func TestUnchangedGuideReimportWritesNothing(t *testing.T) {
 		t.Fatalf("stored rating: %v %s", err, data)
 	}
 }
+
+func TestGuideRefreshRetainsArchivedProgrammes(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	s := testService(t, Options{Now: func() time.Time { return now }})
+	src := Source{ID: "archive-guide", Name: "Archive guide", Playlist: `#EXTM3U
+#EXTINF:-1 tvg-id="keep" catchup="append" catchup-days="2" catchup-source="?start={utc}", Keep
+https://example.invalid/keep.ts
+#EXTINF:-1 tvg-id="remove" catchup="append" catchup-days="2" catchup-source="?start={utc}", Remove
+https://example.invalid/remove.ts
+#EXTINF:-1 tvg-id="plain", Plain
+https://example.invalid/plain.ts
+`}
+	const empty = `<tv><channel id="keep"/><channel id="remove"/><channel id="plain"/>`
+	programme := func(id string, start, end time.Time, title string) string {
+		return fmt.Sprintf(`<programme channel="%s" start="%s" stop="%s"><title>%s</title></programme>`,
+			id, start.Format("20060102150405 -0700"), end.Format("20060102150405 -0700"), title)
+	}
+	src.Guide = empty + programme("keep", now.Add(-36*time.Hour), now.Add(-35*time.Hour), "Keep") +
+		programme("remove", now.Add(-36*time.Hour), now.Add(-35*time.Hour), "Remove") +
+		programme("plain", now.Add(-12*time.Hour), now.Add(-11*time.Hour), "Plain") + "</tv>"
+	refresh := func(want int) {
+		t.Helper()
+		if _, err := s.ImportSource(t.Context(), src); err != nil {
+			t.Fatalf("guide import failed: %T", err)
+		}
+		var count int
+		err := s.o.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM livetv_programmes WHERE source_id=?`, src.ID).Scan(&count)
+		if err != nil || count != want {
+			t.Fatalf("programme count = %d, want %d (query error: %v)", count, want, err)
+		}
+	}
+	refresh(3)
+	src.Guide = empty + "</tv>"
+	refresh(2)
+	src.Playlist = strings.Replace(src.Playlist, `tvg-id="remove" catchup="append" catchup-days="2" catchup-source="?start={utc}"`, `tvg-id="remove"`, 1)
+	refresh(1)
+	now = now.Add(13*time.Hour + time.Millisecond)
+	refresh(0)
+}

@@ -374,11 +374,21 @@ func ParseXMLTV(r io.Reader) (XMLGuide, error) {
 // candidates are found without buffering programmes or reading twice.
 type guideFilter struct {
 	From, Until time.Time
+	ArchiveFrom map[string]time.Time
 	IDs         map[string]struct{}
 	Resolve     func(channels map[string]Channel, names map[string][]string) map[string]struct{}
 }
 
 func (f guideFilter) timed() bool { return !f.From.IsZero() }
+
+func (f guideFilter) from(channel string) time.Time {
+	if len(f.ArchiveFrom) > 0 {
+		if at, ok := f.ArchiveFrom[strings.ToLower(strings.TrimSpace(channel))]; ok {
+			return at
+		}
+	}
+	return f.From
+}
 
 // parseXMLTV streams an XMLTV document. dropped is true when the filter
 // discarded a channel or programme, so the caller can store the trimmed
@@ -517,7 +527,8 @@ func parseXMLTV(r io.Reader, f guideFilter) (XMLGuide, bool, error) {
 						return g, dropped, err
 					}
 				}
-				if !start.Before(f.Until) || (!end.IsZero() && !end.After(f.From)) || (end.IsZero() && start.Before(f.From.Add(-24*time.Hour))) {
+				from := f.from(channel)
+				if !start.Before(f.Until) || (!end.IsZero() && !end.After(from)) || (end.IsZero() && start.Before(from.Add(-24*time.Hour))) {
 					dropped = true
 					if err := d.Skip(); err != nil {
 						if lim := limitCause(err); lim != nil {
@@ -590,7 +601,7 @@ func parseXMLTV(r io.Reader, f guideFilter) (XMLGuide, bool, error) {
 	if f.timed() {
 		kept := g.Programmes[:0]
 		for _, p := range g.Programmes {
-			if p.Start.Before(f.Until) && p.End.After(f.From) {
+			if p.Start.Before(f.Until) && p.End.After(f.from(p.ChannelID)) {
 				kept = append(kept, p)
 				continue
 			}

@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +27,7 @@ func ArchiveRange(r *http.Request) (string, time.Time, time.Duration, int) {
 		}
 	}
 	id, ext, hasExtension := strings.Cut(file, ".")
-	if hasExtension && ext != "ts" {
+	if hasExtension && ext != "ts" && !(ext == "m3u8" && ArchiveHLS(r)) {
 		return "", time.Time{}, 0, http.StatusNotFound
 	}
 	minutes, err := strconv.Atoi(duration)
@@ -51,6 +53,11 @@ func archiveStart(text string) (time.Time, error) {
 	return time.Time{}, frontend.ErrInvalidCatchUpRange
 }
 
+// ArchiveHLS selects the HLS form of the path-based archive endpoint.
+func ArchiveHLS(r *http.Request) bool {
+	return strings.HasSuffix(r.PathValue("file"), ".m3u8")
+}
+
 // ServeArchive streams an authorized target and renews its admitted app slot.
 func ServeArchive(w http.ResponseWriter, r *http.Request, host frontend.Host, archive frontend.LiveCatchUp, credential string, req frontend.CatchUpRequest, admission frontend.PlanRequest) {
 	ctx := r.Context()
@@ -66,6 +73,12 @@ func ServeArchive(w http.ResponseWriter, r *http.Request, host frontend.Host, ar
 		}
 		defer release()
 		ctx = streamCtx
+	}
+	live := host.LiveTV
+	hls := ArchiveHLS(r)
+	if hls && r.URL.Query().Has("session") {
+		serveArchivePart(w, r.WithContext(ctx), live, req, admission)
+		return
 	}
 	info, err := archive.StartCatchUp(ctx, admission.Viewer, req, admission.Caps, admission.Device.ID)
 	if err != nil {
@@ -85,6 +98,35 @@ func ServeArchive(w http.ResponseWriter, r *http.Request, host frontend.Host, ar
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	defer host.LiveTV.Stop(context.WithoutCancel(ctx), info.ID, admission.Viewer)
+	if hls {
+		frontend.ServeCatchUpPlaylist(w, r.WithContext(ctx), live, info.ID, admission.Viewer, func(name string) string {
+			// Relative to the authenticated path, so credentials need not be
+			// copied into the playlist.
+			return "?" + url.Values{"session": {info.ID}, "part": {name}}.Encode()
+		})
+		return
+	}
+	defer live.Stop(context.WithoutCancel(ctx), info.ID, admission.Viewer)
 	archive.ServeCatchUpTS(w, r.WithContext(ctx), info.ID, admission.Viewer)
+}
+
+func serveArchivePart(w http.ResponseWriter, r *http.Request, live frontend.LiveTV, req frontend.CatchUpRequest, admission frontend.PlanRequest) {
+	id, file := r.URL.Query().Get("session"), r.URL.Query().Get("part")
+	if _, ok := frontend.ParseSegmentName(file); !ok || path.Base(file) != file {
+		http.NotFound(w, r)
+		return
+	}
+	reader, ok := live.(frontend.CatchUpSessionReader)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	info, ok := reader.LibraryCatchUpSession(frontend.SessionAccess{Viewer: admission.Viewer, Device: admission.Device, Protocol: admission.Protocol}, id)
+	if !ok || info.ChannelID != req.ChannelID || !info.Start.Equal(req.Start) || info.End.After(req.Start.Add(req.Duration)) {
+		http.NotFound(w, r)
+		return
+	}
+	part := r.Clone(r.Context())
+	part.URL.Path, part.URL.RawPath = "/"+file, ""
+	live.ServeResource(w, part, id, file, admission.Viewer)
 }

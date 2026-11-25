@@ -3720,24 +3720,28 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.Protocol = "direct"
 		rel.GUID = fmt.Sprintf("plugin:%s:lazy:%s", ref.Plugin, ref.ID)
 	}
-	rel.ID = releaseIDWithTarget(rel)
+	assignKindReleaseID(&rel)
 	if rel.Name == "" {
 		rel.Name = firstNonEmpty(hint.FileHint, defaultTitle, rel.InfoHash, "kind-release")
 	}
 	return rel, nil
 }
 
-func releaseIDWithTarget(rel core.Release) string {
+func assignKindReleaseID(rel *core.Release) {
 	identity := firstNonEmpty(rel.InfoHash, rel.NZBURL, rel.MagnetURL, rel.GUID)
 	if ref := firstNonEmpty(rel.NZBRef, rel.TorrentRef); identity == "" && ref != "" {
 		identity = fmt.Sprintf("%x", sha256.Sum256([]byte(ref)))
 	}
-	id := "kind:" + identity
+	rel.ID = "kind:" + identity
 	if rel.Target != nil {
-		selection, _ := json.Marshal(rel.Target)
-		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
+		target := *rel.Target
+		// Keep the existing file selection hash independent of the pack alias.
+		target.PackID = ""
+		selection, _ := json.Marshal(&target)
+		target.PackID = rel.ID
+		rel.Target = &target
+		rel.ID += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
 	}
-	return id
 }
 
 func kindDefaultCategoryForLevel(decl plugins.MediaKindMeta, level string) int {
@@ -3902,7 +3906,7 @@ func releaseFromSource(src core.PlayableSource, defaultTitle, fallbackMIME strin
 		}
 	}
 	if rel.Target != nil {
-		rel.ID = releaseIDWithTarget(rel)
+		assignKindReleaseID(&rel)
 	}
 	return rel, nil
 }
@@ -4062,7 +4066,7 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 		resolved.FileCount = rel.FileCount
 	}
 	if resolved.InfoHash != "" {
-		resolved.ID = releaseIDWithTarget(resolved)
+		assignKindReleaseID(&resolved)
 	}
 	return resolved, nil
 }
@@ -4072,7 +4076,7 @@ type linkAuthStripper interface {
 }
 
 // stripReleaseAuth removes indexer-owned credentials from rel.NZBURL and
-// recomputes rel.ID so release IDs, logs, vault aliases, and Usenet-check
+// recomputes the release and pack IDs so logs, vault aliases, and Usenet-check
 // caches stay key-less even when a plugin hands back a legacy keyed link.
 func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
 	if r == nil || r.indexer == nil || strings.TrimSpace(rel.NZBURL) == "" {
@@ -4084,7 +4088,7 @@ func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
 	}
 	stripped := s.StripLinkAuth(rel)
 	if stripped.NZBURL != rel.NZBURL {
-		stripped.ID = releaseIDWithTarget(stripped)
+		assignKindReleaseID(&stripped)
 	}
 	return stripped
 }

@@ -312,8 +312,16 @@ func (c *Client) nzbLinkAlias(link string) string {
 	return fmt.Sprintf("link:%x", sha256.Sum256([]byte(u.String())))
 }
 
-func (c *Client) nzbIdentities(r core.Release) []string {
+func nzbReleaseIDs(r core.Release) []string {
 	ids := []string{r.ID}
+	if pack := nzbFlightKey(r); pack != r.ID {
+		ids = append(ids, pack)
+	}
+	return ids
+}
+
+func (c *Client) nzbIdentities(r core.Release) []string {
+	ids := nzbReleaseIDs(r)
 	if alias := c.nzbLinkAlias(r.NZBURL); alias != "" {
 		ids = append(ids, alias)
 	}
@@ -327,12 +335,12 @@ func (c *Client) nzbRefusal(ctx context.Context, r core.Release) error {
 	ids := c.nzbIdentities(r)
 	now := c.now()
 	if c.db != nil {
-		var params [3]string
+		var params [4]string
 		copy(params[:], ids)
 		var until int64
 		err := c.db.QueryRowContext(ctx, `SELECT COALESCE(max(retry_at),0)
-			FROM newznab_nzb_refusals WHERE indexer_id=? AND release_id IN (?,?,?)`,
-			c.indexerID(), params[0], params[1], params[2]).Scan(&until)
+			FROM newznab_nzb_refusals WHERE indexer_id=? AND release_id IN (?,?,?,?)`,
+			c.indexerID(), params[0], params[1], params[2], params[3]).Scan(&until)
 		if err != nil {
 			return err
 		}

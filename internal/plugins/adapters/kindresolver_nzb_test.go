@@ -23,7 +23,7 @@ import (
 func TestPluginNZBConformance(t *testing.T) {
 	ctx := t.Context()
 	var grabs atomic.Int32
-	const descriptor = `<nzb><file subject="Track01.flac"><groups><group>test</group></groups><segments><segment bytes="100" number="1">m1@test</segment></segments></file></nzb>`
+	const descriptor = `<nzb><file subject="Track01.flac"><groups><group>test</group></groups><segments><segment bytes="100" number="1">m1@test</segment></segments></file><file subject="Track02.flac"><groups><group>test</group></groups><segments><segment bytes="100" number="1">m2@test</segment></segments></file></nzb>`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("t") {
 		case "caps":
@@ -62,6 +62,33 @@ func TestPluginNZBConformance(t *testing.T) {
 		t.Fatalf("search must return one opaque reference: count=%d err=%v", len(search), err)
 	}
 	candidate := search[0]
+	t.Run("album listing and targeted playback", func(t *testing.T) {
+		listed, err := r.ResolveSources(ctx, "plugin.one", core.SourceQuery{Kind: "release_files", Candidate: &candidate})
+		if err != nil || len(listed) != 1 || len(listed[0].Files) != 2 || grabs.Load() != 1 {
+			t.Fatalf("listing album: candidates=%d grabs=%d err=%v", len(listed), grabs.Load(), err)
+		}
+		var previousID string
+		for _, file := range listed[0].Files {
+			index := file.Index
+			media, err := r.openReleaseForSource(ctx, core.PlayableSource{
+				Pattern: kindstream.PatternRelease,
+				MIME:    "audio/flac",
+				Release: &core.ReleaseHint{Candidate: &candidate, FileIndex: &index},
+			}, "audio/*", nil)
+			if err != nil {
+				t.Fatalf("open album track %d: %v", index, err)
+			}
+			id := media.ReleaseID()
+			_ = media.Close()
+			if id == "" || id == previousID {
+				t.Fatal("each track must retain its own playback ID")
+			}
+			previousID = id
+		}
+		if n := grabs.Load(); n != 1 {
+			t.Fatalf("listing and playing two album tracks used %d grabs, want 1", n)
+		}
+	})
 	t.Run("deprecated nzbUrl only", func(t *testing.T) {
 		link := candidate.NZBURL
 		if !strings.HasPrefix(link, core.PluginNZBRefPrefix) || strings.Contains(link, server.URL) ||
@@ -74,7 +101,7 @@ func TestPluginNZBConformance(t *testing.T) {
 		other := NewKindResolver(KindResolverDeps{Indexer: restarted, PluginNZBs: restarted, Engine: &keylessCheckEngine{}})
 		defer other.Close()
 		again, err := other.ResolveSources(ctx, "plugin.one", core.SourceQuery{Kind: "indexer_search", Query: "Artist", Category: "music"})
-		if err != nil || len(again) != 1 || again[0].NZBURL != link || grabs.Load() != 0 {
+		if err != nil || len(again) != 1 || again[0].NZBURL != link || grabs.Load() != 1 {
 			t.Fatalf("fresh search after restart must preserve the reference: candidates=%d grabs=%d err=%v", len(again), grabs.Load(), err)
 		}
 
@@ -99,7 +126,7 @@ func TestPluginNZBConformance(t *testing.T) {
 	})
 	request := core.SourceQuery{Kind: "nzb_request", NZBRef: candidate.NZBRef}
 	got, err := r.ResolveSources(ctx, "plugin.one", request)
-	if err != nil || len(got) != 1 || got[0].NZBRef == "" || len(got[0].Files) != 1 || grabs.Load() != 1 {
+	if err != nil || len(got) != 1 || got[0].NZBRef == "" || len(got[0].Files) != 2 || grabs.Load() != 1 {
 		t.Fatalf("first request: response count=%d grabs=%d err=%v", len(got), grabs.Load(), err)
 	}
 	storeRef := got[0].NZBRef

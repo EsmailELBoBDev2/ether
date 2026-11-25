@@ -97,6 +97,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	var key vault.Key
 	var data []byte
 	var storedAlready bool
+	var nativeIdentity bool
 	var err error
 	switch {
 	case ref != "":
@@ -115,11 +116,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	case hint.NZBURL != "":
 		hint, err = m.legacyPluginNZB(hint)
 	case hint.IndexerID != "" && hint.GUID != "":
-		var c *Client
-		c, err = m.releaseClient(hint)
-		if err == nil && (c.Config().UsesBackend() || c.Config().IsZilean()) {
-			err = errPluginNZB
-		}
+		nativeIdentity = true
 		hint.ID = releaseID(hint.IndexerID, hint.GUID, "")
 	default:
 		return nil, "", errPluginNZB
@@ -129,6 +126,13 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 		key, found, err = m.opts.Vault.ByAlias(ctx, hint.IndexerID, hint.ID)
 		if !found {
 			key = ""
+		}
+	}
+	if key == "" && err == nil && nativeIdentity {
+		var client *Client
+		client, err = m.releaseClient(hint)
+		if err == nil && (client.Config().UsesBackend() || client.Config().IsZilean()) {
+			err = errPluginNZB
 		}
 	}
 	if err == nil && key == "" && hint.ID == "" {
@@ -184,7 +188,7 @@ func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
 	var selected core.Release
 	for _, c := range m.Clients() {
 		cfg := c.Config()
-		if !cfg.Enabled || cfg.UsesBackend() || cfg.IsZilean() || !sameAuthOrigin(cfg.URL, u.String()) {
+		if cfg.UsesBackend() || cfg.IsZilean() || !sameAuthOrigin(cfg.URL, u.String()) {
 			continue
 		}
 		if hint.IndexerID != "" && hint.IndexerID != c.indexerID() {

@@ -127,4 +127,17 @@ func TestPluginNZBConformance(t *testing.T) {
 		t.Fatal("vault hit during refusal contacted the indexer")
 	}
 
+	mgr.Reload([]config.Indexer{{ID: "test-indexer", Name: "Test", URL: server.URL}})
+	if _, err := r.ResolveSources(ctx, "plugin.two", core.SourceQuery{Kind: "nzb_request", NZBIdentity: identity}); err != nil {
+		t.Fatalf("vault hit after disabling indexer: %v", err)
+	}
+	opened, err = kindstream.Open(ctx, legacy, kindstream.Deps{OpenRelease: r.openRelease})
+	if err != nil {
+		t.Fatalf("legacy vault hit after disabling indexer: %v", err)
+	}
+	_ = opened.Close()
+	if grabs.Load() != 2 {
+		t.Fatal("stored descriptor contacted a disabled indexer")
+	}
+
 }

@@ -43,7 +43,13 @@ export type LegacyEtherEventName =
   | "collection.rebuilt"
   | "server.health_changed";
 
-export type EtherEventName = LegacyEtherEventName | (string & {});
+export type ViewerWatchEventName =
+  | "viewer.watch.scrobbled"
+  | "viewer.watch.watched"
+  | "viewer.watch.unwatched"
+  | "viewer.watch.progress";
+
+export type EtherEventName = LegacyEtherEventName | ViewerWatchEventName | (string & {});
 
 export type EventFieldType =
   | "string"
@@ -1868,6 +1874,26 @@ export interface ActionResponse {
   refresh?: boolean;
   open?: string;
   proposal?: ActionProposal;
+}
+
+/** Payload shared by the viewer.watch.* event subscriptions. */
+export interface ViewerWatchEventPayload {
+  viewerId?: number;
+  username?: string;
+  titleKey: string;
+  titleName: string;
+  mediaType: string;
+  watched: boolean;
+  state: "watched" | "unwatched" | "progress";
+  source: "playback" | "manual" | "plugin" | "import";
+  surface?: string;
+  itemRef?: string;
+  tmdbId?: number;
+  tvdbId?: number;
+  imdbId?: string;
+  season?: number;
+  episode?: number;
+  positionMs?: number;
 }
 
 export interface EtherEvent<P = Record<string, unknown>> {

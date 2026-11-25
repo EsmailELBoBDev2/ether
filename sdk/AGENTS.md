@@ -130,6 +130,15 @@ be overwritten or deleted by a plugin.
 | frontend_adapter | authenticated protocol routes; optional `frontendAdapters[].icon` (package SVG/PNG) as its Apps page mark | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
+For watch sync, grant `viewers.write_watch_state: "granted_viewers"` and call
+`ether.viewers.setWatchState({viewerId, titleId, watched})` with an owned playable
+`pk:<pluginId>:<kind>:<externalId>` ref or a catalogue movie or episode ID.
+Subscribe to `viewer.watch.scrobbled` or the separate `viewer.watch.watched`
+and `viewer.watch.unwatched` events. Payloads have `state`, `source`, your
+plugin's `itemRef` where available, or catalogue provider IDs and season and
+episode numbers. A plugin's own write does not trigger its subscription.
+See [Viewers & watch state](/plugins/reference/host-viewers).
+
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
 ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
 Per-call byte reads (`cache.read`, `archive.open`, and summed `archive.read` lengths) scale with

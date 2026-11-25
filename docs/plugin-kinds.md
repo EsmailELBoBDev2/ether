@@ -1325,3 +1325,34 @@ Plugins that derive temporary session credentials can store them sealed with
 under a declared non-owner name in `permissions.secrets`, then reference them as
 `{secret:<name>}` in source headers and `http.hash`. See the worked example
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
+
+
+## Sync viewer watch state
+
+Declare `ether.permissions.viewers.write_watch_state: "granted_viewers"` and
+have the owner grant the viewers your plugin may update. Send the selected
+viewer's ID, the item ID and a watched boolean. The host accepts a playable
+item reference owned by your plugin (`pk:<pluginId>:<kind>:<externalId>`) or a
+catalogue movie or episode ID returned by the host catalogue. Provider IDs
+accepted by `catalog.get` also work when they resolve to a movie or episode.
+For shows, send individual episode keys. The host checks viewer access and
+writes through Ether's shared watch state. The SDK write takes a boolean.
+
+```js
+ether.viewers.setWatchState({ viewerId, titleId: itemRef, watched: true });
+```
+
+Subscribe with the `events` capability and `contributes.events.subscribe`.
+Declare `viewers.identity: "granted_viewers"` to receive the viewer ID for
+granted viewers. The `viewer.watch.scrobbled` subscription covers explicit marks
+and playback completion. Alternatively, subscribe to `viewer.watch.watched`
+and `viewer.watch.unwatched` for separate triggers, including current-state
+updates from imports. `viewer.watch.progress` carries resume checkpoints in
+`positionMs`. A plugin's writes are skipped when dispatching back to that plugin.
+
+Events keep `titleKey` and `watched` and add `state` (`watched`, `unwatched`,
+`progress`) and `source` (`playback`, `manual`, `plugin`, `import`). The
+optional `surface` identifies the app or writing plugin. Use `itemRef` for your
+own plugin's items. Catalogue events include available `tmdbId`, `tvdbId` and
+`imdbId` fields. For episodes these are the series IDs, paired with `season`
+and `episode`. Season zero represents specials.

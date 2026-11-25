@@ -41,7 +41,7 @@ type Backends struct {
 	ViewerNames   func(ctx context.Context, ids []int64) (json.RawMessage, error)
 	// SetWatchState applies a watch-state write and returns its inverse
 	// (the previous state) for the journal.
-	SetWatchState func(ctx context.Context, viewerID int64, titleID string, watched bool) (previous bool, err error)
+	SetWatchState func(ctx context.Context, pluginID string, viewerID int64, titleID string, watched bool) (previous bool, err error)
 	// CollectionsUpsert creates or updates a collection and returns the
 	// previous document (empty when new) for the journal.
 	CollectionsUpsert func(ctx context.Context, doc json.RawMessage) (previous json.RawMessage, err error)

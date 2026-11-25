@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -205,37 +205,13 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 				return json.Marshal(map[string]any{"titles": out})
 			},
 			CatalogGet: func(ctx context.Context, id string) (json.RawMessage, error) {
-				var title *core.Title
-				var err error
-				switch {
-				case strings.HasPrefix(id, "imdb:"):
-					title, err = a.catalog.ByExternalID(ctx, "imdb", strings.TrimPrefix(id, "imdb:"))
-				case strings.HasPrefix(id, "tmdb:"):
-					var n int64
-					n, err = strconv.ParseInt(strings.TrimPrefix(id, "tmdb:"), 10, 64)
-					if err == nil && n > 0 {
-						title, err = a.catalog.Get(ctx, core.MovieKey(n))
-						if errors.Is(err, core.ErrNotFound) {
-							title, err = a.catalog.Get(ctx, core.ShowKey(n))
-						}
-					} else if err == nil {
-						err = errors.New("invalid TMDB id")
-					}
-				default:
-					var key core.RatingKey
-					key, err = core.ParseRatingKey(id)
-					if err == nil {
-						title, err = a.catalog.Get(ctx, key)
-					}
-				}
+				title, err := a.pluginCatalogTitle(ctx, id)
 				if err != nil {
 					return nil, err
 				}
-				if title == nil {
-					return nil, core.ErrNotFound
-				}
 				return json.Marshal(map[string]any{"id": title.Key.String(), "title": title.Title, "type": title.Type, "year": title.Year, "tmdbId": title.IDs.TMDB, "imdbId": title.IDs.IMDB, "genres": title.Genres, "posterPath": title.PosterPath, "summary": title.Summary})
 			},
+			SetWatchState: a.setPluginWatchState,
 			ViewerHistory: func(ctx context.Context, viewerID int64, limit, offset int) (json.RawMessage, error) {
 				if viewerID <= 0 || limit <= 0 || limit > 200 || offset < 0 || offset > 2000 {
 					return nil, errors.New("invalid history page")
@@ -637,7 +613,14 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		stopState = a.state.Subscribe(func(ev state.Event) {
 			var name string
 			switch ev.Kind {
-			case state.EventCompleted, state.EventScrobble:
+			case state.EventScrobble:
+				// Plugin marks already have watch events with origin-aware
+				// delivery. They are not legacy playback completions.
+				if strings.HasPrefix(string(ev.Origin.Surface), events.PluginPrefix) {
+					return
+				}
+				name = plugins.EventPlaybackCompleted
+			case state.EventCompleted:
 				name = plugins.EventPlaybackCompleted
 			case state.EventProgress:
 				name = plugins.NormalizePlayback("update", ev.State)

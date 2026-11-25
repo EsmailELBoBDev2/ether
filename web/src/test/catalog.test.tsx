@@ -170,8 +170,10 @@ describe("Catalog workspace", () => {
       if (path === "/catalog/browse") return { items: [title], total: 1 };
     });
     await screen.findByRole("button", { name: "Inspect Seven" });
-    fireEvent.click(screen.getByRole("button", { name: "Select loaded titles" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Add to Watchlist" })[0]!);
+    const selectLoaded = await screen.findByRole("button", { name: "Select loaded titles" });
+    const toolbar = selectLoaded.parentElement!;
+    fireEvent.click(selectLoaded);
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Add to Watchlist" }));
     await screen.findByRole("button", { name: "Remove from Watchlist" });
     expect(calls(fake, "PUT", `/discovery/users/1/catalog/${title.key}`)).toHaveLength(1);
   });

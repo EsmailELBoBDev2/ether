@@ -107,6 +107,9 @@ type HLSRequest struct {
 	// stability reserve), so the backlog primes the reserve instead of the
 	// demuxer's default three segments from the live edge.
 	LiveFromBacklog bool
+	// LiveEndOnEOF publishes the final live segments and ends the playlist
+	// on a clean encoder exit, letting an owned relay splice the next input.
+	LiveEndOnEOF bool `json:"-"`
 	// CopyTimestamps preserves source timestamps for HTTP Matroska output.
 	CopyTimestamps bool
 	// InputHeaders are optional HTTP headers ffmpeg must send when reading

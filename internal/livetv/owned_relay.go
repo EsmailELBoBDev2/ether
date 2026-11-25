@@ -228,7 +228,7 @@ func (p *relayProducer) start(ctx context.Context, info core.MediaInfo, dec core
 	if err != nil {
 		return err
 	}
-	return p.adopt(id, hls, cancel, info, dec, cut)
+	return p.adopt(id, hls, cancel, info, dec, cut, true)
 }
 
 // launch starts a relay session on the session's current input without
@@ -251,8 +251,9 @@ func (p *relayProducer) launch(ctx context.Context, info core.MediaInfo, dec cor
 	p.mu.Unlock()
 	// An HLS input on a reserve-trimmed grant starts at the reserve depth:
 	// the relay races through that backlog and the timeline holds it.
-	backlog := info.Container == "hls" && !newFormat && p.s.stabilityReserve(ss.info.Channel) > 0
-	if info.Container == "hls" {
+	hlsInput := info.Container == "hls"
+	backlog := hlsInput && !newFormat && p.s.stabilityReserve(ss.info.Channel) > 0
+	if hlsInput {
 		// FFmpeg cannot follow a provider's program change inside one run:
 		// a new encoder's PIDs become new streams the run never mapped, so
 		// it stops cutting (Pluto: "New video stream with index 4", then
@@ -262,13 +263,17 @@ func (p *relayProducer) launch(ctx context.Context, info core.MediaInfo, dec cor
 			g.splitPrograms.Store(true)
 		}
 	}
-	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog, Info: info, Decision: dec, SegmentDuration: cut, MultiviewGroup: ss.caps.MultiviewGroup})
+	hls, cancel, err := p.s.startOwnedHLS(ctx, ss, core.HLSRequest{
+		SessionID: id, InputURL: input, LiveInput: true, LiveFromBacklog: backlog,
+		LiveEndOnEOF: hlsInput, Info: info, Decision: dec, SegmentDuration: cut, MultiviewGroup: ss.caps.MultiviewGroup,
+	})
 	return id, hls, cancel, err
 }
 
 // adopt makes a started relay session the producer. Its first segment is
-// spliced in with a discontinuity unless it is the first producer.
-func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.CancelFunc, info core.MediaInfo, dec core.Decision, cut time.Duration) error {
+// spliced in with a discontinuity unless it is the first producer. A
+// planned splice keeps old media already queued on the timeline.
+func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.CancelFunc, info core.MediaInfo, dec core.Decision, cut time.Duration, discard bool) error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -289,7 +294,9 @@ func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.Can
 		p.ingest.origin = origin
 	} else {
 		p.ingest.rebase(origin)
-		p.tl.splice(true)
+		if discard {
+			p.tl.splice(true)
+		}
 	}
 	p.mu.Unlock()
 	if old != nil {
@@ -534,7 +541,21 @@ func (p *relayProducer) run(ctx context.Context) {
 				p.wantSteady(ctx, "stall")
 			}
 		}
-		h, healthy := p.s.inputHealth(p.sess.Load())
+		ss := p.sess.Load()
+		var input *hlsInput
+		if g := p.s.sessionGrant(ss); g != nil && g.splitPrograms.Load() {
+			input = g.hlsIfAny()
+		}
+		if err == errOriginEnded && input != nil {
+			p.dropHedge()
+			if input.advanceProgram() {
+				failures = 0
+				p.restartProgram(ctx)
+				continue
+			}
+		}
+		programEnding := input != nil && input.programEnding()
+		h, healthy := p.s.inputHealth(ss)
 		p.inputStalled.Store(healthy && (h.Stalled || h.Failed || h.Kind == "ts" && h.DataAge > time.Second))
 		if healthy && h.FormatGeneration != 0 {
 			switch {
@@ -603,19 +624,19 @@ func (p *relayProducer) run(ctx context.Context) {
 		} else if !started {
 			starveLimit = max(starveLimit, relayStartWait)
 		}
-		starving := copyMode && !cold && started && !escalated && starvedFor > lastDur+500*time.Millisecond
+		starving := !programEnding && copyMode && !cold && started && !escalated && starvedFor > lastDur+500*time.Millisecond
 		p.starving.Store(starving)
 		p.producing.Store(!cold && !flowing.IsZero() && !starving)
 		hedgeDelay := max(cut, 2*time.Second) + time.Second + skewSlack
 		if h := p.hedgeState(); h != nil {
 			switch {
-			case !cold || escalated:
+			case programEnding || !cold || escalated:
 				p.dropHedge()
 			case hedgeCut(ctx, h):
 				p.adoptHedge(h)
 				continue
 			}
-		} else if copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > hedgeDelay {
+		} else if !programEnding && copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > hedgeDelay {
 			p.startHedge(ctx)
 		}
 		ended := errors.Is(err, errOriginEnded) || failures >= 15
@@ -627,6 +648,13 @@ func (p *relayProducer) run(ctx context.Context) {
 			}
 		case ended:
 			p.recover(ctx, "relay ended")
+		case programEnding:
+			// Give the old producer time to reload the ended playlist
+			// and flush its last segment. A stuck drain needs a fresh
+			// grant because this one still serves the ended playlist.
+			if since > limit+2*td {
+				p.recover(ctx, "program drain stalled")
+			}
 		case healthy && h.Failed && !cold:
 			// The tap gave up on this source: fail over now, not after
 			// the deadline (a healthy backup should show within ~3 s).
@@ -760,7 +788,7 @@ func (p *relayProducer) adoptHedge(h *relayHedge) {
 	p.mu.Unlock()
 	p.noteRelayEscalation("keyframe", 0)
 	p.log.Warn("owned relay switching producer to re-encode", "reason", "the re-encode cut first")
-	if err := p.adopt(h.id, h.hls, h.cancel, info, h.dec, p.s.latencyPolicy().SegmentDuration()); err != nil {
+	if err := p.adopt(h.id, h.hls, h.cancel, info, h.dec, p.s.latencyPolicy().SegmentDuration(), true); err != nil {
 		h.close()
 	}
 }
@@ -799,7 +827,7 @@ func (p *relayProducer) reopen(ctx context.Context, f mediaFormat) {
 		if match {
 			// Started when the program changed: its first segment is
 			// already cut, ready at the splice.
-			if err := p.adopt(overlap.id, overlap.hls, overlap.cancel, info, overlap.dec, cut); err != nil {
+			if err := p.adopt(overlap.id, overlap.hls, overlap.cancel, info, overlap.dec, cut, true); err != nil {
 				overlap.close()
 			}
 			return
@@ -1097,6 +1125,23 @@ func (p *relayProducer) escalate(ctx context.Context, why string) {
 	if err := p.start(sctx, info, next, p.s.latencyPolicy().SegmentDuration(), false); err != nil {
 		p.log.Warn("owned relay re-encode producer failed", Diagnose("relay_escalate", err).LogAttrs()...)
 		p.recover(ctx, "re-encode start failed")
+	}
+}
+
+func (p *relayProducer) restartProgram(ctx context.Context) {
+	p.mu.Lock()
+	info, dec, cut := p.info, p.dec, p.cut
+	p.mu.Unlock()
+	p.log.Info("owned relay restarting live encoder", "reason", "program change")
+	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	id, hls, stop, err := p.launch(sctx, info, dec, cut, false)
+	if err == nil {
+		err = p.adopt(id, hls, stop, info, dec, cut, false)
+	}
+	if err != nil && ctx.Err() == nil {
+		p.log.Warn("owned relay program restart failed", Diagnose("relay_program_restart", err).LogAttrs()...)
+		p.recover(ctx, "program restart failed")
 	}
 }
 

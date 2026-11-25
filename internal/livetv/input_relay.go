@@ -676,6 +676,14 @@ func (s *Service) serveInputRelay(w http.ResponseWriter, r *http.Request) {
 	if !root && s.servePrefetched(w, r, g, raw) {
 		return
 	}
+	if g.splitPrograms.Load() {
+		if h := g.hlsIfAny(); h != nil {
+			if ended, ok := h.endedManifest(raw); ok {
+				s.writeRelayManifest(w, g, ended.base, ended.body, true)
+				return
+			}
+		}
+	}
 	// Separate video/audio playlists of a demuxed HLS master align their
 	// starting windows on open before ffmpeg begins demuxing.
 	if !root && !g.finite && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
@@ -817,6 +825,11 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		h := g.hlsState()
 		b, events = h.mediaFor(raw, b, base, true)
 		h.deliver(events)
+		if g.splitPrograms.Load() {
+			if ended, ok := h.endedManifest(raw); ok {
+				b, base = ended.body, ended.base
+			}
+		}
 	}
 	s.writeRelayManifest(w, g, base, b, hls)
 }

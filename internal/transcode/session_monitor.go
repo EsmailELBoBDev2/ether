@@ -955,8 +955,12 @@ func (s *Session) continueAfterExitLocked(r *run, reason string) error {
 // unpublished segment. Delivered media replenishes the consecutive-failure
 // allowance; a separate sliding ceiling still bounds rapid reconnects.
 func (s *Session) recoverLiveLocked(r *run, err error) {
-	now := time.Now()
 	next := r.next()
+	if err == nil && r.produced > 0 && s.liveEndOnEOF {
+		s.endSeg = next - 1
+		return
+	}
+	now := time.Now()
 	reason := "EOF"
 	if err != nil {
 		reason = "encoder exit: " + err.Error()
@@ -970,11 +974,8 @@ func (s *Session) recoverLiveLocked(r *run, err error) {
 	var delay time.Duration
 	var allowed bool
 	if err == nil && r.produced > 0 && !idle {
-		// A live input that ended cleanly after delivering media reached a
-		// program boundary (the input relay ends each reader's playlist at
-		// the provider's next discontinuity): the next run continues on
-		// the new program at once, and it is not a failure.
-		reason = "program change"
+		// A live output whose caller leaves recovery to this session can
+		// reconnect immediately after a clean exit that produced media.
 		allowed = s.liveRestarts.take(now, 28, 30*time.Second)
 	} else {
 		delay, allowed = s.liveRecoveryDelay(now, r)

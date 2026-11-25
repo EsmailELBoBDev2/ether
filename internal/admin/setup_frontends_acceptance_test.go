@@ -51,7 +51,7 @@ const (
 
 func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 	if tmdb.BundledKey != "" {
-		t.Fatal("catalog gate is not observable: this binary has a bundled TMDB key")
+		t.Fatal("no-key setup is not observable in a build with a bundled TMDB key")
 	}
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -191,20 +191,11 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 		t.Fatal("provider gate did not advance on its own")
 	}
 	putJSON(t, h, http.MethodPut, "/ether/api/config/indexers", `[{"id":"i1","name":"Idx","url":"https://indexer.example.invalid","apiKey":"`+fixtureIndexer+`","enabled":true}]`, signedIn, http.StatusOK)
-	afterIndexers := mustStatus(t, h, signedIn)
-	if !step(t, afterIndexers, "indexers").Complete || afterIndexers.SetupComplete || step(t, afterIndexers, "catalog").Complete {
-		t.Fatal("indexer gate did not advance on its own")
+	ready := mustStatus(t, h, signedIn)
+	if catalog := step(t, ready, "catalog"); catalog.Complete || catalog.Required || !ready.RequiredComplete || ready.SetupComplete {
+		t.Fatal("setup should be ready to finish with no metadata source")
 	}
-	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbKey":"`+fixtureTMDB+`"}`, signedIn, http.StatusOK)
-	afterCatalog := mustStatus(t, h, signedIn)
-	if !step(t, afterCatalog, "catalog").Complete || !step(t, afterCatalog, "cache").Complete || afterCatalog.SetupComplete || !afterCatalog.RequiredComplete {
-		t.Fatal("satisfied provider, indexer, catalog, and cache checks still did not leave setup unfinished")
-	}
-	ready := afterCatalog
-	if !ready.RequiredComplete || ready.SetupComplete {
-		t.Fatalf("satisfied gates: required=%v setupComplete=%v", ready.RequiredComplete, ready.SetupComplete)
-	}
-	for _, id := range []string{"plex", "sources", "indexers", "cache", "catalog"} {
+	for _, id := range []string{"plex", "sources", "indexers", "cache"} {
 		if !step(t, ready, id).Complete {
 			t.Fatalf("step %s still incomplete after it was stored", id)
 		}
@@ -214,6 +205,11 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 		t.Fatal("finished setup without a stored completion or stored a Plex claim")
 	}
 	putJSON(t, h, http.MethodGet, "/ether/api/config", "", "", http.StatusUnauthorized)
+
+	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbKey":"`+fixtureTMDB+`"}`, signedIn, http.StatusOK)
+	if !step(t, mustStatus(t, h, signedIn), "catalog").Complete {
+		t.Fatal("configured catalogue source did not complete the optional setup step")
+	}
 
 	reopened := mustStatusBody(t, putJSON(t, h, http.MethodPost, "/ether/api/setup/reopen", `{}`, signedIn, http.StatusOK))
 	if !reopened.SetupComplete || !cfg.Get().SetupComplete {
@@ -242,7 +238,7 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 
 func TestSetupFrontendsAcceptanceEnabledPlexRequiresClaim(t *testing.T) {
 	if tmdb.BundledKey != "" {
-		t.Fatal("catalog gate is not observable: this binary has a bundled TMDB key")
+		t.Fatal("no-key setup is not observable in a build with a bundled TMDB key")
 	}
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -1195,14 +1195,10 @@ func appendUnique(xs []string, more ...string) []string {
 }
 
 // startupNextStep returns a single actionable startup message for the next
-// missing configuration step, or "" when setup, TMDB, and a playback source
-// are all ready.
+// missing configuration step, or "" when setup and a playback source are ready.
 func startupNextStep(cfg config.Config, uiURL string) string {
 	if !cfg.SetupComplete {
 		return fmt.Sprintf("Open %s to finish setup", uiURL)
-	}
-	if tmdb.ResolveKey(cfg.Catalog) == "" {
-		return "Add a TMDB API key in Integrations"
 	}
 	if !hasPlaybackSource(cfg) {
 		return "Add a debrid or Usenet account in Sources"

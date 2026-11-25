@@ -79,8 +79,7 @@ func SetupStatus(cfg config.Config) (steps []SetupStep, complete bool) {
 		{ID: "indexers", Title: "Indexers", Complete: enabledIndexers > 0, Required: true,
 			Detail: fmt.Sprintf("%d enabled", enabledIndexers)},
 		{ID: "cache", Title: "Cache folder and disk budget", Complete: cacheDone, Required: true, Detail: cfg.Cache.Dir},
-		// Without TMDB there is no catalogue; a build may bundle a key.
-		{ID: "catalog", Title: "TMDB API key", Complete: tmdb.ResolveKey(cfg.Catalog) != "", Required: true},
+		{ID: "catalog", Title: "Metadata sources", Complete: tmdb.ResolveKey(cfg.Catalog) != "" || strings.TrimSpace(cfg.Catalog.TVDBKey) != ""},
 		{ID: "optional", Title: "Optional integrations", Complete: true, Required: false,
 			Detail: "Trakt, OpenSubtitles, LLM, cam policy"},
 	}
@@ -123,8 +122,6 @@ func plainSetupGap(id string) string {
 		return "Add a debrid account, a Usenet provider, or a torrent addon before finishing, or finish now and add it later."
 	case "indexers":
 		return "Add an indexer before finishing, or finish now and add it later."
-	case "catalog":
-		return "Add a catalogue key before finishing, or finish now and add it later."
 	case "cache":
 		return "Choose a cache folder before finishing."
 	default:

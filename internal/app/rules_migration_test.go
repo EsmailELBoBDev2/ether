@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/libraries"
@@ -41,6 +43,9 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, "UPDATE auth_users SET title = ? WHERE id = ?", "Bob's display name", cappedUID); err != nil {
+		t.Fatal(err)
+	}
 	safetySvc, err := safety.New(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +61,12 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	// Built-in Movies library (ID 1) assigned "4K", plus a filter library
 	// ("Anime Shows") with "Anime" and a mixed collection ("Favorites") with "4K".
 	if err := libSvc.SetQualityProfile(ctx, core.LibraryMovies, "4K"); err != nil {
+		t.Fatal(err)
+	}
+	if err := libSvc.SetRules(ctx, core.LibraryMovies, []core.LibraryExclusion{{
+		Action: "hide", MediaType: "movie", Match: "all", Scope: core.VisibilityLibrary,
+		Rules: []core.CollectionRule{{Field: "title", Op: "is", Value: json.RawMessage(`"` + core.MovieKey(701).String() + `"`)}},
+	}}, "show"); err != nil {
 		t.Fatal(err)
 	}
 	animeLib, err := libSvc.Create(ctx, "Anime Shows", core.TypeShow, libraryRules(core.Filter{Type: core.TypeShow, Genres: []string{"Animation"}}), "hide", core.Presentations{})
@@ -146,8 +157,36 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	if q.MigratedRules != 1 || !q.RulesMigrationNote || q.RulesMigration != nil {
 		t.Fatalf("migration markers = migrated:%d note:%v pending:%v", q.MigratedRules, q.RulesMigrationNote, q.RulesMigration)
 	}
+	if q.MigrationNote == nil || q.MigrationNote.At.IsZero() || q.MigrationNote.Dismissed {
+		t.Fatalf("expected an undismissed, timestamped migration note, got %+v", q.MigrationNote)
+	}
 	if gotCfg.Transcode.RemoteMaxBitrateKbps != 0 {
 		t.Fatalf("RemoteMaxBitrateKbps not zeroed: %d", gotCfg.Transcode.RemoteMaxBitrateKbps)
+	}
+	wantOrigins := []config.QualityRuleOrigin{
+		{Kind: "awayLimit"},
+		{Kind: "viewerLimit", Name: "Bob's display name"},
+		{Kind: "rule", Name: "Infuse / jellyfin"},
+		{Kind: "rule", Name: "Plex for Android (Mobile)"},
+		{Kind: "rule", Name: "Apple TV"},
+		{Kind: "awayProfile"},
+		{Kind: "library", Name: "Anime Shows"},
+		{Kind: "library", Name: "Favorites"},
+		{Kind: "library", Name: "Favorites"},
+		{Kind: "library", Name: "Movies"},
+		{Kind: "library", Name: "Movies"}, // hidden built-in fallback
+		{Kind: "tvDefault"},
+	}
+	if len(q.Rules) != len(wantOrigins) {
+		t.Fatalf("got %d rules, want %d: %+v", len(q.Rules), len(wantOrigins), q.Rules)
+	}
+	for i, rule := range q.Rules {
+		if rule.From == nil || *rule.From != wantOrigins[i] {
+			t.Fatalf("rule %d provenance = %+v, want %+v", i+1, rule.From, wantOrigins[i])
+		}
+	}
+	if r := q.Rules[10]; r.Kind != config.KindMovie || len(r.Libraries) != 0 {
+		t.Fatalf("expected hidden built-in fallback, got %+v", r)
 	}
 	// Every rule must have a unique non-empty ID.
 	seenIDs := map[string]bool{}
@@ -211,7 +250,7 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 		}
 	}
 
-	// 1. Plain movie at home on Web -> built-in Movies library profile "4K".
+	// 1. The library-scoped hide still leaves the plain movie on the built-in Movies profile.
 	check("plain movie home web", web, nil, &plainMovie, "4K", 0, false)
 	// 2. Plain episode at home on Web -> TV default "4K (TV)".
 	check("plain episode home web", web, nil, &plainEp, "4K (TV)", 0, false)
@@ -237,7 +276,11 @@ func TestRulesMigrationKeepsEveryChoice(t *testing.T) {
 	if err := a.migrateQualityRules(ctx); err != nil {
 		t.Fatalf("second migrateQualityRules: %v", err)
 	}
-	afterRules := a.cfg.Get().Quality.Rules
+	afterQuality := a.cfg.Get().Quality
+	if afterQuality.MigrationNote == nil || *afterQuality.MigrationNote != *q.MigrationNote {
+		t.Fatalf("migration note changed on second run: %+v", afterQuality.MigrationNote)
+	}
+	afterRules := afterQuality.Rules
 	if len(afterRules) != len(beforeRules) {
 		t.Fatalf("idempotency broken: before=%d after=%d", len(beforeRules), len(afterRules))
 	}
@@ -254,8 +297,8 @@ func TestRulesMigrationFreshInstallSetsNoBanner(t *testing.T) {
 	if q.MigratedRules != 1 {
 		t.Fatalf("fresh install MigratedRules = %d, want 1", q.MigratedRules)
 	}
-	if q.RulesMigrationNote {
-		t.Fatalf("fresh install should not set RulesMigrationNote")
+	if q.RulesMigrationNote || q.MigrationNote != nil {
+		t.Fatalf("fresh install should not set a migration note")
 	}
 	if len(q.Rules) != 0 {
 		t.Fatalf("fresh install should have 0 rules, got %+v", q.Rules)

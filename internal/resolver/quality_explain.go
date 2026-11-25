@@ -102,22 +102,21 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 	if media == core.MediaAny {
 		media = normalizeMedia(in.Kind)
 	}
+	pluginChosen := strings.TrimSpace(in.ChosenByPlugin) != ""
 	target := playTarget{
-		media:  media,
-		titled: in.Title != nil || in.InLibrary != nil,
-		inLib:  in.InLibrary,
+		media:              media,
+		titled:             in.Title != nil || in.InLibrary != nil,
+		inLib:              in.InLibrary,
+		skipFallbackLimits: pluginChosen,
 	}
 	d := decideProfile(in.Quality, declared, in.User, target)
 	choice, eff := d.effect.choice, d.effect
 
-	limitRuleIDs := make([]string, 0, len(eff.limitRules))
-	for _, idx := range eff.limitRules {
-		if idx >= 0 && idx < len(in.Quality.Rules) {
-			limitRuleIDs = append(limitRuleIDs, in.Quality.Rules[idx].ID)
-		}
+	_, profileRuleID, limitRuleIDs := d.ruleDecision(in.Quality)
+	if limitRuleIDs == nil {
+		limitRuleIDs = []string{}
 	}
 
-	pluginChosen := strings.TrimSpace(in.ChosenByPlugin) != ""
 	out := QualityAnswer{
 		Profile:       d.profile.Name,
 		ProfileSource: choice.source,
@@ -136,8 +135,8 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 		out.MaxHeight = d.caps.MaxHeight
 		out.HDR = d.caps.HDR10
 		out.DolbyVision = d.caps.DolbyVision
-	} else if choice.source == ProfileFromRule && choice.rule >= 0 && choice.rule < len(in.Quality.Rules) {
-		out.ProfileRuleID = in.Quality.Rules[choice.rule].ID
+	} else {
+		out.ProfileRuleID = profileRuleID
 	}
 
 	configured := configuredMaxHeight(d.profile)
@@ -218,6 +217,20 @@ func ExplainQuality(in QualityQuestion) QualityAnswer {
 		out.Layers = append(out.Layers, layer)
 	}
 
+	if eff.fallbackLimitSource != "" {
+		source, limits := fallbackLimits(in.Quality, choice)
+		layer := QualityLayer{
+			Kind:        LayerRuleLimit,
+			Source:      source,
+			RuleID:      string(source),
+			MaxHeight:   limits.MaxHeight,
+			BitrateKbps: limits.MaxBitrateKbps,
+			Stereo:      limits.StereoAudio,
+		}
+		layer.Reason = ruleLimitReason(layer)
+		out.Layers = append(out.Layers, layer)
+	}
+
 	// Mark the decisive layer for the resolution ceiling.
 	if out.MaxHeight > 0 {
 		switch {
@@ -280,7 +293,7 @@ func profileLayerReason(l QualityLayer) string {
 	case ProfileFromDefaultAway:
 		return fmt.Sprintf("Away from home uses the %s default profile.", l.Profile)
 	case ProfileFromDefault:
-		return fmt.Sprintf("No rule matches, so the %s profile applies.", l.Profile)
+		return fmt.Sprintf("No rule picks a profile, so the %s profile applies.", l.Profile)
 	case ProfileFromPlugin:
 		return "Releases are chosen by the library's plugin."
 	}
@@ -298,7 +311,14 @@ func ruleLimitReason(l QualityLayer) string {
 	if l.Stereo {
 		parts = append(parts, "stereo audio")
 	}
-	return fmt.Sprintf("Rule %d limits playback to %s.", l.Rule, strings.Join(parts, ", "))
+	name := fmt.Sprintf("Rule %d", l.Rule)
+	switch l.Source {
+	case ProfileFromDefault:
+		name = "Default"
+	case ProfileFromDefaultAway:
+		name = "Default away"
+	}
+	return fmt.Sprintf("%s limits playback to %s.", name, strings.Join(parts, ", "))
 }
 
 func deviceLayerReason(l QualityLayer) string {

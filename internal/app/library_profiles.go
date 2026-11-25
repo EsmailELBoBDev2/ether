@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/lru"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -326,16 +327,24 @@ func (l *libraryProfiles) PolicyKey(ctx context.Context) string {
 			}
 		}
 	}
+	rules := slices.Clone(q.Rules)
+	for i := range rules {
+		rules[i].From = nil
+	}
 	b, _ := json.Marshal(struct {
-		Default     string `json:"default"`
-		DefaultAway string `json:"defaultAway,omitempty"`
-		Rules       any    `json:"rules"`
-		Libraries   any    `json:"libraries,omitempty"`
+		Default           string               `json:"default"`
+		DefaultAway       string               `json:"defaultAway,omitempty"`
+		DefaultLimits     config.QualityLimits `json:"defaultLimits,omitzero"`
+		DefaultAwayLimits config.QualityLimits `json:"defaultAwayLimits,omitzero"`
+		Rules             []config.QualityRule `json:"rules"`
+		Libraries         any                  `json:"libraries,omitempty"`
 	}{
-		Default:     q.Default,
-		DefaultAway: q.DefaultAway,
-		Rules:       q.Rules,
-		Libraries:   refLibs,
+		Default:           q.Default,
+		DefaultAway:       q.DefaultAway,
+		DefaultLimits:     q.DefaultLimits,
+		DefaultAwayLimits: q.DefaultAwayLimits,
+		Rules:             rules,
+		Libraries:         refLibs,
 	})
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }

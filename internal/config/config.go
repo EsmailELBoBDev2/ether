@@ -575,8 +575,10 @@ type Quality struct {
 	Rules []QualityRule `json:"rules"`
 	// Default is the profile when no rule names one; DefaultAway is the
 	// one for viewers away from home, "" = same as Default.
-	Default     string `json:"default"`
-	DefaultAway string `json:"defaultAway,omitempty"`
+	Default           string        `json:"default"`
+	DefaultAway       string        `json:"defaultAway,omitempty"`
+	DefaultLimits     QualityLimits `json:"defaultLimits,omitzero"`
+	DefaultAwayLimits QualityLimits `json:"defaultAwayLimits,omitzero"`
 	// Databases are the owner's custom Profilarr-format databases.
 	Databases []ProfileDatabase `json:"databases,omitempty"`
 	Sync      QualitySync       `json:"sync,omitempty"`
@@ -588,8 +590,32 @@ type Quality struct {
 	// alone (it needs the libraries and viewers); the app applies it once
 	// at startup and clears it. Delete with the migration.
 	RulesMigration *RulesMigration `json:"rulesMigration,omitempty"`
-	// RulesMigrationNote is shown once on the Rules page after the move.
+	// MigrationNote records the one-time upgrade notice and its dismissal.
+	MigrationNote *QualityMigrationNote `json:"migrationNote,omitempty"`
+	// RulesMigrationNote supports consoles from earlier release candidates.
 	RulesMigrationNote bool `json:"rulesMigrationNote,omitempty"`
+}
+
+// QualityLimits can only lower playback capabilities. Zero values leave
+// the corresponding capability alone.
+type QualityLimits struct {
+	MaxHeight      int  `json:"maxHeight,omitempty"`
+	MaxBitrateKbps int  `json:"maxBitrateKbps,omitempty"`
+	StereoAudio    bool `json:"stereoAudio,omitempty"`
+}
+
+func (l QualityLimits) HasLimits() bool {
+	return l.MaxHeight > 0 || l.MaxBitrateKbps > 0 || l.StereoAudio
+}
+
+type QualityMigrationNote struct {
+	At        time.Time `json:"at"`
+	Dismissed bool      `json:"dismissed"`
+}
+
+type QualityRuleOrigin struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
 }
 
 // QualitySync keeps imported profiles and their format definitions aligned
@@ -613,8 +639,9 @@ const (
 // QualityRule is one row of the ordered rule list. Every condition is
 // optional: an empty list means any, and Except inverts its list.
 type QualityRule struct {
-	ID   string `json:"id"`             // stable; assigned by the server
-	Name string `json:"name,omitempty"` // optional; otherwise the console shows a summary
+	ID   string             `json:"id"`             // stable; assigned by the server
+	Name string             `json:"name,omitempty"` // optional; otherwise the console shows a summary
+	From *QualityRuleOrigin `json:"from,omitempty"`
 
 	Libraries       []int64       `json:"libraries,omitempty"`
 	ExceptLibraries bool          `json:"exceptLibraries,omitempty"`
@@ -633,7 +660,11 @@ type QualityRule struct {
 
 // HasLimits reports whether the rule sets any limit.
 func (r QualityRule) HasLimits() bool {
-	return r.MaxHeight > 0 || r.MaxBitrateKbps > 0 || r.StereoAudio
+	return r.Limits().HasLimits()
+}
+
+func (r QualityRule) Limits() QualityLimits {
+	return QualityLimits{MaxHeight: r.MaxHeight, MaxBitrateKbps: r.MaxBitrateKbps, StereoAudio: r.StereoAudio}
 }
 
 // DeviceMatch is one device condition; exactly one of Group, Type, App,

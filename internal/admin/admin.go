@@ -294,6 +294,9 @@ type Deps struct {
 	AddonCatalogImports AddonCatalogImporter
 	// CatalogHelper backs /api/catalog/*.
 	CatalogHelper CatalogHelper
+	// PluginTitleDetail resolves plugin-library rating keys for
+	// GET /api/catalog/title/{key}. Optional; nil answers plugin keys 404.
+	PluginTitleDetail func(context.Context, core.RatingKey) (*core.Title, error)
 	// TitleSchedules backs the catalogue drawer's episode and release tabs;
 	// nil disables them.
 	TitleSchedules      TitleSchedules

@@ -16,6 +16,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/markers"
@@ -247,6 +249,7 @@ func (a *App) buildAdmin() http.Handler {
 			return a.pluginsRT.catalogImports
 		}(),
 		CatalogHelper:      a.collections,
+		PluginTitleDetail:  a.pluginTitleDetail,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,
 		WaitingReleaseKeys: func(ctx context.Context) []core.RatingKey {
@@ -738,4 +741,128 @@ func (a *App) viewerDirectory(ctx context.Context) ([]admin.ViewerRecord, error)
 		out = append(out, admin.ViewerRecord{User: u.User, Active: u.Active, Origin: u.Origin, Home: u.Home, OwnerEnabled: u.OwnerEnabled, PlexShared: u.PlexShared, HasPlex: u.HasPlex})
 	}
 	return out, nil
+}
+
+// pluginTitleDetail resolves a plugin-library rating key for the console's
+// GET /ether/api/catalog/title/{key} route without triggering live container
+// expansion. Child items without their own artwork (such as music tracks under
+// an album) inherit HTTP(S) poster/backdrop URLs from their nearest ancestor.
+func (a *App) pluginTitleDetail(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if a == nil || !key.IsPluginKey() || a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+		return nil, core.ErrNotFound
+	}
+	lookupCtx := core.WithNoContainerExpand(ctx)
+	piv, err := a.pluginsRT.kindCatalog.Item(lookupCtx, key)
+	if err != nil {
+		return nil, err
+	}
+	title := piv.Title
+	poster, backdrop := pluginItemArtwork(piv)
+	if poster == "" || backdrop == "" {
+		seen := map[core.RatingKey]bool{key: true}
+		queue := make([]core.RatingKey, 0, len(title.MediaParents)+2)
+		enqueueAncestors := func(t core.Title) {
+			if t.ParentKey != 0 {
+				queue = append(queue, t.ParentKey)
+			}
+			for _, p := range t.MediaParents {
+				if p.Key != 0 {
+					queue = append(queue, p.Key)
+				}
+			}
+			if t.ShowKey != 0 {
+				queue = append(queue, t.ShowKey)
+			}
+		}
+		enqueueAncestors(title)
+		const maxAncestorLookups = 8
+		for i := 0; i < len(queue) && len(seen) <= maxAncestorLookups; i++ {
+			ancKey := queue[i]
+			if !ancKey.IsPluginKey() || seen[ancKey] {
+				continue
+			}
+			seen[ancKey] = true
+			anc, aerr := a.pluginsRT.kindCatalog.Item(lookupCtx, ancKey)
+			if aerr != nil {
+				continue
+			}
+			ap, ab := pluginItemArtwork(anc)
+			if poster == "" && ap != "" {
+				poster = ap
+			}
+			if backdrop == "" && ab != "" {
+				backdrop = ab
+			}
+			if poster != "" && backdrop != "" {
+				break
+			}
+			enqueueAncestors(anc.Title)
+		}
+	}
+	if title.Type == core.TypeEpisode && pluginHTTPURL(title.StillPath) == "" {
+		title.StillPath = ""
+	}
+	if pluginHTTPURL(title.PosterPath) == "" && poster != "" {
+		title.PosterPath = poster
+	}
+	if pluginHTTPURL(title.BackdropPath) == "" && backdrop != "" {
+		title.BackdropPath = backdrop
+	}
+	return &title, nil
+}
+
+func pluginHTTPURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return ""
+}
+
+func pluginItemArtwork(piv experience.PluginItemView) (poster, backdrop string) {
+	t := piv.Title
+	if t.Type == core.TypeEpisode {
+		poster = pluginHTTPURL(t.StillPath)
+	}
+	if poster == "" {
+		poster = pluginHTTPURL(t.PosterPath)
+	}
+	backdrop = pluginHTTPURL(t.BackdropPath)
+	if poster != "" && backdrop != "" {
+		return poster, backdrop
+	}
+	var thumb, fallback string
+	for _, img := range piv.Images {
+		u := pluginHTTPURL(img.Path)
+		if u == "" {
+			continue
+		}
+		switch img.Kind {
+		case frontend.ImagePoster:
+			if poster == "" {
+				poster = u
+			}
+		case frontend.ImageThumb:
+			if thumb == "" {
+				thumb = u
+			}
+		case frontend.ImageBackdrop:
+			if backdrop == "" {
+				backdrop = u
+			}
+		case frontend.ImageLogo, frontend.ImageBanner:
+		default:
+			if fallback == "" {
+				fallback = u
+			}
+		}
+	}
+	if poster == "" {
+		if thumb != "" {
+			poster = thumb
+		} else if fallback != "" {
+			poster = fallback
+		}
+	}
+	return poster, backdrop
 }

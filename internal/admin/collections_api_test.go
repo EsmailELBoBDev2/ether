@@ -350,3 +350,111 @@ func TestCollectionsListSkipsUnencodableCollection(t *testing.T) {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestCatalogTitlePluginKeys(t *testing.T) {
+	store := newStore(t, func(c *config.Config) { seededConfig(c); c.SetupComplete = true })
+	trackKey := core.PluginKey(92613)
+	noArtMovieKey := core.PluginKey(92614)
+	badArtKey := core.PluginKey(92615)
+	pluginTitles := map[core.RatingKey]*core.Title{
+		trackKey: {
+			Key:          trackKey,
+			Type:         core.TypeEpisode,
+			Title:        "Speak to Me",
+			ShowTitle:    "Pink Floyd",
+			PosterPath:   "https://art.example/dsotm.jpg",
+			BackdropPath: "https://art.example/pf-bg.jpg",
+		},
+		noArtMovieKey: {
+			Key:   noArtMovieKey,
+			Type:  core.TypeMovie,
+			Title: "Untitled Plugin Film",
+			Year:  2024,
+		},
+		badArtKey: {
+			Key:          badArtKey,
+			Type:         core.TypeEpisode,
+			Title:        "Relative Art Track",
+			PosterPath:   "/not-a-tmdb-path.jpg",
+			BackdropPath: "blob:local-only",
+		},
+	}
+	h := admin.NewHandler(admin.Deps{
+		Config:        store,
+		IsOwnerToken:  storedOwner(store),
+		Collections:   newFakeStudio(),
+		CatalogHelper: fakeHelper{},
+		PluginTitleDetail: func(_ context.Context, key core.RatingKey) (*core.Title, error) {
+			if title, ok := pluginTitles[key]; ok {
+				return title, nil
+			}
+			return nil, core.ErrNotFound
+		},
+		Images: &fakeImages{},
+	})
+
+	// Plugin key with HTTP(S) art resolves 200 with direct URLs.
+	rec := serve(h, authed(req(http.MethodGet, "/ether/api/catalog/title/"+trackKey.String(), "")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plugin track title: %d %s", rec.Code, rec.Body)
+	}
+	var card struct {
+		Key                    string `json:"key"`
+		Title                  string `json:"title"`
+		Poster                 string `json:"poster"`
+		Backdrop               string `json:"backdrop"`
+		HomeReleaseAgeAdmitted bool   `json:"homeReleaseAgeAdmitted"`
+	}
+	decode(t, rec, &card)
+	if card.Key != trackKey.String() || card.Title != "Speak to Me" || card.Poster != "https://art.example/dsotm.jpg" || card.Backdrop != "https://art.example/pf-bg.jpg" || card.HomeReleaseAgeAdmitted {
+		t.Fatalf("unexpected plugin card: %+v", card)
+	}
+
+	// Plugin movie without art must NOT emit a guaranteed-404 /ether/api/image/generated URL.
+	rec = serve(h, authed(req(http.MethodGet, "/ether/api/catalog/title/"+noArtMovieKey.String(), "")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plugin movie without art: %d %s", rec.Code, rec.Body)
+	}
+	card = struct {
+		Key                    string `json:"key"`
+		Title                  string `json:"title"`
+		Poster                 string `json:"poster"`
+		Backdrop               string `json:"backdrop"`
+		HomeReleaseAgeAdmitted bool   `json:"homeReleaseAgeAdmitted"`
+	}{}
+	decode(t, rec, &card)
+	if card.Poster != "" || card.Backdrop != "" {
+		t.Fatalf("plugin movie without art must leave poster/backdrop empty, got %+v", card)
+	}
+	if got := admin.GeneratedPosterURL(pluginTitles[noArtMovieKey], 342); got != "" {
+		t.Fatalf("GeneratedPosterURL(plugin movie) = %q, want empty", got)
+	}
+
+	// Plugin item with non-HTTP art must NOT be routed through the TMDB /ether/api/image proxy.
+	rec = serve(h, authed(req(http.MethodGet, "/ether/api/catalog/title/"+badArtKey.String(), "")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plugin bad art: %d %s", rec.Code, rec.Body)
+	}
+	card = struct {
+		Key                    string `json:"key"`
+		Title                  string `json:"title"`
+		Poster                 string `json:"poster"`
+		Backdrop               string `json:"backdrop"`
+		HomeReleaseAgeAdmitted bool   `json:"homeReleaseAgeAdmitted"`
+	}{}
+	decode(t, rec, &card)
+	if card.Poster != "" || card.Backdrop != "" {
+		t.Fatalf("non-http plugin art must be ignored, got %+v", card)
+	}
+
+	// Unknown plugin key returns 404.
+	if rec := serve(h, authed(req(http.MethodGet, "/ether/api/catalog/title/"+core.PluginKey(999999).String(), ""))); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing plugin title: %d %s", rec.Code, rec.Body)
+	}
+
+	// Without PluginTitleDetail wired, plugin keys cleanly return 404.
+	hNoPlugin, _, _ := studioHandler(t)
+	if rec := serve(hNoPlugin, authed(req(http.MethodGet, "/ether/api/catalog/title/"+trackKey.String(), ""))); rec.Code != http.StatusNotFound {
+		t.Fatalf("unwired plugin title: %d %s", rec.Code, rec.Body)
+	}
+}

@@ -53,6 +53,7 @@ type channelSnapshot struct {
 	mu         sync.Mutex
 	generation int64
 	list       []Channel // sorted by number; never mutated once published
+	archived   []Channel
 	bySource   map[string][]int
 	byID       map[string]int
 }
@@ -95,7 +96,11 @@ func (s *Service) channelSnapshot(ctx context.Context) ([]Channel, *channelSnaps
 		c.generation, c.list = gen, loaded
 		c.byID = make(map[string]int, len(loaded))
 		c.bySource = map[string][]int{}
+		c.archived = nil
 		for i, ch := range loaded {
+			if ch.ArchiveDays() > 0 && ch.Kind == "iptv" {
+				c.archived = append(c.archived, ch)
+			}
 			c.byID[ch.ID] = i
 			c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
 		}

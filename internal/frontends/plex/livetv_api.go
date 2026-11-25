@@ -197,6 +197,7 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	get(liveProviderPath+"/watchnow/tonight", s.handleLiveGuide)
 	get(liveProviderPath+"/watchnow/categories/{category}", s.handleLiveGuide)
 	get(liveProviderPath+"/sections/{section}/all", s.handleLiveGuide)
+	r.Get("/library/catchup/art/{key}/{kind}", s.catchUpArt)
 	get("/livetv/guide.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.svc().liveTV.ServeXMLTV(w, r, FromContext(r.Context()).User)
 	})
@@ -969,6 +970,9 @@ func (s *Server) handleLiveSession(w http.ResponseWriter, r *http.Request) {
 // handleLiveTVPlayback hooks the universal decision/start endpoints before the
 // catalogue parser. Plex passes the tune response's /livetv/sessions key here.
 func (s *Server) handleLiveTVPlayback(w http.ResponseWriter, r *http.Request) bool {
+	if s.handleCatchUpPlayback(w, r) {
+		return true
+	}
 	if s.refuseCapability(w, r) {
 		return true
 	}

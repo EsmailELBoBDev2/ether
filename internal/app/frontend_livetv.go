@@ -769,3 +769,88 @@ func (s surfaceLiveTV) LiveTimeshiftMinutes(ctx context.Context, id string) int 
 	}
 	return s.app.livetv.LiveTimeshiftMinutes(ctx, id)
 }
+
+func (s surfaceLiveTV) catchUpLibrary(ctx context.Context, v *frontend.Viewer) (frontend.CatchUpLibrary, *core.User, error) {
+	h, ok := s.host().(frontend.CatchUpLibrary)
+	if !ok {
+		return nil, nil, nil
+	}
+	viewer, err := s.viewer(ctx, v)
+	return h, viewer, err
+}
+
+func (s surfaceLiveTV) CatchUpLibraryVisible(ctx context.Context, v *frontend.Viewer) (bool, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil || h == nil {
+		return false, err
+	}
+	return h.CatchUpLibraryVisible(s.withApp(ctx), viewer)
+}
+
+func (s surfaceLiveTV) CatchUpItems(ctx context.Context, v *frontend.Viewer, q frontend.CatchUpQuery) (frontend.CatchUpPage, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil || h == nil {
+		return frontend.CatchUpPage{}, err
+	}
+	page, err := h.CatchUpItems(s.withApp(ctx), viewer, q)
+	for j := range page.Items {
+		s.catchUpArtwork(viewer, &page.Items[j])
+	}
+	return page, err
+}
+
+func (s surfaceLiveTV) CatchUpItem(ctx context.Context, v *frontend.Viewer, id string) (frontend.CatchUpItem, error) {
+	h, viewer, err := s.catchUpLibrary(ctx, v)
+	if err != nil {
+		return frontend.CatchUpItem{}, err
+	}
+	if h == nil {
+		return frontend.CatchUpItem{}, core.ErrNotFound
+	}
+	item, err := h.CatchUpItem(s.withApp(ctx), viewer, id)
+	if err == nil {
+		s.catchUpArtwork(viewer, &item)
+	}
+	return item, err
+}
+
+func (s surfaceLiveTV) catchUpArtwork(viewer *core.Viewer, item *frontend.CatchUpItem) {
+	p := &item.Programme
+	if s.programmeArtwork != nil {
+		item.Artwork = s.programmeArtwork(viewer, livetv.Programme{
+			ID: p.ID, ChannelID: p.ChannelID, Start: p.Start, End: p.End,
+			Item: livetv.Item{Thumb: p.Item.Thumb, Art: p.Item.Art},
+		})
+	}
+	p.Item.Thumb, p.Item.Art = "", ""
+}
+
+func (s surfaceLiveTV) CatchUpArtwork(ctx context.Context, v *frontend.Viewer, id, kind string) ([]byte, string, error) {
+	if s.artwork == nil {
+		return nil, "", core.ErrNotFound
+	}
+	item, err := s.CatchUpItem(ctx, v, id)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, image := range item.Artwork {
+		if image.Kind == kind {
+			return s.artwork.Read(s.withApp(ctx), frontend.ArtworkRequest{
+				Viewer: v, Channel: item.Programme.ChannelID, Programme: item.Programme.ID,
+			}, image, frontend.ArtworkTransform{})
+		}
+	}
+	return nil, "", core.ErrNotFound
+}
+
+func (s surfaceLiveTV) FindCatchUp(ctx context.Context, v *frontend.Viewer, req frontend.CatchUpRequest, caps frontend.ClientCaps, clientSession string) (frontend.CatchUpInfo, bool) {
+	h, ok := s.host().(frontend.CatchUpSessionFinder)
+	if !ok {
+		return frontend.CatchUpInfo{}, false
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.CatchUpInfo{}, false
+	}
+	return h.FindCatchUp(s.withApp(ctx), viewer, req, liveTVClientCaps(caps), clientSession)
+}

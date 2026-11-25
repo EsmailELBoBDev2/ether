@@ -54,6 +54,9 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
+	if s.createCatchUpQueue(w, r) {
+		return
+	}
 	var start frontend.RatingKey
 	if q.Has("key") {
 		start = keyFromPath(q.Get("key"))
@@ -491,6 +494,10 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 }
 
 func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQueue, playIntent bool) {
+	if frontend.IsCatchUpID(pq.LiveSession) {
+		s.writeCatchUpQueue(w, r, pq)
+		return
+	}
 	if pq.LiveSession != "" {
 		s.writeLivePlayQueue(w, r, pq)
 		return

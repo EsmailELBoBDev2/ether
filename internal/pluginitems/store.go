@@ -3587,6 +3587,17 @@ func (s *Service) GetResolution(ctx context.Context, ref core.ItemRef) (core.Pla
 // GetPartResolution looks up a non-expired cached resolution for ref and
 // optional partIdx (spec §4.4, #576).
 func (s *Service) GetPartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) (core.PlayableSource, bool, error) {
+	src, ok, _, err := s.partResolution(ctx, ref, partIdx, false)
+	return src, ok, err
+}
+
+// GetPartResolutionForOpen allows the opener to inspect expired successful
+// resolutions. The opener must prove that such a source is still reusable.
+func (s *Service) GetPartResolutionForOpen(ctx context.Context, ref core.ItemRef, partIdx *int) (src core.PlayableSource, found, expired bool, err error) {
+	return s.partResolution(ctx, ref, partIdx, true)
+}
+
+func (s *Service) partResolution(ctx context.Context, ref core.ItemRef, partIdx *int, allowExpired bool) (core.PlayableSource, bool, bool, error) {
 	nowUnix := s.now().Unix()
 	var (
 		pattern    string
@@ -3599,24 +3610,28 @@ func (s *Service) GetPartResolution(ctx context.Context, ref core.ItemRef, partI
 		resolutionStorageKey(ref, partIdx)).Scan(&pattern, &sourceJSON, &negative, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return core.PlayableSource{}, false, nil
+			return core.PlayableSource{}, false, false, nil
 		}
-		return core.PlayableSource{}, false, err
+		return core.PlayableSource{}, false, false, err
 	}
-	if expiresAt <= nowUnix {
-		return core.PlayableSource{}, false, nil
+	expired := expiresAt <= nowUnix
+	if expired && (!allowExpired || negative != 0) {
+		return core.PlayableSource{}, false, false, nil
 	}
 	if negative != 0 {
-		return core.PlayableSource{}, true, core.ErrNotAvailable
+		return core.PlayableSource{}, true, false, core.ErrNotAvailable
 	}
 	if pattern == "" || sourceJSON == "" || sourceJSON == "{}" {
-		return core.PlayableSource{}, false, nil
+		return core.PlayableSource{}, false, false, nil
 	}
 	var src core.PlayableSource
 	if err := json.Unmarshal([]byte(sourceJSON), &src); err != nil {
-		return core.PlayableSource{}, false, err
+		if expired {
+			return core.PlayableSource{}, false, false, nil
+		}
+		return core.PlayableSource{}, false, false, err
 	}
-	return src, true, nil
+	return src, true, expired, nil
 }
 
 // InvalidateResolution deletes cached whole-item and per-part resolutions for

@@ -44,6 +44,14 @@ func isPluginNZB(ctx context.Context) bool {
 	return ctx.Value(pluginNZBContextKey{}) != nil
 }
 
+type vaultedPluginNZBContextKey struct{}
+
+// WithVaultedPluginNZB restricts a previously opened plugin source to the vault.
+// An expired resolution can reuse stored bytes but cannot trigger another grab.
+func WithVaultedPluginNZB(ctx context.Context) context.Context {
+	return context.WithValue(ctx, vaultedPluginNZBContextKey{}, true)
+}
+
 type pluginNZBReference struct {
 	Key       vault.Key
 	ID        string
@@ -58,29 +66,68 @@ type pluginNZBReference struct {
 
 const pluginRefVersion = "r1:"
 
+type pluginRefDescriptor struct {
+	purpose string
+	release pluginNZBReference
+}
+
 func (m *Manager) savePluginRef(ctx context.Context, purpose string, release pluginNZBReference) string {
-	if m.opts.PluginReferences == nil || (release.Key == "" && (release.IndexerID == "" || release.ID == "")) {
-		return ""
+	return m.savePluginRefs(ctx, []pluginRefDescriptor{{purpose, release}}, false)[0]
+}
+
+// Issue descriptors together so a plugin search does not commit one
+// transaction per result. Ref IDs remain stable as feed metadata changes.
+func (m *Manager) savePluginRefs(ctx context.Context, descriptors []pluginRefDescriptor, refresh bool) []string {
+	refs := make([]string, len(descriptors))
+	if m.opts.PluginReferences == nil {
+		return refs
 	}
-	// Hash the release identity, independent of mutable result metadata and
-	// download links. Only an issued reference can resolve to a descriptor.
-	ref := fmt.Sprintf("%s%x", pluginRefVersion, sha256.Sum256([]byte(
-		purpose+"\x00"+string(release.Key)+"\x00"+release.IndexerID+"\x00"+release.ID)))
-	data, err := json.Marshal(release)
-	if err != nil {
-		return ""
+	const batchSize = 200
+	for start := 0; start < len(descriptors); start += batchSize {
+		end := min(start+batchSize, len(descriptors))
+		args := make([]any, 0, 2*(end-start))
+		seen := make(map[string]bool, end-start)
+		for i := start; i < end; i++ {
+			d := descriptors[i]
+			if d.release.Key == "" && (d.release.IndexerID == "" || d.release.ID == "") {
+				continue
+			}
+			data, err := json.Marshal(d.release)
+			if err != nil {
+				continue
+			}
+			ref := fmt.Sprintf("%s%x", pluginRefVersion, sha256.Sum256([]byte(
+				d.purpose+"\x00"+string(d.release.Key)+"\x00"+d.release.IndexerID+"\x00"+d.release.ID)))
+			if !seen[ref] {
+				sealed, err := m.opts.PluginReferences.Seal(d.purpose+"/"+ref, data)
+				if err != nil {
+					continue
+				}
+				if m.db == nil {
+					if refresh {
+						m.pluginRefs.Store(ref, sealed)
+					} else {
+						m.pluginRefs.LoadOrStore(ref, sealed)
+					}
+				} else {
+					args = append(args, ref, sealed)
+				}
+				seen[ref] = true
+			}
+			refs[i] = ref
+		}
+		if len(args) != 0 {
+			values := strings.TrimSuffix(strings.Repeat("(?,?),", len(args)/2), ",")
+			conflict := " ON CONFLICT(ref) DO NOTHING"
+			if refresh {
+				conflict = " ON CONFLICT(ref) DO UPDATE SET descriptor=excluded.descriptor"
+			}
+			if _, err := m.db.ExecContext(ctx, "INSERT INTO newznab_plugin_refs(ref,descriptor) VALUES "+values+conflict, args...); err != nil {
+				clear(refs[start:end])
+			}
+		}
 	}
-	sealed, err := m.opts.PluginReferences.Seal(purpose+"/"+ref, data)
-	if err != nil {
-		return ""
-	}
-	if m.db == nil {
-		m.pluginRefs.Store(ref, sealed)
-	} else if _, err := m.db.ExecContext(ctx, `INSERT INTO newznab_plugin_refs(ref,descriptor)
-		VALUES (?,?) ON CONFLICT(ref) DO UPDATE SET descriptor=excluded.descriptor`, ref, sealed); err != nil {
-		return ""
-	}
-	return ref
+	return refs
 }
 
 func (m *Manager) openPluginRef(ctx context.Context, purpose, ref string) (pluginNZBReference, error) {
@@ -111,24 +158,58 @@ func (m *Manager) openPluginRef(ctx context.Context, purpose, ref string) (plugi
 	return release, nil
 }
 
-// PluginNZBReference issues a portable, authenticated reference from a real
-// search result. Credential-bearing links stay in the server-side descriptor.
-func (m *Manager) PluginNZBReference(ctx context.Context, r core.Release) string {
-	if (r.Protocol != "" && r.Protocol != core.ProtocolUsenet) || r.InfoHash != "" || r.MagnetURL != "" {
-		return ""
+// PluginReleaseReferences issues a durable reference for each search result
+// that needs a descriptor. The two result slices are aligned with releases.
+func (m *Manager) PluginReleaseReferences(ctx context.Context, releases []core.Release) (nzbRefs, torrentRefs []string) {
+	descriptors := make([]pluginRefDescriptor, len(releases))
+	for i, r := range releases {
+		switch {
+		case r.Protocol == core.ProtocolTorrent:
+			if r.NZBURL != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.NZBURL)), "magnet:") {
+				descriptors[i] = m.pluginRefDescriptor(r, pluginTorrentSeal)
+			}
+		case r.Protocol == core.ProtocolUsenet && r.InfoHash == "" && r.MagnetURL == "":
+			if key := vault.KeyOf(r); key != "" {
+				descriptors[i] = pluginRefDescriptor{pluginNZBSeal, pluginNZBReference{Key: key}}
+			} else if r.NZBURL != "" || r.GUID != "" {
+				descriptors[i] = m.pluginRefDescriptor(r, pluginNZBSeal)
+			}
+		}
 	}
-	key := vault.KeyOf(r)
-	if key == "" && (r.IndexerID == "" || (r.NZBURL == "" && r.GUID == "")) {
-		return ""
+	nzbRefs = m.savePluginRefs(ctx, descriptors, true)
+	torrentRefs = make([]string, len(releases))
+	for i := range descriptors {
+		if descriptors[i].purpose == pluginTorrentSeal {
+			torrentRefs[i], nzbRefs[i] = nzbRefs[i], ""
+		}
 	}
-	if key != "" {
-		return m.savePluginRef(ctx, pluginNZBSeal, pluginNZBReference{Key: key})
-	}
-	return m.savePluginRef(ctx, pluginNZBSeal, pluginNZBReference{
+	return nzbRefs, torrentRefs
+}
+
+func (m *Manager) pluginRefDescriptor(r core.Release, purpose string) pluginRefDescriptor {
+	return pluginRefDescriptor{purpose, pluginNZBReference{
 		ID: r.ID, GUID: r.GUID, IndexerID: r.IndexerID,
 		Link: m.StripLinkAuth(r).NZBURL, Name: r.Name, Size: r.Size,
 		Category: r.Category, ContentID: r.ContentID,
-	})
+	}}
+}
+
+// PluginLegacyReferences converts old download links without a search or grab.
+// The same strict origin and download-route validation applies to direct opens.
+func (m *Manager) PluginLegacyReferences(ctx context.Context, releases []core.Release) []string {
+	descriptors := make([]pluginRefDescriptor, len(releases))
+	for i, r := range releases {
+		legacy, err := m.legacyPluginDownload(r)
+		if err != nil {
+			continue
+		}
+		purpose := pluginNZBSeal
+		if r.Protocol == core.ProtocolTorrent {
+			purpose = pluginTorrentSeal
+		}
+		descriptors[i] = m.pluginRefDescriptor(legacy, purpose)
+	}
+	return m.savePluginRefs(ctx, descriptors, false)
 }
 
 // RequestPluginNZB resolves a search reference, a native indexer/GUID
@@ -144,6 +225,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 		}
 	}
 	ref = strings.TrimPrefix(ref, core.PluginNZBRefPrefix)
+	vaultedOnly := ctx.Value(vaultedPluginNZBContextKey{}) != nil
 	var key vault.Key
 	var data []byte
 	var storedAlready bool
@@ -160,7 +242,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 		hint = core.Release{ID: stored.ID, GUID: stored.GUID, IndexerID: stored.IndexerID,
 			NZBURL: stored.Link, Name: stored.Name, Size: stored.Size, Category: stored.Category, ContentID: stored.ContentID}
 	case hint.NZBURL != "":
-		hint, err = m.legacyPluginNZB(hint)
+		hint, err = m.legacyPluginDownload(hint)
 	case hint.IndexerID != "" && hint.GUID != "":
 		nativeIdentity = true
 		hint.ID = releaseID(hint.IndexerID, hint.GUID, "")
@@ -168,12 +250,31 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 		return nil, "", errPluginNZB
 	}
 	if key == "" && err == nil && hint.IndexerID != "" && hint.ID != "" {
-		var found bool
-		key, found, err = m.opts.Vault.ByAlias(ctx, hint.IndexerID, hint.ID)
-		if !found {
-			key = ""
+		key, _, err = m.opts.Vault.ByAlias(ctx, hint.IndexerID, hint.ID)
+		if key == "" && err == nil && hint.NZBURL != "" {
+			// Feed GUIDs can differ from the download ID; look up the
+			// keyless link alias even if the original indexer is disabled.
+			for _, c := range m.Clients() {
+				if c.indexerID() == hint.IndexerID {
+					if alias := c.nzbLinkAlias(hint.NZBURL); alias != "" {
+						key, _, err = m.opts.Vault.ByAlias(ctx, hint.IndexerID, alias)
+					}
+					break
+				}
+			}
 		}
 	}
+	if key == "" && err == nil && vaultedOnly {
+		// Older grabs did not record the link alias. Use the same unique
+		// name and size identity used by the ordinary plugin vault path.
+		if names, ok := m.opts.Vault.(vault.NZBIdentityLookup); ok && hint.Name != "" && hint.Size > 0 {
+			key, _, err = names.ByNZBName(ctx, hint.Name, hint.Size)
+		}
+		if key == "" && err == nil {
+			return nil, "", errPluginNZB
+		}
+	}
+
 	if key == "" && err == nil && nativeIdentity {
 		var client *Client
 		client, err = m.releaseClient(hint)
@@ -203,6 +304,9 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 		}
 		return nil, "", errPluginNZB
 	}
+	if vaultedOnly {
+		return data, "", nil
+	}
 	if key == "" {
 		doc, parseErr := nzb.Parse(data)
 		if parseErr != nil {
@@ -224,7 +328,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	return data, storeRef, nil
 }
 
-func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
+func (m *Manager) legacyPluginDownload(hint core.Release) (core.Release, error) {
 	raw := strings.TrimPrefix(strings.TrimSpace(hint.NZBURL), "nzb:")
 	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.Fragment != "" || u.Host == "" {
@@ -247,6 +351,8 @@ func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
 		basePath := strings.TrimRight(base.Path, "/")
 		root := strings.TrimSuffix(strings.TrimSuffix(basePath, "/api/newznab"), "/api")
 		var guid string
+		download := *u
+		download.RawPath = ""
 		downloadParams := url.Values{}
 		switch {
 		case (u.Path == endpointPathFor(basePath, false) || u.Path == endpointPathFor(basePath, true)) && strings.EqualFold(q.Get("t"), "get"):
@@ -267,10 +373,27 @@ func (m *Manager) legacyPluginNZB(hint core.Release) (core.Release, error) {
 				}
 			}
 		case path.Dir(u.Path) == root+"/getnzb", path.Dir(u.Path) == root+"/nzb", path.Dir(u.Path) == root+"/download":
-			guid = strings.TrimSuffix(path.Base(u.Path), ".nzb")
+			filename := path.Base(u.Path)
+			token := linkSecretPrefix + "apikey" + linkSecretSuffix
+			// Some feeds put i and r in the final path segment. Keep the
+			// wire shape, and derive the GUID from the filename alone.
+			if name, params, ok := strings.Cut(filename, "&i="); ok {
+				tag, credential, ok := strings.Cut(params, "&r=")
+				if !ok || credential == "" || cfg.APIKey == "" || tag == "" ||
+					strings.ContainsAny(tag, "&/=?") || strings.ContainsAny(credential, "&/=?") ||
+					!strings.HasSuffix(name, ".nzb") {
+					continue
+				}
+				filename = name
+				download.Path = path.Dir(u.Path) + "/" + filename + "&i=" + tag + "&r=" + token
+			} else if q.Get("r") != "" && cfg.APIKey != "" {
+				downloadParams.Set("r", token)
+				if tag := q.Get("i"); tag != "" {
+					downloadParams.Set("i", tag)
+				}
+			}
+			guid = strings.TrimSuffix(filename, ".nzb")
 		}
-		download := *u
-		download.RawPath = ""
 		download.RawQuery = downloadParams.Encode()
 		link := download.String()
 		if guid == "" || len(guid) > 4096 {
@@ -418,31 +541,26 @@ func (c *Client) lockNZBGrab(ctx context.Context, id string) (func(), error) {
 
 const pluginTorrentSeal = "plugin-indexer-torrent/v1"
 
-// PluginTorrentReference replaces a torrent descriptor URL in plugin results.
-func (m *Manager) PluginTorrentReference(ctx context.Context, r core.Release) string {
-	if r.IndexerID == "" || r.NZBURL == "" {
-		return ""
-	}
-	return m.savePluginRef(ctx, pluginTorrentSeal, pluginNZBReference{ID: r.ID, IndexerID: r.IndexerID,
-		GUID: r.GUID, Link: m.StripLinkAuth(r).NZBURL, Name: r.Name, Size: r.Size})
-}
-
-// ResolvePluginTorrent only fetches descriptor URLs issued by Ether itself.
+// ResolvePluginTorrent accepts issued refs and validated native download routes.
 func (m *Manager) ResolvePluginTorrent(ctx context.Context, rel core.Release) (core.Release, error) {
 	ref := rel.TorrentRef
 	if ref == "" {
-		var ok bool
-		ref, ok = strings.CutPrefix(rel.NZBURL, core.PluginTorrentRefPrefix)
-		if !ok {
+		ref, _ = strings.CutPrefix(rel.NZBURL, core.PluginTorrentRefPrefix)
+	}
+	if ref != "" {
+		stored, err := m.openPluginRef(ctx, pluginTorrentSeal, strings.TrimPrefix(ref, core.PluginTorrentRefPrefix))
+		if err != nil {
 			return rel, core.ErrReleaseRejected
 		}
+		rel.ID, rel.GUID, rel.IndexerID = stored.ID, stored.GUID, stored.IndexerID
+		rel.NZBURL, rel.Name, rel.Size = stored.Link, stored.Name, stored.Size
+	} else {
+		legacy, err := m.legacyPluginDownload(rel)
+		if err != nil {
+			return rel, core.ErrReleaseRejected
+		}
+		rel.ID, rel.GUID, rel.IndexerID, rel.NZBURL = legacy.ID, legacy.GUID, legacy.IndexerID, legacy.NZBURL
 	}
-	stored, err := m.openPluginRef(ctx, pluginTorrentSeal, strings.TrimPrefix(ref, core.PluginTorrentRefPrefix))
-	if err != nil {
-		return rel, core.ErrReleaseRejected
-	}
-	rel.ID, rel.GUID, rel.IndexerID = stored.ID, stored.GUID, stored.IndexerID
-	rel.NZBURL, rel.Name, rel.Size = stored.Link, stored.Name, stored.Size
 	result, err := m.ResolveTorrent(ctx, rel)
 	if err != nil {
 		if errors.Is(err, core.ErrBudgetExhausted) {

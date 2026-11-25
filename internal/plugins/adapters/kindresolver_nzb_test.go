@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/newznab"
+	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -23,8 +25,20 @@ import (
 func TestPluginNZBConformance(t *testing.T) {
 	ctx := t.Context()
 	var grabs atomic.Int32
+	const testAPIKey = "example-key"
 	const descriptor = `<nzb><file subject="Track01.flac"><groups><group>test</group></groups><segments><segment bytes="100" number="1">m1@test</segment></segments></file><file subject="Track02.flac"><groups><group>test</group></groups><segments><segment bytes="100" number="1">m2@test</segment></segments></file></nzb>`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/getnzb/") {
+			switch {
+			case r.URL.Path == "/getnzb/album.nzb&i=1&r="+testAPIKey:
+				fmt.Fprint(w, descriptor)
+			case r.URL.Path == "/getnzb/book.nzb" && r.URL.Query().Get("r") == testAPIKey:
+				fmt.Fprint(w, strings.NewReplacer("Track01.flac", "Book.epub", "Track02.flac", "Bonus.epub", "@test", "@book.test").Replace(descriptor))
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+			return
+		}
 		switch r.URL.Query().Get("t") {
 		case "caps":
 			fmt.Fprint(w, `<caps><searching><search available="yes" supportedParams="q"/></searching></caps>`)
@@ -202,5 +216,81 @@ func TestPluginNZBConformance(t *testing.T) {
 	if grabs.Load() != 2 {
 		t.Fatal("stored descriptor contacted a disabled indexer")
 	}
+
+	t.Run("stored links stay private through targeted playback", func(t *testing.T) {
+		cfg := config.Indexer{ID: "test-indexer", Name: "Test", URL: server.URL, APIKey: testAPIKey, Enabled: true}
+		mgr.Reload([]config.Indexer{cfg})
+		albumLink := server.URL + "/getnzb/album.nzb&i=1&r=~ether.apikey~"
+		bookLink := server.URL + "/getnzb/book.nzb?r=~ether.apikey~"
+		raw := fmt.Appendf(nil, `[{"id":%q,"mime":"audio/flac","release":{"candidate":{"nzbUrl":%q},"fileIndex":1}},{"mime":"application/epub+zip","release":{"nzbUrl":%q,"fileIndex":0}}]`,
+			"nzb:"+albumLink, albumLink, bookLink)
+		normalized, err := r.NormalizeStoredReleaseLinks(ctx, raw)
+		if err != nil || strings.Contains(string(normalized), server.URL) || strings.Contains(string(normalized), "~ether.") {
+			t.Fatalf("stored release links must remain private: %v", err)
+		}
+		var sources []core.PlayableSource
+		if err := json.Unmarshal(normalized, &sources); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(sources[0].ID, "nzb:"+core.PluginNZBRefPrefix) ||
+			sources[0].Release.FileIndex == nil || *sources[0].Release.FileIndex != 1 {
+			t.Fatal("stored source must retain its file selection and use an opaque source ID")
+		}
+		for _, src := range sources {
+			media, err := r.openReleaseForSource(ctx, src, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = media.Close()
+		}
+		cfg.Enabled = false
+		mgr.Reload([]config.Indexer{cfg})
+		for _, link := range []string{albumLink, bookLink} {
+			media, err := r.openRelease(ctx, core.ReleaseHint{NZBURL: link})
+			if err != nil {
+				t.Fatalf("the saved link must open from the vault after disabling its indexer: %v", err)
+			}
+			_ = media.Close()
+		}
+
+		// Simulate a previously played track whose plugin and host caches
+		// expired, with an NZB stored before download aliases were recorded.
+		legacy := core.SourceCandidate{
+			NZBURL: server.URL + "/getnzb/older.nzb&i=1&r=~ether.apikey~",
+			Title:  "Earlier Album",
+			Size:   123456,
+		}
+		data := strings.ReplaceAll(descriptor, "@test", "@older.test")
+		if _, err := library.Put(ctx, vault.PutRequest{
+			Release: core.Release{Name: legacy.Title, Size: legacy.Size},
+			NZB:     []byte(data),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		items, err := pluginitems.New(ctx, db, pluginitems.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opener := NewKindResolver(KindResolverDeps{Items: items, Indexer: mgr, PluginNZBs: mgr, Engine: &keylessCheckEngine{}})
+		t.Cleanup(opener.Close)
+		item := core.KindItem{Ref: core.NewItemRef("plugin.one", "music", "track1")}
+		index := 1
+		src := core.PlayableSource{
+			Pattern: kindstream.PatternRelease, MIME: "audio/flac", ExpiresAt: 1,
+			Release: &core.ReleaseHint{Candidate: &legacy, FileIndex: &index},
+		}
+		if err := items.SavePartResolution(ctx, item.Ref, nil, src); err != nil {
+			t.Fatal(err)
+		}
+		stream, saved, err := opener.openItemByteSourceExcluding(ctx, pluginitems.KindRecord{}, core.Library{}, item, nil, []string{"release"}, nil)
+		if err != nil {
+			t.Fatalf("expired, previously opened source should open from the vault without a plugin or indexer: %v", err)
+		}
+		_ = stream.Close()
+		if saved.Release.FileIndex == nil || *saved.Release.FileIndex != index {
+			t.Fatal("vault reuse must preserve the original file selection")
+		}
+
+	})
 
 }

@@ -519,8 +519,8 @@ func matchPlayableSource(sources []core.PlayableSource, defaultTitle, sourceID s
 // release id (a version-slot pick) or PlayableSource.ID. It reuses the
 // in-memory and persisted resolution candidate caches so a warm list does not
 // re-run the plugin, opens only the matching candidate, and leaves the shared
-// default winner untouched. A source id not among the current non-expired
-// candidates returns ErrNotAvailable.
+// default winner untouched. A previously opened NZB can also be reused
+// from the vault after the candidate cache expires.
 func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
 	if r.waitsPreparing(ctx) {
 		return r.waitPreparing(ctx, func(ctx context.Context) (*frontend.KindMedia, error) {
@@ -564,6 +564,10 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 			return nil, core.ErrNotAvailable
 		}
 	}
+	if media, err := r.openSavedKindSource(ctx, rec, lib, item, partIdx, sourceID); media != nil || err != nil {
+		return media, err
+	}
+
 	sources, err := r.resolveCandidates(ctx, rec, lib, item, partIdx, accept)
 	if err != nil {
 		return nil, err
@@ -659,6 +663,10 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 		}
 		// Cached source expired or went stale upstream: drop and re-resolve once.
 		r.deleteCandidates(fk)
+	}
+
+	if media, err := r.openSavedKindSource(ctx, rec, lib, targetItem, effectivePart, sourceID); media != nil || err != nil {
+		return media, err
 	}
 
 	sources, err := r.resolveItemSourcesForSource(ctx, rec, lib, targetItem, effectivePart, sourceID, accept)
@@ -1248,10 +1256,12 @@ func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec plu
 	}
 	nowUnix := r.now().Unix()
 	var baseSrc *core.PlayableSource
-	if cached, ok, err := r.items.GetPartResolution(ctx, parent.Ref, nil); err == nil && ok {
-		if strings.EqualFold(strings.TrimSpace(cached.Pattern), kindstream.PatternRelease) && cached.Release != nil && (cached.ExpiresAt == 0 || nowUnix < cached.ExpiresAt) {
-			cp := cached
-			baseSrc = &cp
+	var vaultedOnly bool
+	if cached, ok, expired, err := r.items.GetPartResolutionForOpen(ctx, parent.Ref, nil); err == nil && ok {
+		if !expired && strings.EqualFold(strings.TrimSpace(cached.Pattern), kindstream.PatternRelease) && cached.Release != nil && (cached.ExpiresAt == 0 || nowUnix < cached.ExpiresAt) {
+			baseSrc = &cached
+		} else if expired && r.canReuseVaultedSource(cached) {
+			baseSrc, vaultedOnly = &cached, true
 		}
 	}
 	if baseSrc == nil {
@@ -1293,11 +1303,18 @@ func (r *KindResolver) tryOpenPartFromParentRelease(ctx context.Context, rec plu
 	}
 	rel := playableSourceRelease(partSrc, firstNonEmpty(part.Name, parent.Title))
 	if slices.Contains(exclude, rel.ID) {
-		return nil, true, core.ErrNotAvailable
+		return nil, !vaultedOnly, core.ErrNotAvailable
 	}
 	idx := partIndex
-	media, err := r.openSingleSource(ctx, rec, lib, parent, &idx, partSrc, true)
+	openCtx := ctx
+	if vaultedOnly {
+		openCtx = newznab.WithVaultedPluginNZB(ctx)
+	}
+	media, err := r.openSingleSource(openCtx, rec, lib, parent, &idx, partSrc, !vaultedOnly)
 	if err != nil {
+		if vaultedOnly && ctx.Err() == nil && errors.Is(err, core.ErrSourceUnavailable) {
+			return nil, false, nil
+		}
 		return nil, true, err
 	}
 	if part.Name != "" {
@@ -2273,14 +2290,14 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		}
 		if rel.Protocol == core.ProtocolUsenet {
 			if r.indexer == nil {
-				return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
+				return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 			}
 			releaseKey := candidateNZBKey(cand)
 			workKey := "release_files:" + releaseKey
 			if files, ok := r.lookupUsenetReleaseFiles(releaseKey); ok {
 				noteResolveSourceWork(ctx, workKey, true)
 				cand.Files = files
-				return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
+				return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 			}
 			endWork := beginResolveSourceWork(ctx, workKey)
 			defer endWork()
@@ -2321,10 +2338,10 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			}
 			files, _ := raw.([]core.ReleaseFile)
 			cand.Files = cloneReleaseFiles(files)
-			return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
+			return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 		}
 		if rel.Protocol != core.ProtocolTorrent {
-			return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
+			return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 		}
 		workKey := "release_files:torrent:" + rel.ID
 		if handed, ok := r.takeSourceHandoff(workKey); ok {
@@ -2403,7 +2420,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		cand.UsenetCheck = &res
-		return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
+		return []core.SourceCandidate{r.publicLegacyCandidate(ctx, cand)}, nil
 
 	case "debrid_acquire":
 		if r.debrid == nil {
@@ -2818,23 +2835,27 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	}
 
 	// 1. Check persisted positive/negative resolution cache first so repeat
-	// opens never call into the plugin runtime while the resolution is fresh,
-	// unless the cached candidate was excluded by failover or its provider is
-	// currently backing off.
+	// opens reuse a fresh source, or a previously opened NZB that the vault
+	// still has. Respect explicit exclusions and provider backoff.
 	var backingOffCached *core.PlayableSource
-	cachedSrc, ok, err := r.items.GetPartResolution(ctx, item.Ref, partIdx)
+	cachedSrc, ok, expired, err := r.items.GetPartResolutionForOpen(ctx, item.Ref, partIdx)
 	if err != nil {
 		return nil, core.PlayableSource{}, err
 	}
-	if ok {
+	if ok && (!expired || r.canReuseVaultedSource(cachedSrc)) {
 		cachedID := playableSourceRelease(cachedSrc, item.Title).ID
 		if slices.Contains(exclude, cachedID) {
 			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
 		} else if r.isSourceBackingOff(cachedSrc) {
-			c := cachedSrc
-			backingOffCached = &c
+			if !expired {
+				c := cachedSrc
+				backingOffCached = &c
+			}
 		} else {
 			openCtx, openCancel := withHardTimeout(ctx, r.candidateOpenTimeout)
+			if expired {
+				openCtx = newznab.WithVaultedPluginNZB(openCtx)
+			}
 			cachedStart := time.Now()
 			bs, oerr := kindstream.Open(openCtx, cachedSrc, ksDeps)
 			openCancel()
@@ -2844,7 +2865,9 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					if cachedSrc.MIME == "" {
 						cachedSrc.MIME = bs.MIME()
 					}
-					_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
+					if !expired {
+						_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
+					}
 				}
 				return bs, cachedSrc, nil
 			}
@@ -2862,11 +2885,13 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 					"err", oerr,
 				)
 			}
-			// Cached source went stale upstream: invalidate and fall through.
-			_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
-			var grabRefusal *newznab.GrabRefusal
-			if !errors.As(oerr, &grabRefusal) {
-				r.deleteCandidates(fk)
+			if !expired {
+				// Cached source went stale upstream: invalidate and fall through.
+				_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+				var grabRefusal *newznab.GrabRefusal
+				if !errors.As(oerr, &grabRefusal) {
+					r.deleteCandidates(fk)
+				}
 			}
 		}
 	}
@@ -3540,7 +3565,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 			clientMap["accept"] = accept
 		}
 		if len(exclude) > 0 {
-			clientMap["exclude"] = exclude
+			clientMap["exclude"] = slices.DeleteFunc(slices.Clone(exclude), func(id string) bool {
+				return strings.HasPrefix(id, "kind:http://") || strings.HasPrefix(id, "kind:https://")
+			})
 		}
 	}
 	body, err := json.Marshal(core.KindResolveRequest{
@@ -3550,6 +3577,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		Source:     source,
 		Client:     clientMap,
 	})
+	if err != nil {
+		return nil, err
+	}
+	body, err = r.NormalizeStoredReleaseLinks(ctx, body)
 	if err != nil {
 		return nil, err
 	}

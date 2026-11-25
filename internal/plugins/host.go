@@ -87,7 +87,14 @@ func (h *host) KVGet(ctx context.Context, key string) ([]byte, bool, error) {
 	if _, _, err := h.record(ctx); err != nil {
 		return nil, false, err
 	}
-	return h.m.store.kvGet(ctx, h.plugin, key)
+	value, ok, err := h.m.store.kvGet(ctx, h.plugin, key)
+	if !ok || err != nil {
+		return value, ok, err
+	}
+	if normalize := h.m.kindBackends().NormalizeStoredReleaseLinks; normalize != nil {
+		value, err = normalize(ctx, value)
+	}
+	return value, ok && err == nil, err
 }
 
 func (h *host) KVPut(ctx context.Context, key string, value []byte) error {

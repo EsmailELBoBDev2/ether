@@ -271,11 +271,7 @@ func (s *Service) ensureDASH(ctx context.Context, ss *session, id string) (core.
 		dec.VideoCopy = true
 		dec.AudioCopy = true
 	}
-	inputSession := ss
-	if ss.owned != nil && ss.owned.relay != nil && ss.owned.relay.shared {
-		inputSession = ss.owned.relay.sess.Load()
-	}
-	input, err := s.relayInput(inputSession)
+	input, err := s.relayInput(ss)
 	if err != nil {
 		return nil, err
 	}
@@ -290,8 +286,9 @@ func (s *Service) ensureDASH(ctx context.Context, ss *session, id string) (core.
 	}
 	// Replace any superseded HLS relay/passthrough so two ffmpeg processes do
 	// not compete on the same session.
-	if inputSession == ss {
-		replacedOwned, ss.owned = ss.owned, nil
+	if ss.sharedInput.Load() == nil {
+		replacedOwned = ss.owned
+		ss.publishOwnedLocked(nil)
 	}
 	ss.dash = ds
 	return ds, nil

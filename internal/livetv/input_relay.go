@@ -438,6 +438,11 @@ func (s *Service) relayInput(ss *session) (string, error) {
 	r := &s.inputRelay
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if ss != nil {
+		if owner := ss.sharedInput.Load(); owner != nil {
+			ss = owner
+		}
+	}
 	g := r.bySess[ss]
 	if g == nil || g.ctx.Err() != nil {
 		return "", core.ErrNotAvailable

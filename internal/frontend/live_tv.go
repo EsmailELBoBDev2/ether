@@ -39,6 +39,7 @@ type LiveChannel struct {
 	Images                               []Image
 }
 type LiveProgramme struct {
+	ArchiveDays                     int
 	Genres                          []string
 	MediaType                       string
 	ID, ChannelID                   string
@@ -91,9 +92,10 @@ type LiveGuideWindowQuery struct {
 }
 
 type LiveGuideWindowChannel struct {
-	ChannelID  string
-	State      LiveGuideWindowState
-	Programmes []LiveProgramme
+	ArchiveDays int
+	ChannelID   string
+	State       LiveGuideWindowState
+	Programmes  []LiveProgramme
 }
 
 type LiveGuideWindow struct {

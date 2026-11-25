@@ -236,6 +236,7 @@ func (h liveTVHost) GuideWindowBatch(ctx context.Context, v *core.Viewer, q fron
 				return frontend.LiveGuideWindow{}, err
 			}
 			ps[j] = frontend.LiveProgramme{
+				ArchiveDays:  ch.ArchiveDays,
 				ID:           p.ID,
 				ChannelID:    p.ChannelID,
 				Start:        p.Start,
@@ -253,9 +254,10 @@ func (h liveTVHost) GuideWindowBatch(ctx context.Context, v *core.Viewer, q fron
 			}
 		}
 		rows[i] = frontend.LiveGuideWindowChannel{
-			ChannelID:  ch.ChannelID,
-			State:      ch.State,
-			Programmes: ps,
+			ArchiveDays: ch.ArchiveDays,
+			ChannelID:   ch.ChannelID,
+			State:       ch.State,
+			Programmes:  ps,
 		}
 	}
 	return frontend.LiveGuideWindow{
@@ -489,3 +491,19 @@ func (h liveTVHost) FilterDiscovery(ctx context.Context, u *frontend.User, ps []
 }
 
 var _ frontend.LiveGuideWindowReader = liveTVHost{}
+
+func (h liveTVHost) StartCatchUp(ctx context.Context, u *frontend.User, req frontend.CatchUpRequest, caps frontend.ClientCaps, sessionID string) (frontend.CatchUpInfo, error) {
+	return h.s.StartCatchUp(ctx, u, req, caps, sessionID)
+}
+func (h liveTVHost) SeekCatchUp(ctx context.Context, u *frontend.User, id string, at time.Duration) (frontend.CatchUpInfo, error) {
+	return h.s.SeekCatchUp(ctx, u, id, at)
+}
+func (h liveTVHost) TouchLiveSession(ctx context.Context, u *frontend.User, id string) error {
+	return h.s.TouchLiveSession(ctx, u, id)
+}
+func (h liveTVHost) CatchUpLiveWindow(ctx context.Context, id string) (frontend.LiveWindow, error) {
+	return h.s.LiveWindow(ctx, id)
+}
+func (h liveTVHost) ServeCatchUpTS(w http.ResponseWriter, r *http.Request, id string, u *frontend.User) {
+	h.s.ServeCatchUpTS(w, r, id, u)
+}

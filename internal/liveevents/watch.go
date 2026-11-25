@@ -101,6 +101,8 @@ func (g *LiveTVGuideSource) CurrentProgramme(ctx context.Context, viewer *core.U
 
 func guideCandidateFromLiveTV(e livetv.WatchGuideEntry) GuideCandidate {
 	return GuideCandidate{
+		ProgrammeID:   e.Programme.ID,
+		ArchiveDays:   e.ArchiveDays,
 		ChannelID:     e.ChannelID,
 		ChannelName:   e.ChannelName,
 		ChannelNumber: e.ChannelNumber,

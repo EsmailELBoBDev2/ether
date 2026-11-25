@@ -12,6 +12,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 const (
@@ -34,6 +35,8 @@ const (
 // channel + guide programme (or a guide-free IPTV channel) used by the A5/A6
 // matcher.
 type GuideCandidate struct {
+	ProgrammeID   string
+	ArchiveDays   int
 	ChannelID     string
 	ChannelName   string
 	ChannelNumber string
@@ -1678,6 +1681,12 @@ func matchEventToCandidatesAt(ev core.LiveEvent, candidates []GuideCandidate, no
 			watchedAt:   cand.WatchedAt,
 			feedQuality: channelFeedQuality(cand.ChannelName, cand.TvgName),
 			dedupeKey:   canonicalNetworkKey(cand, tier),
+		}
+		if tier == watchTierGuide && cand.ProgrammeID != "" {
+			catchUp, startOver := frontend.ArchiveFlags(cand.ArchiveDays, cand.Start, cand.End, now)
+			if catchUp || !cand.Start.After(now) && cand.End.After(now) {
+				st.target.Programme = &core.LiveEventWatchProgramme{ID: cand.ProgrammeID, Start: cand.Start.UTC(), End: cand.End.UTC(), CatchUp: catchUp, StartOver: startOver}
+			}
 		}
 		if cand.Unhealthy {
 			st.target.Available = boolPtr(false)

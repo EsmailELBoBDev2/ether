@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // LiveEvent state values (A2 live event contract).
@@ -172,17 +173,26 @@ type LiveEventMatchHints struct {
 // plugin-provided stream target. Ether attaches this; plugins do not emit it.
 // Available is omitted when playable and set to false when the only matching
 // channels are currently unhealthy so clients can show "Unavailable right now".
+type LiveEventWatchProgramme struct {
+	ID        string    `json:"id"`
+	Start     time.Time `json:"start"`
+	End       time.Time `json:"end"`
+	CatchUp   bool      `json:"catchUp,omitempty"`
+	StartOver bool      `json:"startOver,omitempty"`
+}
+
 type LiveEventWatchTarget struct {
-	Kind       string                 `json:"kind"` // channel|addon|plugin
-	ChannelID  string                 `json:"channelId,omitempty"`
-	Name       string                 `json:"name"`
-	Number     string                 `json:"number,omitempty"`
-	Logo       string                 `json:"logo,omitempty"`
-	Live       bool                   `json:"live"`
-	Confidence float64                `json:"confidence,omitempty"`
-	URL        string                 `json:"url,omitempty"`
-	Available  *bool                  `json:"available,omitempty"`
-	Alternates []LiveEventWatchTarget `json:"alternates,omitempty"`
+	Programme  *LiveEventWatchProgramme `json:"programme,omitempty"`
+	Kind       string                   `json:"kind"` // channel|addon|plugin
+	ChannelID  string                   `json:"channelId,omitempty"`
+	Name       string                   `json:"name"`
+	Number     string                   `json:"number,omitempty"`
+	Logo       string                   `json:"logo,omitempty"`
+	Live       bool                     `json:"live"`
+	Confidence float64                  `json:"confidence,omitempty"`
+	URL        string                   `json:"url,omitempty"`
+	Available  *bool                    `json:"available,omitempty"`
+	Alternates []LiveEventWatchTarget   `json:"alternates,omitempty"`
 }
 
 // IsAvailable reports whether the watch target is currently playable
@@ -195,6 +205,10 @@ func (t LiveEventWatchTarget) IsAvailable() bool {
 // collapsed alternate feeds.
 func (t LiveEventWatchTarget) Clone() LiveEventWatchTarget {
 	out := t
+	if t.Programme != nil {
+		programme := *t.Programme
+		out.Programme = &programme
+	}
 	if t.Available != nil {
 		av := *t.Available
 		out.Available = &av

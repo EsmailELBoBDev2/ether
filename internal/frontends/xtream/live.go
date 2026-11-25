@@ -226,14 +226,8 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 	now := i.liveNow()
 	from := now.Add(-6 * time.Hour)
 	until := now.Add(48 * time.Hour)
-	archiveStart := now.AddDate(0, 0, -c.ArchiveDays)
 	if action == "get_simple_data_table" && c.ArchiveDays > 0 {
-		// Keep the guide host's seven-day limit and prioritize archived
-		// airings when there is more history than the endpoint can request.
-		from = now.AddDate(0, 0, -min(c.ArchiveDays, 6))
-		if until.After(from.Add(7 * 24 * time.Hour)) {
-			until = from.Add(7 * 24 * time.Hour)
-		}
+		from = now.AddDate(0, 0, -min(c.ArchiveDays, 30))
 	}
 	ps, err := i.programmes(r, l, c, from, until)
 	if err != nil {
@@ -257,7 +251,7 @@ func (i *instance) epg(w http.ResponseWriter, r *http.Request, l login, action s
 			playing = 1
 		}
 		hasArchive := 0
-		if c.ArchiveDays > 0 && !p.Start.Before(archiveStart) && !p.End.After(now) {
+		if ended, _ := frontend.ArchiveFlags(c.ArchiveDays, p.Start, p.End, now); ended {
 			hasArchive = 1
 		}
 		out = append(out, map[string]any{"id": p.ID, "epg_id": strconv.FormatInt(int64(l.channels[c.ID]), 10), "channel_id": c.ID, "title": base64.StdEncoding.EncodeToString([]byte(p.Title)), "description": base64.StdEncoding.EncodeToString([]byte(p.Summary)), "lang": "", "start": p.Start.UTC().Format("2006-01-02 15:04:05"), "end": p.End.UTC().Format("2006-01-02 15:04:05"), "start_timestamp": strconv.FormatInt(p.Start.Unix(), 10), "stop_timestamp": strconv.FormatInt(p.End.Unix(), 10), "now_playing": playing, "has_archive": hasArchive})

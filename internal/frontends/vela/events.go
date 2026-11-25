@@ -14,10 +14,14 @@ const playingReleasePollEvery = 2 * time.Second
 // Subscribe only after a viewer opens playback. The broker owns stop and remote
 // control events; disabling the frontend cancels every subscription.
 func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device, id, scope string, s *playSession) {
-	ctx, cancel := context.WithCancel(i.ctx)
-	events, err := i.host.Sessions.Events(ctx, frontend.EventScope{Viewer: viewer, Protocol: "vela", SessionID: id, Device: device})
-	if err != nil {
-		events = nil
+	base := i.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	var events <-chan frontend.Event
+	if s.archive == nil {
+		events, _ = i.host.Sessions.Events(ctx, frontend.EventScope{Viewer: viewer, Protocol: "vela", SessionID: id, Device: device})
 	}
 	go func() {
 		defer cancel()
@@ -109,7 +113,23 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 					continue
 				}
 				if err != nil {
-					_ = i.host.Sessions.Stop(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: "vela"}, id)
+					_ = i.stopPlayback(ctx, frontend.SessionAccess{Viewer: viewer, Device: device, Protocol: "vela"}, id, s)
+				}
+				s.mu.Lock()
+				var archiveTune string
+				if s.archive != nil {
+					archiveTune = s.archive.tuneID
+				}
+				s.mu.Unlock()
+				if err == nil && archiveTune != "" {
+					_, lookupErr := i.host.LiveTV.Session(ctx, archiveTune, viewer)
+					if errors.Is(lookupErr, frontend.ErrNotFound) {
+						s.mu.Lock()
+						if s.archive.tuneID == archiveTune && !s.commandActive {
+							err = lookupErr
+						}
+						s.mu.Unlock()
+					}
 				}
 				s.mu.Lock()
 				ended := !s.ended.IsZero()

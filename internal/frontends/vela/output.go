@@ -14,6 +14,12 @@ import (
 // bytes; planned and unused rungs never start work. The session must be
 // unpublished or a private snapshot; never hold the live UI lock here.
 func (i *instance) refreshOutput(ctx context.Context, id string, s *playSession) bool {
+	if s.archive != nil {
+		if s.archive.info.ChannelID != "" {
+			return refreshStartOver(s, i.catchUpNow())
+		}
+		return i.refreshLiveWindow(ctx, s.archive.tuneID, s)
+	}
 	liveChanged := i.refreshLiveWindow(ctx, id, s)
 	hs, ok := i.host.Sessions.TranscodeFor(ctx, id)
 	if !ok || hs == nil {
@@ -93,12 +99,17 @@ func (i *instance) refreshLiveWindow(ctx context.Context, id string, s *playSess
 	delete(live, "anchor")
 	delete(live, "windowStartSeconds")
 	delete(live, "liveEdgeSeconds")
-	if reader, ok := i.host.Sessions.(frontend.LiveWindowReader); ok {
-		if window, err := reader.LiveWindow(ctx, id); err == nil && window.Anchor.MediaSequence >= 0 && window.Anchor.MediaSequence <= 1<<53-1 {
-			live["anchor"] = window.Anchor
-			live["windowStartSeconds"] = window.Anchor.WindowStartSeconds
-			live["liveEdgeSeconds"] = window.LiveEdgeSeconds
-		}
+	var window frontend.LiveWindow
+	err := frontend.ErrNotAvailable
+	if s.archive != nil {
+		window, err = i.host.LiveTV.(frontend.LiveCatchUp).CatchUpLiveWindow(ctx, id)
+	} else if reader, ok := i.host.Sessions.(frontend.LiveWindowReader); ok {
+		window, err = reader.LiveWindow(ctx, id)
+	}
+	if err == nil && window.Anchor.MediaSequence >= 0 && window.Anchor.MediaSequence <= 1<<53-1 {
+		live["anchor"] = window.Anchor
+		live["windowStartSeconds"] = window.Anchor.WindowStartSeconds
+		live["liveEdgeSeconds"] = window.LiveEdgeSeconds
 	}
 	after, _ := json.Marshal(live)
 	return string(before) != string(after)

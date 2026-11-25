@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sort"
 	"time"
 
@@ -27,6 +29,9 @@ func providerLayout(show *core.Title, order core.EpisodeOrder) bool {
 }
 
 func (c *Catalog) CachedEpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, bool, error) {
+	if show.Kind() != core.KindShow {
+		return EpisodeLayout{}, false, core.ErrNotFound
+	}
 	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, false, err
@@ -39,6 +44,9 @@ func (c *Catalog) CachedEpisodeLayout(ctx context.Context, show core.RatingKey) 
 }
 
 func (c *Catalog) EpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, error) {
+	if show.Kind() != core.KindShow {
+		return EpisodeLayout{}, core.ErrNotFound
+	}
 	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, err
@@ -313,6 +321,9 @@ func (c *Catalog) EpisodeMatchRanges(ctx context.Context, from, to core.RatingKe
 // HydrateEpisodeLayout loads the selected layout on explicit use, including
 // the destination tree of a user-requested match correction.
 func (c *Catalog) HydrateEpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, error) {
+	if show.Kind() != core.KindShow {
+		return EpisodeLayout{}, core.ErrNotFound
+	}
 	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, err
@@ -342,4 +353,51 @@ func (c *Catalog) HydrateEpisodeLayout(ctx context.Context, show core.RatingKey)
 	}
 	layout, _, err := c.readEpisodeLayout(ctx, t, effective.Order)
 	return layout, err
+}
+
+// ResolveEpisodeAt opens one season on use, then resolves a displayed episode
+// coordinate to its stable identity. Feed matching can instead use the
+// cache-only layout and its EpisodeAt and EpisodeOn methods.
+func (c *Catalog) ResolveEpisodeAt(ctx context.Context, show core.RatingKey, season, episode int) (EpisodeCoordinate, error) {
+	if show.Kind() != core.KindShow || season < 0 || episode < 0 {
+		return EpisodeCoordinate{}, core.ErrNotFound
+	}
+	parent, err := c.Get(ctx, show)
+	if err != nil {
+		return EpisodeCoordinate{}, err
+	}
+	order := parent.EpisodeOrder
+	if providerLayout(parent, order) {
+		seasons, err := c.ensureOrderManifest(ctx, parent, order)
+		if err != nil {
+			return EpisodeCoordinate{}, err
+		}
+		if selected, ok := orderedSeason(seasons, season); ok {
+			if err := c.ensureOrderSeason(ctx, parent, order, selected); err != nil {
+				return EpisodeCoordinate{}, err
+			}
+		}
+	} else {
+		if !episodeKeyFits(season, episode) {
+			return EpisodeCoordinate{}, core.ErrNotFound
+		}
+		if _, err := c.fetchSeason(ctx, parent.IDs.TMDB, season); err != nil && !errors.Is(err, core.ErrNotFound) {
+			return EpisodeCoordinate{}, err
+		}
+	}
+	scope, args := episodeScope([]core.RatingKey{parent.Key}, map[core.RatingKey]showOrder{parent.Key: {title: *parent, order: order}})
+	args = append(args, season, episode)
+	var key core.RatingKey
+	err = c.db.QueryRowContext(ctx, scope+`SELECT e.key FROM scoped_episodes e WHERE e.season=? AND e.episode=? LIMIT 1`, args...).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EpisodeCoordinate{}, core.ErrNotFound
+	}
+	if err != nil {
+		return EpisodeCoordinate{}, err
+	}
+	t, err := c.CachedTitle(ctx, key)
+	if err != nil {
+		return EpisodeCoordinate{}, err
+	}
+	return EpisodeCoordinate{Key: t.Key, ParentKey: t.ParentKey, IDs: t.IDs, Season: t.Season, Episode: t.Episode, Absolute: t.AbsoluteEpisode, AirDate: t.EpisodeAirDate}, nil
 }

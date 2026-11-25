@@ -203,12 +203,34 @@ func (c *Catalog) canonicalSourceKey(ctx context.Context, key core.RatingKey) (c
 
 func (c *Catalog) reconcileTitleIdentity(ctx context.Context, t *core.Title) error {
 	oldKey := t.Key
-	if !oldKey.Allocated() || t.IDs.TMDB <= 0 {
+	if !oldKey.Allocated() {
 		return nil
 	}
-	candidate := core.MovieKey(t.IDs.TMDB)
-	if t.Type == core.TypeShow {
-		candidate = core.ShowKey(t.IDs.TMDB)
+	var candidate core.RatingKey
+	if t.IDs.TMDB > 0 {
+		candidate = core.MovieKey(t.IDs.TMDB)
+		if t.Type == core.TypeShow {
+			candidate = core.ShowKey(t.IDs.TMDB)
+		}
+	} else if t.IDs.IMDB != "" {
+		// IMDb-only provider records can establish the same canonical
+		// identity. Ambiguous matches leave the allocation in place.
+		var id int64
+		err := c.db.QueryRowContext(ctx, `SELECT MIN(tmdb_id) FROM catalog_titles
+ WHERE imdb=? AND type=? AND tmdb_id>0 AND key=CASE WHEN type='show' THEN 2000000000000000 ELSE 1000000000000000 END+tmdb_id
+ HAVING COUNT(*)=1`, t.IDs.IMDB, t.Type).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if id > 0 {
+			candidate = core.MovieKey(id)
+			if t.Type == core.TypeShow {
+				candidate = core.ShowKey(id)
+			}
+		}
+	}
+	if candidate == 0 {
+		return nil
 	}
 	row, err := c.loadByKey(ctx, candidate)
 	if errors.Is(err, core.ErrNotFound) {
@@ -217,6 +239,11 @@ func (c *Catalog) reconcileTitleIdentity(ctx context.Context, t *core.Title) err
 	if err != nil {
 		return err
 	}
+	if !compatibleEpisodeIDs(t.IDs, row.t.IDs) {
+		return nil
+	}
+	t.IDs = mergeSourceIDs(t.IDs, row.t.IDs)
+
 	rekey := c.sourceIdentityRekey.Load()
 	if rekey == nil {
 		return fmt.Errorf("catalog: source identity rematch service unavailable")
@@ -257,6 +284,12 @@ func (c *Catalog) reconcileTitleIdentity(ctx context.Context, t *core.Title) err
 	if _, err := tx.ExecContext(ctx, `UPDATE catalog_identity SET key=? WHERE key=?`, candidate, oldKey); err != nil {
 		return err
 	}
+	if t.Type == core.TypeShow {
+		if _, err := tx.ExecContext(ctx, `UPDATE catalog_allocated_child SET show_key=?,parent_key=CASE WHEN parent_key=? THEN ? ELSE parent_key END WHERE show_key=?`, candidate, oldKey, candidate, oldKey); err != nil {
+			return err
+		}
+	}
+
 	after, err := (*rekey)(ctx, tx, &old, &row.t, ranges)
 	if err != nil {
 		return err
@@ -299,6 +332,17 @@ func (c *Catalog) MaterializeSourceTitle(ctx context.Context, ref core.ProviderR
 	}
 	if t == nil || t.Adult || t.Type != ref.Type {
 		return nil, core.ErrNotFound
+	}
+	id, _ := strconv.ParseInt(ref.ID, 10, 64)
+	switch ref.Source {
+	case core.MetadataTMDB:
+		if t.IDs.TMDB == 0 {
+			t.IDs.TMDB = id
+		}
+	case core.MetadataTVDB:
+		if t.IDs.TVDB == 0 {
+			t.IDs.TVDB = id
+		}
 	}
 	key, err := c.sourceTitleKey(ctx, ref, t.IDs)
 	if err != nil {

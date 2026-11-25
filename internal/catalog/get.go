@@ -177,7 +177,7 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 }
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
-	if key.IsTitleKey() && (key.Allocated() || c.metadataSourceDefault.Load() != nil || !c.TMDBConfigured()) {
+	if key.IsTitleKey() && (key.Allocated() || c.metadataSourceDefault.Load() != nil || !c.MetadataSources().Get(core.MetadataTMDB).Configured()) {
 		t, err := c.storedTitle(ctx, key)
 		if err == nil {
 			source, err := c.titleDetailsSource(ctx, t)
@@ -190,7 +190,7 @@ func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, err
 			key = t.Key
 		} else if !errors.Is(err, core.ErrNotFound) {
 			return nil, err
-		} else if key.Allocated() || !c.TMDBConfigured() {
+		} else if key.Allocated() || !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
 			typ := core.TypeShow
 			if key.Kind() == core.KindMovie {
 				typ = core.TypeMovie

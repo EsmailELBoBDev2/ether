@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -19,15 +20,21 @@ func init() {
 // index. Limit before loading snapshots, then fetch each selected row by its
 // primary key rather than scanning history a second time. Both databases use
 // integer division for series identity and support these window/CTE clauses.
-const continueSeriesQuery = `WITH ranked AS (
- SELECT id, viewed_at, ROW_NUMBER() OVER (
- PARTITION BY rating_key/10000000 ORDER BY viewed_at DESC,id DESC) AS position
- FROM state_history WHERE user_id=? AND completed=1 AND rating_key>=? AND rating_key<?
+var continueSeriesQuery = fmt.Sprintf(`WITH input(uid,lo,hi,page_size) AS (VALUES (CAST(? AS BIGINT),CAST(? AS BIGINT),CAST(? AS BIGINT),CAST(? AS BIGINT))),
+ episodes AS (
+ SELECT id,viewed_at,2000000000000000+(rating_key-4000000000000000)/10000000 AS show_key
+ FROM state_history WHERE user_id=(SELECT uid FROM input) AND completed=1
+ AND rating_key>=(SELECT lo FROM input) AND rating_key<(SELECT hi FROM input)
+ UNION ALL
+ SELECT h.id,h.viewed_at,a.show_key FROM state_history h JOIN catalog_allocated_child a ON a.key=h.rating_key AND a.kind=4
+ WHERE h.user_id=(SELECT uid FROM input) AND h.completed=1 AND h.rating_key>%d AND h.rating_key<%d
+ ), ranked AS (
+ SELECT id,viewed_at,ROW_NUMBER() OVER (PARTITION BY show_key ORDER BY viewed_at DESC,id DESC) AS position FROM episodes
  ), selected AS (
- SELECT id FROM ranked WHERE position=1 ORDER BY viewed_at DESC,id DESC LIMIT ?
+ SELECT id FROM ranked WHERE position=1 ORDER BY viewed_at DESC,id DESC LIMIT (SELECT page_size FROM input)
  ) SELECT h.id,h.user_id,h.rating_key,h.viewed_at,h.completed,h.view_type,h.device_id,h.snapshot
  FROM selected JOIN state_history h ON h.id=selected.id
- ORDER BY h.viewed_at DESC,h.id DESC`
+ ORDER BY h.viewed_at DESC,h.id DESC`, core.AllocatedEpisodeBase, core.AllocatedEpisodeBase+core.AllocatedKeyMaxSeq)
 
 // ContinueSeriesHistory returns the latest completed episode per series,
 // newest first, without an age cutoff. Reduce before limiting so repeated
@@ -100,10 +107,25 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 		}
 		return out[i].ID > out[j].ID
 	})
-	seen := make(map[int64]bool, len(out))
+	keys = keys[:0]
+	for _, entry := range out {
+		keys = append(keys, entry.Key)
+	}
+	parents, err := s.allocatedAncestry(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[core.RatingKey]bool, len(out))
 	distinct := out[:0]
 	for _, entry := range out {
-		show := entry.Key.TMDB()
+		show := parents[entry.Key]
+		if show == 0 {
+			if entry.Key.Allocated() {
+				show = entry.Key
+			} else {
+				show = core.ShowKey(entry.Key.TMDB())
+			}
+		}
 		if seen[show] {
 			continue
 		}

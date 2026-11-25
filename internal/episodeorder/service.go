@@ -232,6 +232,24 @@ func (s *Service) Reset(ctx context.Context, user int64, show core.RatingKey) er
 	_, e := s.db.ExecContext(ctx, `DELETE FROM episodeorder_preferences WHERE user_id=? AND show_key=?`, user, int64(show))
 	return e
 }
+
+// MetadataGroup reads the existing shared group cache after verifying show ownership.
+func (s *Service) MetadataGroup(ctx context.Context, id int64, groupID string) (*tmdb.EpisodeGroup, error) {
+	if s.source == nil || id <= 0 {
+		return nil, core.ErrUnsupported
+	}
+	groups, err := s.source.EpisodeGroups(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		if group.ID == groupID {
+			return s.group(ctx, groupID)
+		}
+	}
+	return nil, core.ErrNotFound
+}
+
 func (s *Service) group(ctx context.Context, id string) (*tmdb.EpisodeGroup, error) {
 	var body string
 	var at int64
@@ -578,30 +596,7 @@ func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, seas
 	if err != nil {
 		return 0, 0, err
 	}
-	// TMDB subgroup order is already the season number when the orders
-	// start at 1, or when order 0 is the Specials subgroup (One Piece
-	// "TVDB Order": 0=Specials, 16=Season 16). Only a set whose first
-	// subgroup is a regular season at order 0 numbers seasons order+1.
-	seasonOffset := 0
-	for _, group := range g.Groups {
-		if group.Order != 0 {
-			continue
-		}
-		specials := strings.EqualFold(strings.TrimSpace(group.Name), "specials")
-		if !specials && len(group.Episodes) > 0 {
-			specials = true
-			for _, ep := range group.Episodes {
-				if ep.SeasonNumber != 0 {
-					specials = false
-					break
-				}
-			}
-		}
-		if !specials {
-			seasonOffset = 1
-		}
-		break
-	}
+	seasonOffset := tmdb.GroupSeasonOffset(g)
 	var found bool
 	var sn, en int
 	for _, group := range g.Groups {

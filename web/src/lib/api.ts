@@ -78,6 +78,7 @@ import type {
   SourceStartup,
   SystemLoad,
   TestResult,
+  ProviderSpeedResult,
   UpdateNotes,
   UpdateStatus,
   UsenetProvider,
@@ -430,6 +431,8 @@ export const api = {
     post<QualityAnswer>("/quality/explain", question, signal),
 
   // ---- Integration tests ----------------------------------------------------
+  testProviderSpeed: (kind: "usenet" | "debrid", id: string, signal?: AbortSignal) =>
+    post<ProviderSpeedResult>(`/test/${kind}/${encodeURIComponent(id)}/speed`, {}, signal),
   testUsenet: (p: UsenetProvider) => post<TestResult>("/test/usenet", p),
   testIndexer: (ix: Indexer) => post<TestResult>("/test/indexer", ix),
   previewIndexer: (req: IndexerPreviewRequest) => post<RequestPreview>("/indexer/preview", req),

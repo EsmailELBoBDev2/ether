@@ -96,7 +96,8 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return a.users.Authenticate(ctx, token)
 		},
-		Sessions: a.users,
+		Sessions:          a.users,
+		TestProviderSpeed: a.testProviderSpeed,
 		TestUsenet: func(ctx context.Context, p config.UsenetProvider) error {
 			if a.fetcher != nil {
 				return a.fetcher.TestProvider(ctx, p)

@@ -175,6 +175,16 @@ func (l *limiter) acquire(ctx context.Context) error {
 	}
 }
 
+func (l *limiter) tryAcquire() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.used >= l.limit || l.waiting != 0 {
+		return false
+	}
+	l.used++
+	return true
+}
+
 // reacquire is acquire for a caller that must end up holding a slot (its
 // release is deferred): when ctx ends first the slot is taken anyway, over
 // the limit, and ctx's error returned.

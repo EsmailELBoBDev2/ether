@@ -293,6 +293,7 @@ const LegacyAliasIndexer = "legacy:nzb"
 // ReplicaStore is what the cluster layer needs from a node-local vault.
 type ReplicaStore interface {
 	Store
+	SpeedSampleKeys(context.Context) ([]Key, error)
 	NZBIdentityLookup
 	// ReadFrame returns the record's stored compressed frame.
 	ReadFrame(ctx context.Context, key Key) ([]byte, error)

@@ -118,6 +118,7 @@ type Engine struct {
 	files        map[string]*remoteFile
 	mediaPauseMu sync.Mutex
 	mediaPauses  map[string]mediaPause
+	speedChecks  sync.Map // per-file connection channel -> context.CancelFunc
 
 	stats engineCounters
 
@@ -337,8 +338,12 @@ func (e *Engine) Open(ctx context.Context, releaseID string, payload []byte) (co
 		return nil, err
 	}
 	s := &httpSource{f: f, last: -2, priority: func() bool { return callerUrgent(ctx) }}
+	p, _ := f.payload()
+	if !p.IsDirect() && !p.IsPluginProvider() {
+		s.speedAccount = e.svc.entryByID(p.Provider)
+	}
 	s.raCtx, s.raCancel = newSeekEpoch(f.ctx)
-	if p, _ := f.payload(); p.isCompressedZip() {
+	if p.isCompressedZip() {
 		return &zipDeflateSource{
 			httpSource: s,
 			name:       p.Name(),
@@ -2059,8 +2064,15 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		}
 		return resp, tm, err
 	}
-	if !acquire(true) {
-		return nil, timing{}, ctx.Err()
+	if !acquire(false) {
+		if priority() {
+			if stop, ok := e.speedChecks.Load(slots); ok {
+				stop.(context.CancelFunc)()
+			}
+		}
+		if !acquire(true) {
+			return nil, timing{}, ctx.Err()
+		}
 	}
 	preempt, _ := ctx.Value(fetchPreemptKey{}).(context.CancelFunc)
 	host, err := e.gate.acquire(ctx, addr, priority, preempt)
@@ -2383,6 +2395,9 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 	} else {
 		resp, err = hc.Do(req)
 	}
+	if errors.Is(err, errSpeedDialBusy) {
+		return nil, timing{}, errSpeedDialBusy
+	}
 	switch {
 	case err == nil:
 		noteCapReadStarted(ctx) // transports without httptrace still bound the initial read
@@ -2418,7 +2433,9 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 // core.MediaSource plus the context-aware read variants the playback layer
 // type-asserts (ReadAtContext, ReadAtPrefetchContext, ReadMetadataAtContext).
 type httpSource struct {
-	f *remoteFile
+	f            *remoteFile
+	speedAccount *entry
+	speedSample  sync.Once
 
 	mu       sync.Mutex
 	last     int64       // last block a live read touched
@@ -2590,7 +2607,15 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 	n := 0
 	if live && callerUrgent(ctx) {
 		s.beginConsumption(f.e.now())
-		defer func() { s.recordConsumption(n, off, meterEpoch) }()
+		defer func() {
+			s.recordConsumption(n, off, meterEpoch)
+			if n > 0 && s.speedAccount != nil && !core.IsSpeculative(ctx) {
+				s.speedSample.Do(func() {
+					payload, _ := f.payload()
+					s.speedAccount.rememberSpeedSample(f.e.now(), f.id, payload)
+				})
+			}
+		}()
 	}
 	if live {
 		s.mu.Lock()

@@ -1,3 +1,9 @@
+import {
+  providerSpeedMetric,
+  ProviderSpeedButton,
+  ProviderSpeedReport,
+  useProviderSpeed,
+} from "./provider-speed";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { formatThroughput } from "../../lib/format";
 import { t, tn, tx } from "../../i18n";
@@ -318,6 +324,9 @@ export function DebridSources({
     }
   }
 
+  const savedProvider = editing ? providers.find((p) => p.id === editing.draft.id) : undefined;
+  const speedTest = useProviderSpeed("debrid", savedProvider?.id);
+
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (!cfg || !debrid) return <LoadingRows rows={3} />;
 
@@ -480,9 +489,17 @@ export function DebridSources({
                     value: selectedStatus?.latency?.throughputBps
                       ? formatThroughput(selectedStatus.latency.throughputBps)
                       : "—",
+                    ...providerSpeedMetric(speedTest.measurement),
                   },
                 ]}
               />
+              {(speedTest.running || speedTest.result) && (
+                <ProviderSpeedReport
+                  kind="debrid"
+                  result={speedTest.result}
+                  running={speedTest.running}
+                />
+              )}
             </div>
           ) : null
         }
@@ -500,11 +517,20 @@ export function DebridSources({
         error={error}
         tools={
           draft ? (
-            <TestButton
-              state={tests[draft.id] ?? { status: "idle" }}
-              onTest={() => runTest(draft.id, () => api.testDebrid(draft))}
-              disabled={!draft.apiKey}
-            />
+            <>
+              <TestButton
+                state={tests[draft.id] ?? { status: "idle" }}
+                onTest={() => runTest(draft.id, () => api.testDebrid(draft))}
+                disabled={!draft.apiKey || speedTest.running}
+              />
+              {savedProvider && (
+                <ProviderSpeedButton
+                  running={speedTest.running}
+                  disabled={!savedProvider.enabled || tests[draft.id]?.status === "running"}
+                  run={speedTest.run}
+                />
+              )}
+            </>
           ) : null
         }
       >

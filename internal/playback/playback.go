@@ -270,6 +270,8 @@ type Manager struct {
 	subtitleRunning   bool
 	channelWarmActive int
 	sourceAccounting  sourceAccounting
+	throughputMu      sync.Mutex
+	throughputSamples []throughputSample
 	// sourceCleanupBudget, when set, is the shutdown wait for in-flight
 	// source cleanup. Production leaves it nil and uses
 	// sourceCleanupShutdownWait. Tests install an already-expired context

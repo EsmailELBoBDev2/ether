@@ -40,6 +40,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/plextv"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
@@ -206,8 +207,9 @@ type Deps struct {
 	Sessions Sessions
 
 	// Provider/integration testers used by the wizard and settings pages.
-	TestUsenet  func(ctx context.Context, p config.UsenetProvider) error
-	TestIndexer func(ctx context.Context, ix config.Indexer) error
+	TestProviderSpeed func(context.Context, string, string) speedtest.Result
+	TestUsenet        func(ctx context.Context, p config.UsenetProvider) error
+	TestIndexer       func(ctx context.Context, ix config.Indexer) error
 	// TestIndexerIdentity runs a single caps request through the resolved
 	// identity for ix under policy.
 	TestIndexerIdentity func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error)
@@ -522,6 +524,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("GET /api/plex/status", h.handlePlexStatus)
 
 	api("POST /api/test/usenet", h.handleTestUsenet)
+	api("POST /api/test/{kind}/{id}/speed", h.handleProviderSpeed)
 	api("POST /api/test/indexer", h.handleTestIndexer)
 	api("POST /api/test/indexer-identity", h.handleTestIndexerIdentity)
 	api("POST /api/indexer/preview", h.handleIndexerPreview)

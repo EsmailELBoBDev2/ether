@@ -67,6 +67,14 @@ ALTER TABLE catalog_order_seasons ADD COLUMN provider_id TEXT NOT NULL DEFAULT '
 `)
 }
 
+func init() {
+	store.Register("catalog", 84, `
+CREATE TABLE catalog_episode_provider_air (
+ key INTEGER PRIMARY KEY,
+ air_ts INTEGER NOT NULL
+);`)
+}
+
 var tmdbAired = core.EpisodeOrder{Source: core.MetadataTMDB, Kind: core.OrderAired}
 
 type EffectiveEpisodeOrder struct {
@@ -110,7 +118,7 @@ func (c *Catalog) EffectiveEpisodeOrder(ctx context.Context, show core.RatingKey
 	if show.Kind() != core.KindShow {
 		return EffectiveEpisodeOrder{}, core.ErrNotFound
 	}
-	t, err := c.StoredTitle(ctx, show)
+	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EffectiveEpisodeOrder{}, err
 	}
@@ -151,6 +159,9 @@ func (c *Catalog) episodeLibraryDefault(ctx context.Context, show *core.Title) (
 			out.LibraryDefault = resolved.Order
 		}
 	}
+	if show.Key.Allocated() && show.IDs.TMDB == 0 && show.IDs.TVDB > 0 && out.LibraryDefault == tmdbAired {
+		out.LibraryDefault.Source = core.MetadataTVDB
+	}
 	return out, nil
 }
 
@@ -165,7 +176,7 @@ func (c *Catalog) SetEpisodeOrder(ctx context.Context, show core.RatingKey, orde
 		}
 		return err
 	}
-	t, err := c.StoredTitle(ctx, show)
+	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return err
 	}

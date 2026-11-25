@@ -39,13 +39,20 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 	}
 	var items []core.Title
 	for start := 0; start < len(shows); start += scheduleBatch {
-		batch := shows[start:min(start+scheduleBatch, len(shows))]
-		args := make([]any, 0, len(batch)+3)
-		for _, k := range batch {
-			args = append(args, int64(k))
+		batch := uniqueRatingKeys(shows[start:min(start+scheduleBatch, len(shows))])
+		if len(batch) == 0 {
+			continue
 		}
-		args = append(args, from.Unix(), until.Unix(), limit)
-		got, err := c.scheduleRows(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE type='episode' AND release_known=1 AND season>0 AND adult=0 AND show_key IN (`+placeholders(len(batch))+`) AND released_ts>=? AND released_ts<? ORDER BY released_ts, key LIMIT ?`, args...)
+		scope, args, err := c.currentEpisodeScope(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, from.Unix(), until.Unix(), orderDateBound(from), orderDateBound(until), limit)
+		got, err := c.scheduleRows(ctx, scope+`SELECT `+prefixedCols("t")+` FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key
+ WHERE e.season>0 AND t.adult=0 AND ((e.uses_layout=0 AND e.air_ts<>0 AND e.air_ts>=? AND e.air_ts<?)
+ OR (e.uses_layout=1 AND e.air_date<>'' AND e.air_date>=? AND e.air_date<?))
+ ORDER BY e.air_ts,e.air_date,e.key LIMIT ?`, args...)
+
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +67,7 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 		return nil, err
 	}
 	for i := range entries {
-		entries[i].SeasonEpisodes = sizes[entries[i].Title.Key.Parent()]
+		entries[i].SeasonEpisodes = sizes[entries[i].Title.ParentKey]
 	}
 	return entries, nil
 }
@@ -68,29 +75,30 @@ func (c *Catalog) ScheduledShows(ctx context.Context, shows []core.RatingKey, fr
 // seasonSizes reads the highest mirrored episode number of each season
 // the entries belong to.
 func (c *Catalog) seasonSizes(ctx context.Context, entries []ScheduleEntry) (map[core.RatingKey]int, error) {
-	seen := map[core.RatingKey]bool{}
-	var shows []any
-	for _, e := range entries {
-		if k := e.Title.ShowKey; k != 0 && !seen[k] {
-			seen[k] = true
-			shows = append(shows, int64(k))
-		}
+	var shows []core.RatingKey
+	for _, entry := range entries {
+		shows = append(shows, entry.Title.ShowKey)
 	}
+	shows = uniqueRatingKeys(shows)
 	out := map[core.RatingKey]int{}
 	for start := 0; start < len(shows); start += scheduleBatch {
 		batch := shows[start:min(start+scheduleBatch, len(shows))]
-		rows, err := c.db.QueryContext(ctx, `SELECT show_key, season, MAX(episode) FROM catalog_titles WHERE type='episode' AND season>0 AND show_key IN (`+placeholders(len(batch))+`) GROUP BY show_key, season`, batch...)
+		scope, args, err := c.currentEpisodeScope(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := c.db.QueryContext(ctx, scope+`SELECT season_key,MAX(episode) FROM scoped_episodes WHERE season>0 GROUP BY season_key`, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var show int64
-			var season, last int
-			if err := rows.Scan(&show, &season, &last); err != nil {
+			var key core.RatingKey
+			var count int
+			if err := rows.Scan(&key, &count); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			out[core.SeasonKey(core.RatingKey(show).TMDB(), season)] = last
+			out[key] = count
 		}
 		err = rows.Err()
 		rows.Close()
@@ -270,6 +278,10 @@ func (c *Catalog) scheduleEntries(ctx context.Context, items []core.Title) ([]Sc
 	if err := c.hydrateVisibilityFacts(ctx, items); err != nil {
 		return nil, err
 	}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+
 	shows, err := c.scheduleShowParents(ctx, items)
 	if err != nil {
 		return nil, err
@@ -301,6 +313,10 @@ func (c *Catalog) scheduleEntries(ctx context.Context, items []core.Title) ([]Sc
 			continue
 		}
 		e := ScheduleEntry{Title: t, Playable: c.visibleTitle(&t)}
+		if t.Type == core.TypeEpisode && !t.EpisodeAirDate.IsZero() {
+			e.Title.Released = t.EpisodeAirDate
+		}
+
 		if show := shows[t.ShowKey]; show != nil {
 			e.ShowPoster = show.poster
 		}
@@ -322,7 +338,7 @@ func (c *Catalog) RefreshSchedule(ctx context.Context, show core.RatingKey) erro
 	if show.Kind() != core.KindShow {
 		return nil
 	}
-	parent, err := c.StoredTitle(ctx, show)
+	parent, err := c.storedTitle(ctx, show)
 	if err == nil {
 		effective, err := c.effectiveEpisodeOrder(ctx, parent)
 		if err != nil {

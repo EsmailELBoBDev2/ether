@@ -27,7 +27,7 @@ func providerLayout(show *core.Title, order core.EpisodeOrder) bool {
 }
 
 func (c *Catalog) CachedEpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, bool, error) {
-	t, err := c.StoredTitle(ctx, show)
+	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, false, err
 	}
@@ -39,7 +39,7 @@ func (c *Catalog) CachedEpisodeLayout(ctx context.Context, show core.RatingKey) 
 }
 
 func (c *Catalog) EpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, error) {
-	t, err := c.StoredTitle(ctx, show)
+	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, err
 	}
@@ -59,12 +59,16 @@ func (c *Catalog) EpisodeLayout(ctx context.Context, show core.RatingKey) (Episo
 func (c *Catalog) readEpisodeLayout(ctx context.Context, show *core.Title, order core.EpisodeOrder) (EpisodeLayout, bool, error) {
 	out := EpisodeLayout{Order: order, Seasons: map[int]core.RatingKey{}, Complete: map[int]bool{}}
 	if !providerLayout(show, order) {
-		legacy, err := c.ReleaseEpisodeLayout(ctx, show.Key)
+		legacy, err := c.canonicalReleaseEpisodeLayout(ctx, show.Key)
 		if err != nil {
 			return out, false, err
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT key,tmdb_id,tvdb,imdb,season,episode,released_ts FROM catalog_titles
- WHERE show_key=? AND type='episode' ORDER BY season,episode,key`, show.Key)
+		rows, err := c.db.QueryContext(ctx, `SELECT t.key,t.tmdb_id,t.tvdb,t.imdb,t.season,t.episode,
+ COALESCE(p.air_ts,CASE WHEN evidence.earliest_ts=t.released_ts THEN 0 ELSE t.released_ts END)
+ FROM catalog_titles t
+ LEFT JOIN catalog_episode_provider_air p ON p.key=t.key
+ LEFT JOIN catalog_episode_release evidence ON evidence.key=t.key
+ WHERE t.show_key=? AND t.type='episode' AND t.key<5000000000000000 ORDER BY t.season,t.episode,t.key`, show.Key)
 		if err != nil {
 			return out, false, err
 		}
@@ -84,7 +88,9 @@ func (c *Catalog) readEpisodeLayout(ctx context.Context, show *core.Title, order
 			out.Episodes = append(out.Episodes, ep)
 		}
 		for n := range legacy.Seasons {
-			out.Seasons[n] = core.SeasonKey(show.IDs.TMDB, n)
+			if n >= 0 && n < 1000 {
+				out.Seasons[n] = core.SeasonKey(show.IDs.TMDB, n)
+			}
 		}
 		out.Complete = legacy.Complete
 		return out, len(out.Seasons) > 0, rows.Err()
@@ -307,7 +313,7 @@ func (c *Catalog) EpisodeMatchRanges(ctx context.Context, from, to core.RatingKe
 // HydrateEpisodeLayout loads the selected layout on explicit use, including
 // the destination tree of a user-requested match correction.
 func (c *Catalog) HydrateEpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, error) {
-	t, err := c.StoredTitle(ctx, show)
+	t, err := c.storedTitle(ctx, show)
 	if err != nil {
 		return EpisodeLayout{}, err
 	}
@@ -315,10 +321,6 @@ func (c *Catalog) HydrateEpisodeLayout(ctx context.Context, show core.RatingKey)
 	if err != nil {
 		return EpisodeLayout{}, err
 	}
-	if t.Key.Allocated() && t.IDs.TMDB == 0 && t.IDs.TVDB > 0 && effective.Order == tmdbAired {
-		effective.Order = core.EpisodeOrder{Source: core.MetadataTVDB, Kind: core.OrderAired}
-	}
-
 	if !providerLayout(t, effective.Order) {
 		seasons, err := c.seasonsOfShow(ctx, t.IDs.TMDB)
 		if err != nil {

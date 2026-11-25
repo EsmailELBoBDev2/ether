@@ -15,6 +15,11 @@ func (c *Catalog) currentEpisodeScope(ctx context.Context, shows []core.RatingKe
 	if err != nil {
 		return "", nil, err
 	}
+	sql, args := episodeScope(shows, chosen)
+	return sql, args, nil
+}
+
+func episodeScope(shows []core.RatingKey, chosen map[core.RatingKey]showOrder) (string, []any) {
 	var args []any
 	parts := make([]string, 0, len(shows))
 	for _, show := range shows {
@@ -42,7 +47,7 @@ func (c *Catalog) currentEpisodeScope(ctx context.Context, shows []core.RatingKe
  AND NOT EXISTS (SELECT 1 FROM catalog_order_episodes m WHERE m.show_key=o.show_key AND m.provider=o.provider AND m.order_kind=o.order_kind
  AND (m.episode_key=e.key OR (m.season=0 AND m.episode=e.episode))))
  ) `
-	return sql, args, nil
+	return sql, args
 }
 
 const scopedAired = `((e.uses_layout=0 AND e.air_ts<>0 AND e.air_ts<=?) OR (e.uses_layout=1 AND e.air_date<>'' AND e.air_date<=?))`

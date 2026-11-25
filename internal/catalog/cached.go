@@ -10,8 +10,15 @@ import (
 
 // CachedTitle returns a mirrored title without contacting TMDB.
 func (c *Catalog) CachedTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	key, err := c.canonicalSourceKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	st, err := c.loadByKey(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.projectSingle(ctx, &st.t); err != nil {
 		return nil, err
 	}
 	return &st.t, nil
@@ -87,11 +94,46 @@ func (c *Catalog) RecentEpisodesMany(ctx context.Context, shows []core.RatingKey
 	return out, nil
 }
 
-// CachedTitles returns released, non-adult mirrored titles in requested order,
-// without refreshing remote metadata. Batch consumers such as recommendation
+// CachedTitles returns mirrored titles in requested order without refreshing.
+// Episode and season lookups also include upcoming rows. Batch consumers such as recommendation
 // builders use this to avoid one full hydration round trip per history entry.
 func (c *Catalog) CachedTitles(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
-	return c.titlesByKeys(ctx, keys)
+	var roots, children []core.RatingKey
+	for _, key := range keys {
+		if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
+			children = append(children, key)
+		} else {
+			roots = append(roots, key)
+		}
+	}
+	items, err := c.titlesByKeys(ctx, roots)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[core.RatingKey]core.Title, len(items)+len(children))
+	for _, item := range items {
+		byKey[item.Key] = item
+	}
+	if len(children) > 0 {
+		filter, args := c.keyMembership("key", false, uniqueRatingKeys(children))
+		found, err := c.queryTitlesUnfiltered(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE `+filter, args...)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.ProjectEpisodeTitles(ctx, found); err != nil {
+			return nil, err
+		}
+		for _, item := range found {
+			byKey[item.Key] = item
+		}
+	}
+	out := make([]core.Title, 0, len(byKey))
+	for _, key := range keys {
+		if item, ok := byKey[key]; ok {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 // ShowTrajectories computes season/episode rating trajectories for a batch of

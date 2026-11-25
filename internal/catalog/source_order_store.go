@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 type orderFetchKey struct {
@@ -133,17 +134,18 @@ func (c *Catalog) beginOrderWrite(ctx context.Context, show core.RatingKey) (*sq
 	if err != nil {
 		return nil, err
 	}
-	// The shared manifest and cross-order matches for a show are serialized
-	// by the parent row on Postgres. This also acquires SQLite's write gate
-	// before any read to avoid deferred-transaction upgrade races.
-	r, err := tx.ExecContext(ctx, `UPDATE catalog_titles SET key=key WHERE key=? AND type='show'`, show)
-	if err == nil {
-		var count int64
-		count, err = r.RowsAffected()
-		if count == 0 && err == nil {
-			err = core.ErrNotFound
-		}
+	// SQLite starts an immediate transaction. Postgres locks the one show
+	// whose cross-order identities are being reconciled.
+	query := `SELECT key FROM catalog_titles WHERE key=? AND type='show'`
+	if store.DialectOf(c.db) == store.Postgres {
+		query += " FOR UPDATE"
 	}
+	var key core.RatingKey
+	err = tx.QueryRowContext(ctx, query, show).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = core.ErrNotFound
+	}
+
 	if err != nil {
 		tx.Rollback()
 		return nil, err
@@ -195,8 +197,10 @@ func (c *Catalog) storeOrderManifest(ctx context.Context, show *core.Title, orde
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_seasons(show_key,provider,order_kind,season,season_key,title,summary,poster,air_date,episode_count,provider_id)
  VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(show_key,provider,order_kind,season) DO UPDATE SET
- season_key=excluded.season_key,title=excluded.title,summary=excluded.summary,poster=excluded.poster,air_date=excluded.air_date,
- fetched_at=CASE WHEN catalog_order_seasons.episode_count<>excluded.episode_count THEN 0 ELSE catalog_order_seasons.fetched_at END,episode_count=excluded.episode_count,provider_id=excluded.provider_id`,
+ season_key=excluded.season_key,title=excluded.title,summary=excluded.summary,poster=excluded.poster,
+ air_date=CASE WHEN excluded.air_date<>'' THEN excluded.air_date ELSE catalog_order_seasons.air_date END,
+ fetched_at=CASE WHEN excluded.episode_count>=0 AND catalog_order_seasons.episode_count<>excluded.episode_count THEN 0 ELSE catalog_order_seasons.fetched_at END,
+ episode_count=CASE WHEN excluded.episode_count>=0 THEN excluded.episode_count ELSE catalog_order_seasons.episode_count END,provider_id=excluded.provider_id`,
 			show.Key, order.Source, order.Kind, row.Season, key, row.Title, row.Summary, row.PosterPath, row.AirDate, row.EpisodeCount, row.Ref.ID)
 		if err != nil {
 			return err
@@ -292,11 +296,17 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 	}
 	defer tx.Rollback()
 	seen := map[int]bool{}
+	refs := map[string]bool{}
+	var firstAir string
 	for _, row := range rows {
-		if row.Season != season.Season || row.Episode < 0 || seen[row.Episode] || row.Ref.ID == "" || row.Ref.Source != order.Source {
+		if row.Season != season.Season || row.Episode < 0 || seen[row.Episode] || refs[row.Ref.ID] || row.Ref.ID == "" || row.Ref.Source != order.Source {
 			return fmt.Errorf("catalog: invalid or duplicate provider episode")
 		}
 		seen[row.Episode] = true
+		refs[row.Ref.ID] = true
+		if !metadataDate(row.AirDate).IsZero() && (firstAir == "" || row.AirDate < firstAir) {
+			firstAir = row.AirDate
+		}
 	}
 	existing, err := tx.QueryContext(ctx, `SELECT key,tmdb_id,tvdb,imdb,season,episode,title,released_ts FROM catalog_titles WHERE show_key=? AND type='episode'`, show.Key)
 	if err != nil {
@@ -322,6 +332,7 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 	}
 	// Lock in exact identities before considering any heuristic match.
 	assigned := make([]core.RatingKey, len(rows))
+	providerKeys := make([]core.RatingKey, len(rows))
 	used := map[core.RatingKey]bool{}
 	taken, err := tx.QueryContext(ctx, `SELECT episode_key FROM catalog_order_episodes WHERE show_key=? AND provider=? AND order_kind=? AND season<>?`, show.Key, order.Source, order.Kind, season.Season)
 	if err != nil {
@@ -374,6 +385,7 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 				return fmt.Errorf("catalog: episode repeated across provider season coordinates")
 			}
 			assigned[i], used[key] = key, true
+			providerKeys[i] = key
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -411,9 +423,12 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 			show.IDs.TMDB > 0 && show.IDs.TMDB < 100_000_000 && episodeKeyFits(row.Aired.Season, row.Aired.Episode) {
 			preferred = core.EpisodeKey(show.IDs.TMDB, row.Aired.Season, row.Aired.Episode)
 		}
-		key, err := putSourceIdentity(ctx, tx, core.KindEpisode, order.Source, row.Ref.ID, preferred, now)
-		if err != nil {
-			return err
+		key := providerKeys[i]
+		if key == 0 {
+			key, err = putSourceIdentity(ctx, tx, core.KindEpisode, order.Source, row.Ref.ID, preferred, now)
+			if err != nil {
+				return err
+			}
 		}
 		if previous, ok := episodeByKey[key]; ok {
 			ids := mergeSourceIDs(previous.ids, row.IDs)
@@ -440,7 +455,8 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE catalog_order_seasons SET fetched_at=? WHERE show_key=? AND provider=? AND order_kind=? AND season=?`, now, show.Key, order.Source, order.Kind, season.Season)
+	_, err = tx.ExecContext(ctx, `UPDATE catalog_order_seasons SET fetched_at=?,episode_count=?,air_date=CASE WHEN ?<>'' THEN ? ELSE air_date END
+ WHERE show_key=? AND provider=? AND order_kind=? AND season=?`, now, len(rows), firstAir, firstAir, show.Key, order.Source, order.Kind, season.Season)
 	if err != nil {
 		return err
 	}
@@ -478,7 +494,7 @@ func compatibleEpisodeIDs(a, b core.IDs) bool {
 func orderedSeasonTitle(show *core.Title, order core.EpisodeOrder, row orderSeason) core.Title {
 	date := metadataDate(row.AirDate)
 	t := core.Title{Key: row.key, Type: core.TypeSeason, ShowKey: show.Key, ShowIDs: show.IDs, ShowTitle: show.Title, ParentKey: show.Key,
-		Season: row.Season, Title: row.Title, SeasonTitle: row.Title, Summary: row.Summary, PosterPath: row.PosterPath, Released: date, ChildCount: row.EpisodeCount, LeafCount: row.EpisodeCount, EpisodeOrder: order}
+		Season: row.Season, Title: row.Title, SeasonTitle: row.Title, Summary: row.Summary, PosterPath: row.PosterPath, Released: date, ChildCount: max(row.EpisodeCount, 0), LeafCount: max(row.EpisodeCount, 0), EpisodeOrder: order}
 	id, _ := strconv.ParseInt(row.Ref.ID, 10, 64)
 	switch order.Source {
 	case core.MetadataTMDB:
@@ -490,6 +506,10 @@ func orderedSeasonTitle(show *core.Title, order core.EpisodeOrder, row orderSeas
 	if !date.IsZero() {
 		t.Year = date.Year()
 	}
+	t.ContentRating, t.ContentRatingSource, t.Rating = show.ContentRating, show.ContentRatingSource, show.Rating
+	t.Adult, t.ContentRatings, t.EnforcementRating = show.Adult, show.ContentRatings, show.EnforcementRating
+	t.ShowYear, t.ShowOriginalTitle, t.BackdropPath = show.Year, show.OriginalTitle, show.BackdropPath
+	t.Genres, t.Studios, t.Countries = show.Genres, show.Studios, show.Countries
 	return t
 }
 

@@ -340,30 +340,11 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		plan.Media = *s.Media
 	}
 	audioOnly := b.ChannelID == "" && plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
-	format := frontend.StreamDirect
-	transport := "file"
-	mime := sourceMIME(plan.Media.Container)
-	if audioOnly {
-		mime = audioSourceMIME(plan.Media.Container, plan.Decision.AudioCodec)
-	}
-	if plan.Decision.Kind != frontend.DecisionDirectPlay {
-		if audioOnly && plan.HTTP {
-			format = frontend.StreamHTTP
-			transport = "file"
-			container := plan.HTTPContainer
-			if container == "" {
-				container = plan.Decision.Container
-			}
-			mime = audioSourceMIME(container, plan.Decision.AudioCodec)
-		} else if (b.Client.HLS || b.Client.MSE) && plan.HLS {
-			format = frontend.StreamHLS
-			transport = "hls"
-			mime = "application/vnd.apple.mpegurl"
-		} else {
-			_ = i.host.Sessions.Stop(r.Context(), i.access(r, v), s.ID)
-			problem(w, 422, "decoder", "unsupported_transport")
-			return
-		}
+	format, transport, mime := playbackTransport(plan, audioOnly, b.Client.HLS || b.Client.MSE)
+	if format == "" {
+		_ = i.host.Sessions.Stop(r.Context(), i.access(r, v), s.ID)
+		problem(w, 422, "decoder", "unsupported_transport")
+		return
 	}
 	url, e := i.host.Sessions.StartStream(r.Context(), i.access(r, v), s.ID, frontend.StreamRequest{Format: format, Position: pos, LazyStart: true, Continuous: true})
 	if e != nil {
@@ -1066,17 +1047,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		format := frontend.StreamDirect
-		transport := "file"
-		mime := sourceMIME(plan.Media.Container)
-		if plan.Decision.Kind != frontend.DecisionDirectPlay {
-			if (!s.client.HLS && !s.client.MSE) || !plan.HLS {
-				problem(w, 422, "decoder", "unsupported_transport")
-				return
-			}
-			format = frontend.StreamHLS
-			transport = "hls"
-			mime = "application/vnd.apple.mpegurl"
+		audioOnly := plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
+		format, transport, mime := playbackTransport(plan, audioOnly, s.client.HLS || s.client.MSE)
+		if format == "" {
+			problem(w, 422, "decoder", "unsupported_transport")
+			return
 		}
 		var url string
 		if !s.port(w, func() {
@@ -1123,13 +1098,12 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			paths = append(paths, object{"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}})
 		}
 		if !original {
-			audioOnly := plan.Media.Video() == nil && plan.Media.HasPlayableMedia()
 			if choice := originalChoicePath(plan, audioOnly, s.client); choice != nil {
 				paths = append(paths, choice)
 			}
 		}
 		_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
-		canBurn := trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (s.client.HLS || s.client.MSE)
+		canBurn := !audioOnly && trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (s.client.HLS || s.client.MSE)
 		formats := append([]string(nil), s.subtitleFormats...)
 		var audioTracks, subtitleTracks []object
 		var selectedAudio string
@@ -1137,8 +1111,8 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		var markers []object
 		markerItem := s.item
 		if !s.port(w, func() {
-			audioTracks, subtitleTracks, selectedAudio, selectedSub = i.playbackTracks(r.Context(), i.access(r, v), id, plan.Media, plan.Decision, plan.Decision.SubtitleStream, original, formats, canBurn)
-			if plan.Media.Video() != nil || !plan.Media.HasPlayableMedia() {
+			audioTracks, subtitleTracks, selectedAudio, selectedSub = i.playbackTracks(r.Context(), i.access(r, v), id, plan.Media, plan.Decision, plan.SubtitleStream(), original, formats, canBurn)
+			if !audioOnly {
 				markers = i.skipMarkers(r.Context(), markerItem, plan.Media)
 			}
 		}) {
@@ -1740,4 +1714,24 @@ func sourceMIME(container string) string {
 		return "application/vnd.comicbook+zip"
 	}
 	return "application/octet-stream"
+}
+
+func playbackTransport(plan frontend.PlayPlan, audioOnly, supportsHLS bool) (frontend.StreamFormat, string, string) {
+	if plan.Decision.Kind == frontend.DecisionDirectPlay {
+		if audioOnly {
+			return frontend.StreamDirect, "file", audioSourceMIME(plan.Media.Container, plan.Decision.AudioCodec)
+		}
+		return frontend.StreamDirect, "file", sourceMIME(plan.Media.Container)
+	}
+	if audioOnly && plan.HTTP {
+		container := plan.HTTPContainer
+		if container == "" {
+			container = plan.Decision.Container
+		}
+		return frontend.StreamHTTP, "file", audioSourceMIME(container, plan.Decision.AudioCodec)
+	}
+	if supportsHLS && plan.HLS {
+		return frontend.StreamHLS, "hls", "application/vnd.apple.mpegurl"
+	}
+	return "", "", ""
 }

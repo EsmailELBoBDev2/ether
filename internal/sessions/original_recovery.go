@@ -46,7 +46,7 @@ func (b *Broker) recoverOriginal(ctx context.Context, observed *brokerSession, v
 	if !ok {
 		return
 	}
-	explicit = explicit || (entry.Requested.ExactVersion && core.IsExplicitVersionSlotSelector(before.Resolution.VersionSelector))
+	explicit = explicit || (entry.Requested.ExactVersion && !s.autoRelease)
 	position := s.streamPosition
 	if s.originalPosition != nil {
 		position = *s.originalPosition

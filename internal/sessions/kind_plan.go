@@ -194,6 +194,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		}
 	}()
 
+	admission := versionAdmission{caps: req.Caps, opts: req.Intent.Options}
 	ps, pinned, err = b.pinRequestedTracks(ctx, &req, ps)
 	if err != nil {
 		return frontend.PlayPlan{}, err
@@ -215,26 +216,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		}
 		req.Intent.Options = selected
 	}
-	admitKind := func(ps *core.PlaySession, r *frontend.PlanRequest) (core.Decision, error) {
-		dec, err := b.decideTracks(ps, r)
-		if err != nil {
-			return dec, err
-		}
-		if r.Channel == "" && b.videoOff(r.Caps) && decisionEncodesVideo(dec, ps.Info) {
-			return core.Decision{}, &frontend.NoCompatiblePathError{
-				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-				Cause:         core.ErrVideoTranscodingDisabled,
-			}
-		}
-		if r.Intent.AllowTranscoding != nil && !*r.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
-			return core.Decision{}, core.ErrNotAvailable
-		}
-		if (dec.Kind == core.DecisionDirectPlay && !r.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !r.Intent.Options.DirectStream) {
-			return core.Decision{}, core.ErrNotAvailable
-		}
-		return dec, nil
-	}
-	dec, originalChoice, err := b.admitWithClientCap(ps, &req, clientCap, admitKind)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &req, clientCap, b.admitPlanDecision)
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
@@ -253,7 +235,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		b.mu.Unlock()
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, clientCap: clientCap}
+	b.plans[id] = brokerPlan{versionAdmission: admission, request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, versionHandle: versionHandle, pinned: pinned, clientCap: clientCap}
 	stored = true
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)

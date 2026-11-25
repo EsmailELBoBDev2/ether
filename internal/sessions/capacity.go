@@ -1,10 +1,12 @@
 package sessions
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/transcode"
 )
@@ -27,4 +29,21 @@ func (b *Broker) recordEncoderFailure(playID string, err error) error {
 		}
 	}
 	return capacityError(err)
+}
+
+func (b *Broker) withSourceDecision(ctx context.Context, req frontend.PlanRequest) context.Context {
+	candidate := copyRequest(req)
+	return core.WithSourceDecision(ctx, core.SourceDecision{
+		Options: candidate.Intent.Options,
+		Decide: func(info core.MediaInfo, res *core.Resolution) core.Decision {
+			probe := &core.PlaySession{Info: info, Resolution: res}
+			if info.Estimated {
+				d, _ := b.decideProfile(probe, candidate)
+				return d
+			}
+			request := candidate
+			d, _ := b.admitPlanDecision(probe, &request)
+			return d
+		},
+	})
 }

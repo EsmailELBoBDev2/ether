@@ -505,6 +505,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	entry, ok := b.bindings.Get(id)
 	if ok {
 		entry.Started = true
+		entry.Requested.AudioSet = entry.Requested.AudioSet || req.AudioStream != nil
 		entry.Decision = dec
 		entry.Offset = req.Position
 		entry.UpdatedAt = b.deps.Now()
@@ -529,6 +530,13 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			live.opts = s.opts
 			live.decision = dec
 			live.qualityCapped = s.qualityCapped
+		}
+		if req.AudioStream != nil {
+			live.originalAudio = nil
+		}
+		if req.SubtitleStream != nil {
+			live.originalSubtitle = nil
+			live.manualSubtitle = true
 		}
 	}
 	b.mu.Unlock()

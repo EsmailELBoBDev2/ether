@@ -404,8 +404,8 @@ export function WhoGetsWhat() {
           bodyClassName="p-0"
           actions={
             viewers && devices.data ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="w-44">
+              <>
+                <div className="w-36 sm:w-44">
                   <SearchSelect
                     {...searchSelectLabels()}
                     value={filterViewer}
@@ -414,7 +414,7 @@ export function WhoGetsWhat() {
                     ariaLabel={t("Filter by viewer")}
                   />
                 </div>
-                <div className="w-48">
+                <div className="w-36 sm:w-48">
                   <SearchSelect
                     {...searchSelectLabels()}
                     value={filterDevice}
@@ -423,7 +423,7 @@ export function WhoGetsWhat() {
                     ariaLabel={t("Filter by device")}
                   />
                 </div>
-              </div>
+              </>
             ) : null
           }
         >

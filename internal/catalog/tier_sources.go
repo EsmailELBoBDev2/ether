@@ -213,6 +213,10 @@ var tierUntouchedTables = []string{
 	// title only frees a quota entry and is never a reason to keep it.
 	"safety_download_usage",
 	"collections_addon_imports",
+	// A derived index of the title references in collections_specs, which
+	// is already a touch source (touchScan); provider speed tests hold no
+	// title at all.
+	"collections_title_refs", "provider_speed_results",
 	"state_play_contexts",
 	// Live sports events are keyed by plugin event ids, never catalogue titles.
 	"live_event_reveals", "viewer_push_liveevent_claims",

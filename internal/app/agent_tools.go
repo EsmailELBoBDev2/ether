@@ -688,7 +688,6 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 	for _, p := range cfg.Quality.Profiles {
 		out = append(out, builtin.ProfileInfo{
 			Name:               p.Name,
-			Media:              p.MediaType,
 			Scores:             maps.Clone(p.CustomFormatScores),
 			Rules:              append([]core.ReleaseRule(nil), p.ReleaseRules...),
 			QualityOrder:       config.CloneQualityOrder(p.QualityOrder),
@@ -703,11 +702,11 @@ func (ps *appProfileService) Profiles(ctx context.Context) ([]builtin.ProfileInf
 	return out, nil
 }
 
-func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
+func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
 			p := &c.Quality.Profiles[i]
-			if strings.EqualFold(p.Name, profile) && p.MediaType == media {
+			if strings.EqualFold(p.Name, profile) {
 				p.QualityOrder = config.CloneQualityOrder(order)
 				return nil
 			}
@@ -716,11 +715,11 @@ func (ps *appProfileService) SetQualityOrder(ctx context.Context, profile, media
 	})
 }
 
-func (ps *appProfileService) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
+func (ps *appProfileService) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
 			p := &c.Quality.Profiles[i]
-			if strings.EqualFold(p.Name, profile) && p.MediaType == media {
+			if strings.EqualFold(p.Name, profile) {
 				if p.CustomFormatScores == nil {
 					p.CustomFormatScores = map[string]int{}
 				}
@@ -738,10 +737,10 @@ func (ps *appProfileService) SetFormatScores(ctx context.Context, profile, media
 	})
 }
 
-func (ps *appProfileService) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
+func (ps *appProfileService) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
 	return ps.a.saveValidated(func(c *config.Config) error {
 		for i := range c.Quality.Profiles {
-			if strings.EqualFold(c.Quality.Profiles[i].Name, profile) && c.Quality.Profiles[i].MediaType == media {
+			if strings.EqualFold(c.Quality.Profiles[i].Name, profile) {
 				p := &c.Quality.Profiles[i]
 				baseID := rule.ID
 				if baseID == "" {

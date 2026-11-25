@@ -225,14 +225,12 @@ func (m *Manager) RevealDetail(user *core.User, clientID string, key core.Rating
 }
 
 func isTVDetailKey(key core.RatingKey) bool {
-	if key == 0 || key.IsPluginKey() || key.TMDB() <= 0 {
+	if !key.Valid() {
 		return false
 	}
 	switch key.Kind() {
-	case core.KindShow:
+	case core.KindShow, core.KindSeason, core.KindEpisode:
 		return true
-	case core.KindSeason, core.KindEpisode:
-		return key.Season() > 0
 	default:
 		return false
 	}

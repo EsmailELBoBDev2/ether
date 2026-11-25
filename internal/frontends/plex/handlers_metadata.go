@@ -789,6 +789,8 @@ func startDetailPageWait(pr *Request) {
 		// probe needs the measured four-second allowance. Persisted probes
 		// return before any wait in warmDetail.
 		pr.detailWaitUntil = time.Now().Add(4 * time.Second)
+	} else if webTrackPickerClient(pr) {
+		pr.detailWaitUntil = time.Now().Add(detailWarmWaitBudget + detailVariantReserve)
 	} else if pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV")) {
 		pr.detailWaitUntil = time.Now().Add(250 * time.Millisecond)
 	}
@@ -1837,16 +1839,18 @@ func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *fronten
 	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
 		return
 	}
-	if plexMobileOrTVBedrockClient(pr) {
-		// These Plex clients build their subtitle picker from the first
-		// response. The playback manager permits this wait only for an
-		// already resolved/cached source, never a fresh search.
+	if plexMobileOrTVBedrockClient(pr) || webTrackPickerClient(pr) {
+		// These clients build their track picker from the first response.
 		s.warmDetail(ctx, pr, t)
 		return
 	}
 	if warm, ok := s.playback().(frontend.Prewarmer); ok {
 		warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
 	}
+}
+
+func webTrackPickerClient(pr *Request) bool {
+	return pr != nil && (browserClient(pr) || strings.EqualFold(pr.Product, "Vela") || strings.EqualFold(pr.Product, "Mave"))
 }
 
 func (s *Server) revealDetail(pr *Request, t *frontend.Title) {

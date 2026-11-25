@@ -319,6 +319,9 @@ type playRequest struct {
 	// /video/:/transcode/universal/subtitles (conversion). Response
 	// shaping, zeroed by sameSettings.
 	softText bool
+	// A fresh HLS decision can stage changed settings while the old output
+	// continues to serve URLs already issued to the player.
+	restartEncoder bool
 }
 
 // androidFamilyClient reports whether the decision lists every probed track.
@@ -441,8 +444,9 @@ func (p playRequest) sameSettings(other playRequest) bool {
 	p.mediaID, other.mediaID = 0, 0
 	p.softText, other.softText = false, false
 	p.subNamed, other.subNamed = false, false
-	// Only subtitles=none changes what the encoder delivers; the other
-	// modes shape the response.
+	p.restartEncoder, other.restartEncoder = false, false
+	// The burn option is compared in opts. Of the remaining modes, only
+	// none changes what the encoder delivers.
 	if (p.subtitles == "none") == (other.subtitles == "none") {
 		p.subtitles, other.subtitles = "", ""
 	}
@@ -494,6 +498,9 @@ func mergeSessionProfile(pr *Request, entry *transcodeEntry) *Request {
 	}
 	rc := entry.requested.client
 	cp := *pr
+	// Native media loaders can omit the playback header. Republishing the
+	// decision from start must keep it on the same broker playback.
+	cp.SessionID = cmp.Or(cp.SessionID, entry.playbackID)
 	cp.Product = cmp.Or(cp.Product, rc.product, entry.caps.Product)
 	cp.Version = cmp.Or(cp.Version, rc.version, entry.caps.Version)
 	cp.Platform = cmp.Or(cp.Platform, rc.platform, entry.caps.Platform)
@@ -887,7 +894,7 @@ func applySelections(p *playRequest, info frontend.MediaInfo, langs []string) {
 	p.opts.SubtitleStream = -1
 	if p.subSet && p.subSel >= 0 && p.subSel < len(info.Streams) && info.Streams[p.subSel].Type == "subtitle" {
 		st := info.Streams[p.subSel]
-		if !st.External {
+		if !st.External || (p.opts.BurnTextSubtitles && st.ExternalURL != "") {
 			p.opts.SubtitleStream = st.Index
 		}
 	}
@@ -1001,18 +1008,16 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		} else {
 			ps = ensureSelectedSidecar(ps, p.subStream)
 		}
+		// "burn" explicitly asks the server to render text as well as image
+		// subtitles, including a selected sidecar.
+		p.opts.BurnTextSubtitles = p.subtitles == "burn"
 		resolvePlaySelection(p, ps.Info)
 		s.applyStreamPreferences(ctx, pr, p, t, ps.Info)
 		applySelections(p, ps.Info, s.audioLanguages(pr.User))
 		s.selectLegacyDecoderAudio(pr, p, ps.Info)
-		switch {
-		case p.subtitles == "none" && !keepsSelectedSubtitle(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts):
+		if p.subtitles == "none" && !keepsSelectedSubtitle(p, ps.Info) && !androidImageSubtitle(pr, ps.Info, p.opts) {
 			// The track stays selected; nothing delivers it.
 			p.opts.SubtitleStream = -1
-		case p.opts.BurnSubtitles && (browserClient(pr) || plexAndroidClient(pr)):
-			// These players explicitly request a burn when their selected
-			// rendering mode will not draw a soft text track.
-			p.opts.BurnTextSubtitles = true
 		}
 		if androidImageSubtitle(pr, ps.Info, p.opts) {
 			dec := frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{})
@@ -1131,11 +1136,20 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	}
 	s.observePlaybackDecision(ctx, pr, p, ps)
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	s.transcodes.put(&transcodeEntry{
+	next := &transcodeEntry{
 		id: p.sessionID, playID: ps.ID, playbackID: pr.SessionID, userID: pr.User.ID, clientID: pr.ClientID, key: p.key,
 		requested: requested,
 		decision:  dec, info: ps.Info, subtitle: subtitle, caps: p.caps, opts: p.opts, offset: p.offset, updatedAt: s.now(),
-	})
+	}
+	if old, ok := s.transcodes.get(next.id); ok && old.started &&
+		old.requested.protocol == "hls" && next.requested.protocol == "hls" &&
+		old.key == next.key && old.userID == next.userID && old.clientID == next.clientID &&
+		(old.playbackID == next.playbackID || next.playbackID == "") {
+		next.started, next.offset, next.playbackID = true, old.offset, old.playbackID
+		next.requested.restartEncoder = old.requested.restartEncoder || old.playID != next.playID ||
+			!next.requested.sameSettings(entryExpectedStart(old)) || !reflect.DeepEqual(next.opts, old.opts)
+	}
+	s.transcodes.put(next)
 	return t, ps, dec, nil
 }
 
@@ -1393,7 +1407,7 @@ func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend
 	// change, and answering direct play makes it keep ranging the original
 	// part instead of calling start (#420).
 	belowSource := !dec.VideoCopy && qualityBelowSource(p.caps, ps.Info)
-	mdeDirect := p.mde && p.opts.DirectPlay && !belowSource && !dec.StripDolbyVision && !(plexAndroidClient(pr) && dec.BurnSubtitles) && (!pm4k || dec.Kind == frontend.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
+	mdeDirect := p.mde && p.opts.DirectPlay && !belowSource && !dec.StripDolbyVision && !dec.BurnSubtitles && (!pm4k || dec.Kind == frontend.DecisionDirectPlay) && len(p.opts.AudioFilters) == 0 && !ownerConverts &&
 		!(onDemandSession(ps) && (mustConvert || (p.opts.DirectStream && dec.Kind != frontend.DecisionDirectPlay)))
 	shown := dec
 	if mdeDirect {
@@ -2028,7 +2042,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		return dec
 	})
 	if existing, ok := s.plexHLSSession(p.sessionID); ok && existing != nil {
-		if entry.started && entry.offset == p.offset {
+		if entry.started && !entry.requested.restartEncoder && entry.offset == p.offset {
 			dec = liveSessionDecision(existing, dec)
 			s.rebindSessionTranscode(entry)
 			s.notePlexEncoder(p.sessionID, frontend.StreamHLS, dec, p.offset)
@@ -2504,7 +2518,7 @@ func liveSessionDecision(hs frontend.HLSSession, fallback frontend.Decision) fro
 }
 
 func (s *Server) transcodeEntryLive(te *transcodeEntry) bool {
-	if te == nil || !te.started || te.failErr != nil {
+	if te == nil || !te.started {
 		return false
 	}
 	if s.transcoder() != nil || s.broker() != nil {

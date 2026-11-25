@@ -274,7 +274,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
 				continue
 			}
-			if state != "stopped" && e.started && !s.transcodeEntryLive(e) {
+			// An HLS encoder can be restarted under the same binding. Retain
+			// the playlist capabilities until playback actually stops.
+			if state != "stopped" && e.started && e.requested.protocol != "hls" && !s.transcodeEntryLive(e) {
 				s.dropTranscode(id)
 				continue
 			}

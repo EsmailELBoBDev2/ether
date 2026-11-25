@@ -987,7 +987,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			if prep := m.byIdent[variantID]; prep != nil {
 				stale := !exact && m.preferenceStaleLocked(key, picked, m.now())
 				if m.sessionFitsSelection(prep, caps, "", exact) && (m.sessionFitsSelection(prep, caps, picked, exact) || (stale && prep.prefer == picked)) {
-					promotedReplaced = m.promotePreparedLocked(id, variantID, prep)
+					promotedReplaced = m.promotePreparedLocked(id, variantID, prep, caps.Protocol != "plex")
 				}
 			}
 		}
@@ -1047,7 +1047,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 					}
 				}
 				if !deferSupersession {
-					promotedReplaced = append(promotedReplaced, m.promotePreparedLocked(id, id, s)...)
+					promotedReplaced = append(promotedReplaced, m.promotePreparedLocked(id, id, s, caps.Protocol != "plex")...)
 				}
 				if play {
 					s.mu.Lock()
@@ -1153,7 +1153,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 		if !deferSupersession && f.sess != nil {
 			m.mu.Lock()
-			replaced := m.promotePreparedLocked(id, f.sess.ident, f.sess)
+			replaced := m.promotePreparedLocked(id, f.sess.ident, f.sess, caps.Protocol != "plex")
 			f.sess.claimed = true
 			m.mu.Unlock()
 			m.stopReplaced(replaced)
@@ -1418,8 +1418,9 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	// other playback, which may be the title it went on to.
 	abandoned := f.waiters == 0 && !f.detached
 	for _, o := range m.sessions {
-		// Broker supersession occurs on Open, not while a plan is prepared.
-		if !deferSupersession && !abandoned && o.ident.userID == id.userID && o.ident.clientID == id.clientID && o.ident.surface == id.surface && o.ident.key != id.key {
+		// Plex leaves cross-title supersession to the broker, which knows
+		// whether the requests describe separate players on the same device.
+		if caps.Protocol != "plex" && !deferSupersession && !abandoned && o.ident.userID == id.userID && o.ident.clientID == id.clientID && o.ident.surface == id.surface && o.ident.key != id.key {
 			replaced = append(replaced, o.id)
 		}
 	}

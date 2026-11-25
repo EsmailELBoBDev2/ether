@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -39,6 +40,10 @@ func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSe
 		if id == replacement.public.ID || s.public.ViewerID != replacement.public.ViewerID || s.clientID != replacement.clientID {
 			continue
 		}
+		if s.public.Protocol == "plex" && replacement.public.Protocol == "plex" &&
+			s.public.Item != replacement.public.Item && separatePlexPlayers(s, replacement) {
+			continue
+		}
 		if replacement.multiviewGroup != "" && s.multiviewGroup == replacement.multiviewGroup && s.multiviewTile != replacement.multiviewTile {
 			continue
 		}
@@ -51,6 +56,20 @@ func (b *Broker) collectSupersededLocked(replacement *brokerSession) []*brokerSe
 		old = append(old, s)
 	}
 	return old
+}
+
+func separatePlexPlayers(a, b *brokerSession) bool {
+	// Different titles with distinct playback IDs have their own stops.
+	if a.playbackID != "" && b.playbackID != "" {
+		return a.playbackID != b.playbackID
+	}
+	// Vela and Mave share a device ID across players. Their Plex decisions
+	// and starts identify the delivery, with the playback ID sent later on
+	// timelines. A range read in one player must leave the other playing.
+	webPlayer := func(product string) bool {
+		return strings.EqualFold(product, "Vela") || strings.EqualFold(product, "Mave")
+	}
+	return webPlayer(a.public.Device.Product) && webPlayer(b.public.Device.Product)
 }
 
 func (b *Broker) finishSuperseded(ctx context.Context, entries []*brokerSession, newSource string) {

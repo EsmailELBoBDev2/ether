@@ -380,3 +380,86 @@ func TestConsolePresetsDatabaseCheckAndNoSync(t *testing.T) {
 		t.Fatalf("expected NoSync profile to record Import.NoSync=true & Database=%q: %+v", norm.ID, last.Import)
 	}
 }
+
+func TestQualityFallbackLimitsMatchPlaybackSummaryAndExplain(t *testing.T) {
+	q := config.Quality{
+		Profiles:          []core.QualityProfile{{Name: "Home", MaxHeight: 2160}, {Name: "Away", MaxHeight: 2160}},
+		Default:           "Home",
+		DefaultLimits:     config.QualityLimits{MaxHeight: 720, MaxBitrateKbps: 8000, StereoAudio: true},
+		DefaultAwayLimits: config.QualityLimits{MaxHeight: 480, MaxBitrateKbps: 4000},
+		Rules: []config.QualityRule{
+			{ID: "r_limit", MaxHeight: 1080, MaxBitrateKbps: 6000},
+			{ID: "r_profile", Libraries: []int64{2}, Profile: "Home"},
+		},
+	}
+	for _, tt := range []struct {
+		name, awayProfile, profile, fallbackID string
+		remote                                 bool
+		lib                                    int64
+		height, bitrate                        int
+		stereo                                 bool
+	}{
+		{"home", "", "Home", "default", false, 1, 720, 6000, true},
+		{"away inherits home", "", "Home", "default", true, 1, 720, 6000, true},
+		{"away uses its own limits", "Away", "Away", "defaultAway", true, 1, 480, 4000, false},
+		{"library rule bypasses fallback limits", "Away", "Home", "", true, 2, 1080, 6000, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			q := q
+			q.DefaultAway = tt.awayProfile
+			caps := core.ClientCaps{Remote: tt.remote, MaxHeight: 2160, MaxBitrateKbps: 10000}
+			lib := SummaryLibrary{ID: tt.lib}
+			inLib := func(id core.LibraryID) bool { return int64(id) == lib.ID }
+			where := config.WhereHome
+			if tt.remote {
+				where = config.WhereAway
+			}
+			wantIDs := []string{"r_limit"}
+			if tt.fallbackID != "" {
+				wantIDs = append(wantIDs, tt.fallbackID)
+			}
+			preTitle := ApplyClientRulesForMedia(q, caps, nil, core.MediaMovie)
+			if preTitle.MaxHeight != 1080 || preTitle.MaxBitrateKbps != 6000 || preTitle.ConvertSurroundAudio {
+				t.Fatalf("unexpected pre-title limits: %+v", preTitle)
+			}
+			title := &core.Title{Key: core.MovieKey(51)}
+			got := ApplyClientRulesForTitle(q, preTitle, nil, title, inLib)
+			if got.MaxHeight != tt.height || got.MaxBitrateKbps != tt.bitrate || got.ConvertSurroundAudio != tt.stereo {
+				t.Fatalf("unexpected playback limits: %+v", got)
+			}
+			cell := evalSummaryCell(q, lib, map[int64]SummaryLibrary{tt.lib: lib}, where, config.KindMovie, false, 0, summaryDeviceMatcher{})
+			if cell.Profile != tt.profile || cell.MaxHeight != tt.height || cell.MaxBitrateKbps != tt.bitrate ||
+				cell.Stereo != tt.stereo || !slices.Equal(cell.LimitRuleIDs, wantIDs) {
+				t.Fatalf("unexpected summary: %+v", cell)
+			}
+			answer := ExplainQuality(QualityQuestion{Quality: q, Caps: caps, Title: title, InLibrary: inLib})
+			if answer.Profile != tt.profile || answer.MaxHeight != tt.height || answer.BitrateKbps != tt.bitrate ||
+				answer.Stereo != tt.stereo || !slices.Equal(answer.LimitRuleIDs, wantIDs) {
+				t.Fatalf("unexpected explanation: %+v", answer)
+			}
+			if tt.fallbackID != "" && !slices.ContainsFunc(answer.Layers, func(l QualityLayer) bool {
+				return l.Kind == LayerRuleLimit && l.RuleID == tt.fallbackID && l.Decisive
+			}) {
+				t.Fatalf("missing decisive fallback layer: %+v", answer.Layers)
+			}
+		})
+	}
+}
+
+func TestQualityFallbackBitrateSurvivesImplicitRemoteCapRemoval(t *testing.T) {
+	q := config.Quality{
+		Profiles:      []core.QualityProfile{{Name: "4K", MaxHeight: 2160}},
+		Default:       "4K",
+		DefaultLimits: config.QualityLimits{MaxBitrateKbps: 12000},
+	}
+	caps := core.ClientCaps{Remote: true, MaxHeight: 2160, MaxBitrateKbps: 8000, DefaultRemoteBitrate: true}
+	answer := ExplainQuality(QualityQuestion{Quality: q, Caps: caps})
+	if answer.BitrateKbps != 12000 || !slices.Equal(answer.LimitRuleIDs, []string{"default"}) {
+		t.Fatalf("unexpected fallback bitrate: %+v", answer)
+	}
+	caps.DefaultRemoteBitrate = false
+	answer = ExplainQuality(QualityQuestion{Quality: q, Caps: caps})
+	if answer.BitrateKbps != 8000 {
+		t.Fatalf("fallback lifted an explicit client cap: %+v", answer)
+	}
+}

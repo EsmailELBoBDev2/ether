@@ -100,12 +100,14 @@ func (e *realQualityEnv) QualityRules(ctx context.Context, includeDevices bool) 
 		viewers = append(viewers, e.viewers[id])
 	}
 	snap := builtin.QualityRulesSnapshot{
-		Default:     cfg.Quality.Default,
-		DefaultAway: cfg.Quality.DefaultAway,
-		Profiles:    profiles,
-		Rules:       cfg.Quality.Rules,
-		Libraries:   libs,
-		Viewers:     viewers,
+		Default:           cfg.Quality.Default,
+		DefaultAway:       cfg.Quality.DefaultAway,
+		DefaultLimits:     cfg.Quality.DefaultLimits,
+		DefaultAwayLimits: cfg.Quality.DefaultAwayLimits,
+		Profiles:          profiles,
+		Rules:             cfg.Quality.Rules,
+		Libraries:         libs,
+		Viewers:           viewers,
 	}
 	if includeDevices {
 		apps := make([]builtin.QualityDeviceAppRef, 0, len(clientreg.Apps()))
@@ -470,6 +472,22 @@ func TestQualityRulesLifecycleAndReplay(t *testing.T) {
 	})
 	if q := env.cfg.Get().Quality; q.Default != "1080p" || q.DefaultAway != "720p" {
 		t.Fatalf("unexpected defaults after update: default=%q away=%q", q.Default, q.DefaultAway)
+	}
+
+	proposeAndApprove(t, cat, svc, st, "quality_defaults_set", map[string]any{
+		"defaultLimits":     map[string]any{"maxHeight": float64(720), "stereoAudio": true},
+		"defaultAwayLimits": map[string]any{"maxBitrateKbps": float64(3000)},
+	})
+	if q := env.cfg.Get().Quality; q.DefaultLimits != (config.QualityLimits{MaxHeight: 720, StereoAudio: true}) ||
+		q.DefaultAwayLimits != (config.QualityLimits{MaxBitrateKbps: 3000}) {
+		t.Fatalf("unexpected defaults after limits update: %+v", q)
+	}
+	proposeAndApprove(t, cat, svc, st, "quality_defaults_set", map[string]any{
+		"defaultLimits":     map[string]any{},
+		"defaultAwayLimits": map[string]any{},
+	})
+	if q := env.cfg.Get().Quality; q.DefaultLimits.HasLimits() || q.DefaultAwayLimits.HasLimits() {
+		t.Fatalf("limits were not cleared: %+v", q)
 	}
 
 	// Verify everything persisted cleanly to disk via config.Open.

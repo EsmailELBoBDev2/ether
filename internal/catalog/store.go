@@ -1619,13 +1619,19 @@ func (c *Catalog) exportTitle(ctx context.Context, key core.RatingKey, gen uint6
 }
 
 func (c *Catalog) queryTitlesMode(ctx context.Context, sqlGated bool, q string, args ...any) ([]core.Title, error) {
-	return c.queryTitlesRows(ctx, sqlGated, false, q, args...)
+	items, err := c.queryTitlesRows(ctx, sqlGated, false, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.ProjectEpisodeTitles(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-// queryTitlesRows is queryTitlesMode; with rowsOnly, movies and shows stay
-// the rows the query read, for the caller to filter and complete (a
-// candidate search, core.SearchCandidates), and only the other titles are
-// read in full. Rows and full titles keep the query's order.
+// queryTitlesRows hydrates titles before the caller projects episode orders.
+// With rowsOnly, movies and shows stay as rows for candidate search to
+// filter and complete. Results keep the query's order.
 func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, q string, args ...any) ([]core.Title, error) {
 	gen := c.writeGen.Load()
 	minute := c.minuteBucket()
@@ -1728,10 +1734,6 @@ func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, 
 	if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); !deferred {
 		c.rememberTitles(gen, minute, full)
 	}
-	if err := c.ProjectEpisodeTitles(ctx, visible); err != nil {
-		return nil, err
-	}
-
 	return visible, nil
 }
 

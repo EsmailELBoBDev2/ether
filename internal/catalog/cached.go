@@ -553,6 +553,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 	localShow := func(key core.RatingKey, st *storedTitle) bool {
 		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || !c.TMDBConfigured() || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
 	}
+	var local []core.Title
 	missing := make([]core.RatingKey, 0, len(keys))
 	seen := make(map[core.RatingKey]bool, len(keys))
 	for _, key := range keys {
@@ -562,12 +563,12 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		seen[key] = true
 		if st, ok := c.cachedStoredEntry(key, gen, minute); ok && st.metaKnown {
 			if localShow(key, &st) {
-				if !c.fresh(&st) && c.TMDBConfigured() {
-					c.loadSeasonsLater(ctx, key.TMDB(), nil)
+				if !c.fresh(&st) && c.TMDBConfigured() && !key.Allocated() && st.t.IDs.TMDB > 0 {
+					c.loadSeasonsLater(ctx, st.t.IDs.TMDB, nil)
 					c.reportDetailPending(ctx, key)
 				}
 				if c.visibleTitle(&st.t) {
-					out[key] = st.t
+					local = append(local, st.t)
 				}
 				continue
 			}
@@ -612,8 +613,8 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		for _, key := range part {
 			st := stored[key]
 			if localShow(key, st) {
-				if !c.fresh(st) && c.TMDBConfigured() {
-					c.loadSeasonsLater(ctx, key.TMDB(), nil)
+				if !c.fresh(st) && c.TMDBConfigured() && !key.Allocated() && st.t.IDs.TMDB > 0 {
+					c.loadSeasonsLater(ctx, st.t.IDs.TMDB, nil)
 					c.reportDetailPending(ctx, key)
 				}
 				warm = append(warm, st.t)
@@ -630,7 +631,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 			st.t = warm[i]
 			remember = append(remember, st)
 			if c.visibleTitle(&warm[i]) {
-				out[warm[i].Key] = warm[i]
+				local = append(local, warm[i])
 			}
 		}
 		if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); !deferred {
@@ -646,6 +647,12 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 				out[key] = *title
 			}
 		}
+	}
+	if err := c.ProjectEpisodeTitles(ctx, local); err != nil {
+		return nil, err
+	}
+	for _, title := range local {
+		out[title.Key] = title
 	}
 	return out, nil
 }

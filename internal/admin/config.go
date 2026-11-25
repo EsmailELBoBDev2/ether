@@ -315,6 +315,16 @@ func (h *Handler) handlePutSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_json", "section value does not match the config schema: "+err.Error())
 		return
 	}
+	if field == "catalog" {
+		var edit struct {
+			Key      string `json:"tmdbKey"`
+			Disabled *bool  `json:"tmdbDisabled"`
+		}
+		// A newly submitted key enables TMDB unless the same edit turns it off.
+		if json.Unmarshal(body, &edit) == nil && edit.Disabled == nil && strings.TrimSpace(edit.Key) != "" && !isRedacted(edit.Key) {
+			next.Catalog.TMDBDisabled = false
+		}
+	}
 	next, perrs := UnredactConfig(next, prev)
 	if len(perrs) > 0 {
 		writeValidationError(w, perrs)

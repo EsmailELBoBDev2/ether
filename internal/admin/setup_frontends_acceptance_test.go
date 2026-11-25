@@ -37,7 +37,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/store"
-	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
 const (
@@ -50,9 +49,6 @@ const (
 )
 
 func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
-	if tmdb.BundledKey != "" {
-		t.Fatal("no-key setup is not observable in a build with a bundled TMDB key")
-	}
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg := openConfig(t, dir)
@@ -119,6 +115,7 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbDisabled":true}`, "", http.StatusOK)
 	gated := mustStatus(t, h, "")
 	for _, id := range []string{"plex", "sources", "indexers", "cache", "catalog"} {
 		if step(t, gated, id).Complete {
@@ -207,7 +204,7 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 	putJSON(t, h, http.MethodGet, "/ether/api/config", "", "", http.StatusUnauthorized)
 
 	putJSON(t, h, http.MethodPut, "/ether/api/config/catalog", `{"tmdbKey":"`+fixtureTMDB+`"}`, signedIn, http.StatusOK)
-	if !step(t, mustStatus(t, h, signedIn), "catalog").Complete {
+	if cfg.Get().Catalog.TMDBDisabled || !step(t, mustStatus(t, h, signedIn), "catalog").Complete {
 		t.Fatal("configured catalogue source did not complete the optional setup step")
 	}
 
@@ -237,9 +234,6 @@ func TestSetupFrontendsAcceptanceFreshInstall(t *testing.T) {
 }
 
 func TestSetupFrontendsAcceptanceEnabledPlexRequiresClaim(t *testing.T) {
-	if tmdb.BundledKey != "" {
-		t.Fatal("no-key setup is not observable in a build with a bundled TMDB key")
-	}
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg := openConfig(t, dir)

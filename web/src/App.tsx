@@ -74,6 +74,7 @@ import { Drawer } from "./components/Drawer";
 import { ErrorPanel } from "./components/feedback";
 import { SaveBarHost } from "./components/SaveBar";
 import { SettingFocus } from "./components/SettingFocus";
+import { AutomaticWhatsNew } from "./components/UpdateNotesDrawer";
 import { UpdateReady } from "./components/UpdateReady";
 import { HealthPill, useServerVerdict } from "./components/HealthPill";
 import { useOwnerViewerPath } from "./components/pickers";
@@ -766,6 +767,9 @@ function Gate({ onReady }: { onReady: (animation?: boolean, version?: string) =>
   return (
     <AppProvider boot={boot} reloadBoot={loadBoot}>
       <Shell />
+      {boot.setupComplete && boot.authenticated && boot.version && boot.version !== "dev" ? (
+        <AutomaticWhatsNew key={boot.version} version={boot.version} />
+      ) : null}
     </AppProvider>
   );
 }

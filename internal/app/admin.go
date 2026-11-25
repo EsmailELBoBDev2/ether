@@ -90,16 +90,12 @@ func (a *App) buildAdmin() http.Handler {
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
-		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
-			return func(ctx context.Context, token string) bool {
-				if auth.IsOwnerSession(token) {
-					u, err := a.users.OwnerSession(ctx, token)
-					return err == nil && u.IsOwner
-				}
-				u, err := a.users.Authenticate(ctx, token)
-				return err == nil && u.IsOwner
+		ResolveOwnerToken: func(ctx context.Context, token string) (*core.User, error) {
+			if auth.IsOwnerSession(token) {
+				return a.users.OwnerSession(ctx, token)
 			}
-		}(context.Background()),
+			return a.users.Authenticate(ctx, token)
+		},
 		Sessions: a.users,
 		TestUsenet: func(ctx context.Context, p config.UsenetProvider) error {
 			if a.fetcher != nil {

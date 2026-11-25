@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { calls, renderApp } from "./harness";
 
@@ -247,13 +247,31 @@ describe("Overview", () => {
 describe("Updates settings", () => {
   it("shows update status and asks the server to install", async () => {
     const { fake } = renderApp("/maintenance/updates");
-    expect(await screen.findByText(/Version 0\.3\.0/, {}, WAIT)).toBeInTheDocument();
+    expect(await screen.findByText(/Version 0\.9\.1/, {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText(/03:00–06:00 local time/)).toBeInTheDocument();
+    expect(screen.getByText(/Last checked /)).toBeInTheDocument();
+    expect(screen.getByText(/Next check/)).toBeInTheDocument();
+    expect(calls(fake, "POST", "/updates/check")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(calls(fake, "POST", "/updates/check")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update now" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
     expect(
       await screen.findByRole("button", { name: "Install now anyway" }, WAIT),
     ).toBeInTheDocument();
     expect(calls(fake, "POST", "/updates/apply").length).toBe(1);
+  });
+
+  it("opens the available release notes and reopens the installed release notes", async () => {
+    renderApp("/maintenance/updates");
+    fireEvent.click(await screen.findByRole("button", { name: "Release notes" }, WAIT));
+    const available = await screen.findByRole("dialog", { name: "Release notes for v0.9.1" });
+    expect(await within(available).findByText(/Library scans/)).toBeInTheDocument();
+    expect(within(available).getByRole("link", { name: "Release notes on GitHub" })).toBeVisible();
+    fireEvent.keyDown(available, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "What's new in v0.9.0-mock" }));
+    expect(await screen.findByText(/Release notes open in Ether/)).toBeInTheDocument();
   });
 
   it("keeps the channel up front and tucks the window, feed and wait behind more options", async () => {
@@ -305,7 +323,7 @@ describe("Updates settings", () => {
     const toggle = await screen.findByRole("switch", { name: "Check for updates" }, WAIT);
     expect(toggle).toBeDisabled();
     expect(toggle).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check now" })).toBeDisabled();
   });
 });
 

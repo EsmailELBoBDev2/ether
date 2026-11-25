@@ -18,6 +18,7 @@ export function installMockBackend(): void {
   setMockAgentPace(Number(params.get("agentPace") ?? 70));
   const fake = createFakeServer({
     latencyMs: 120,
+    whatsNew: params.has("whatsNew"),
     // `?vela` previews an owner-installed Vela client.
     velaInstalled: params.has("vela"),
     velaDistribution:

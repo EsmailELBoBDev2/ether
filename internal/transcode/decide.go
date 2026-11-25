@@ -1152,10 +1152,26 @@ func hdr10BaseReason(v *core.StreamInfo, caps core.ClientCaps, opts core.DecideO
 		return fmt.Sprintf("native Plex Apple TV compatibility: Dolby Vision profile %d uses its HDR10 base layer", v.DolbyVisionProfile)
 	case clientreg.HasQuirk(id, "plex-ios-hdr10-base") && outputContainer(caps, opts, v.Codec, "") == ContainerMatroska:
 		return fmt.Sprintf("native Plex iOS compatibility: Dolby Vision profile %d in Matroska uses its HDR10 base layer", v.DolbyVisionProfile)
-	case caps.DolbyVisionBaseOnly:
+	case caps.DolbyVisionBaseOnly || (caps.DVProfilesExplicit && len(caps.DVProfiles) == 0):
 		return fmt.Sprintf("Dolby Vision off for this client: profile %d uses its HDR10 base layer", v.DolbyVisionProfile)
 	}
 	return ""
+}
+
+// DirectPlayDolbyVisionRejection reports why a client cannot direct-play the
+// original file of a Dolby Vision video stream unchanged, or "" when allowed.
+// It applies the same rules as Decide: profiles with no compatible base layer
+// (such as profile 5) and streams that must deliver only their HDR10 base
+// layer (owner Dolby Vision off, explicit empty DV profile list, Android
+// without the profile, or player quirks) cannot direct-play untouched.
+func DirectPlayDolbyVisionRejection(v *core.StreamInfo, caps core.ClientCaps, opts core.DecideOptions) string {
+	if v == nil || !v.DolbyVision {
+		return ""
+	}
+	if reason := hdr10BaseReason(v, caps, opts); reason != "" {
+		return reason
+	}
+	return rangeOK(v, caps)
 }
 
 // hasHDR10Base reports a Dolby Vision HEVC stream whose compatible HDR10

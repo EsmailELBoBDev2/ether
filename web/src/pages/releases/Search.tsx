@@ -475,9 +475,7 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
                   <EmptyState
                     icon={<SearchX />}
                     title={t("No releases found")}
-                    description={t(
-                      "Nothing came back. A TMDB key fills the catalogue, and a debrid account or a Usenet provider is what makes a result playable.",
-                    )}
+                    description={t("Try a different title or check your release sources.")}
                   />
                 }
                 defaultSort={{ key: "rank", dir: "asc" }}

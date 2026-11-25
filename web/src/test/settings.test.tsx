@@ -201,7 +201,7 @@ describe("Settings", () => {
     expect(screen.queryByRole("region", { name: "Essentials" })).toBeNull();
     expect(within(required).getByRole("listitem", { name: "TMDB" })).toBeInTheDocument();
     // The label follows the setup status, which loads after the page.
-    expect(await screen.findByRole("button", { name: "Manage TMDB" }, WAIT)).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Use your own key" }, WAIT)).toBeEnabled();
     const artwork = screen.getByRole("region", { name: "Artwork and ratings" });
     const posters = await within(artwork).findByRole("listitem", { name: "PostersPlus" }, WAIT);
     const ratings = within(artwork).getByRole("listitem", { name: "OMDb and MDBList" });
@@ -252,16 +252,26 @@ describe("Settings", () => {
   });
 
   it("saves and tests the TMDB key from Integrations", async () => {
-    const { fake } = renderApp("/services/tmdb");
-    fireEvent.change(await screen.findByLabelText("Your own TMDB key (optional)", {}, WAIT), {
+    const { fake } = renderApp("/services/overview");
+    fireEvent.click(await screen.findByRole("button", { name: "Use your own key" }, WAIT));
+    const drawer = await screen.findByRole("dialog", { name: "Manage TMDB" });
+    fireEvent.change(within(drawer).getByLabelText("TMDB API key"), {
       target: { value: "tmdb-key" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Test TMDB key" }));
-    await waitFor(() => expect(calls(fake, "POST", "/test/tmdb")).toHaveLength(1), WAIT);
-    expect(calls(fake, "POST", "/test/tmdb")[0]!.body).toEqual({ key: "tmdb-key" });
-    fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/catalog")).toHaveLength(1), WAIT);
-    expect(calls(fake, "PUT", "/config/catalog")[0]!.body).toMatchObject({ tmdbKey: "tmdb-key" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Test" }));
+    await waitFor(
+      () => expect(calls(fake, "POST", "/test/tmdb")[0]?.body).toEqual({ key: "tmdb-key" }),
+      WAIT,
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    await waitFor(
+      () =>
+        expect(calls(fake, "PUT", "/config/catalog")[0]?.body).toMatchObject({
+          tmdbKey: "tmdb-key",
+          tmdbDisabled: false,
+        }),
+      WAIT,
+    );
   });
 
   it("keeps a Trakt draft when another integration is toggled", async () => {

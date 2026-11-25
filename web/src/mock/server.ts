@@ -1,3 +1,4 @@
+import type { EpisodeOrder, EpisodeOrderDetails, MetadataSource } from "../lib/metadataSources";
 import { interpretDemo } from "./catalogInterpret";
 import { indexerUsage, infrastructure, saveCost, sourceHistory } from "./source-stats";
 import { matchesCatalogFilter } from "./catalogFilter";
@@ -679,7 +680,50 @@ export function createFakeServer(opts: FakeOptions = {}) {
     }
   });
   // Keep the fixture stable when a setup link changes the page's query string.
-  const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
+  const previewParams = new URL(window.location.href).searchParams;
+  const metadataMode = previewParams.get("metadata");
+  const bundledTMDB =
+    metadataMode !== "none" && metadataMode !== "tvdb" && !previewParams.has("catalogKey");
+  function metadataSources(): MetadataSource[] {
+    const tmdbKeySource = state.config.catalog.tmdbKey
+      ? "owner"
+      : bundledTMDB
+        ? "built-in"
+        : "none";
+    const tmdbEnabled = !state.config.catalog.tmdbDisabled;
+    const tvdbConfigured = Boolean(state.config.catalog.tvdbKey);
+    return [
+      {
+        id: "tmdb",
+        name: "TMDB",
+        configured: tmdbEnabled && tmdbKeySource !== "none",
+        enabled: tmdbEnabled,
+        keySource: tmdbKeySource,
+        movies: true,
+        shows: true,
+      },
+      {
+        id: "tvdb",
+        name: "TheTVDB",
+        configured: tvdbConfigured,
+        enabled: tvdbConfigured,
+        keySource: tvdbConfigured ? "owner" : "none",
+        movies: true,
+        shows: true,
+      },
+    ];
+  }
+
+  function setupSteps() {
+    return [
+      {
+        id: "catalog",
+        title: "Metadata sources",
+        complete: metadataSources().some((source) => source.configured),
+        required: false,
+      },
+    ];
+  }
   const xtreamGrants = new Map<
     string,
     {
@@ -1455,6 +1499,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       },
     };
     return {
+      setupSteps: setupSteps(),
       names: [
         "cache",
         "catalog",
@@ -2229,6 +2274,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     sync: { pluginId: "demo-music", kindKey: "recording", generation: 1, items: 18 },
   });
   const pagesMock = createPagesMock({
+    metadataListsAvailable: () =>
+      metadataSources().some((source) => source.id === "tmdb" && source.configured),
     catalog,
     card,
     libraries: () =>
@@ -2434,13 +2481,52 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return { mediaClass, adapterOnly, effective: present, available: avail, apps };
   }
 
+  if (metadataMode === "both" || metadataMode === "tvdb") state.config.catalog.tvdbKey = "••••";
+  if (metadataMode === "both") mockLibs[1]!.metadataSource = "tmdb";
+
+  const episodeOverrides = new Map<string, EpisodeOrder>();
+  const tmdbAired = { source: "tmdb", kind: "aired" };
+  const tvdbAired = { source: "tvdb", kind: "aired" };
+  function episodeOrder(key: string): EpisodeOrderDetails | undefined {
+    const orderOptions = metadataSources().filter((source) => source.configured && source.shows);
+    const library = mockLibs.find((item) => item.id === 2)!;
+    const defaultSource =
+      orderOptions.find((source) => source.id === library.metadataSource) ?? orderOptions[0];
+    if (!defaultSource) return;
+    const libraryDefault = defaultSource.id === "tvdb" ? tvdbAired : tmdbAired;
+    const override = episodeOverrides.get(key);
+    const effective = override ?? libraryDefault;
+    const options = orderOptions.flatMap((source): EpisodeOrder[] =>
+      source.id === "tvdb"
+        ? [tvdbAired, { source: "tvdb", kind: "dvd" }, { source: "tvdb", kind: "absolute" }]
+        : [tmdbAired, { source: "tmdb", kind: "group:mock-story", label: "Story arcs" }],
+    );
+    return {
+      effective,
+      override,
+      libraryDefault,
+      libraryName: String(library.name),
+      options,
+      gap:
+        effective.source === "tmdb" && orderOptions.some((source) => source.id === "tvdb")
+          ? { order: tvdbAired, count: 4120 }
+          : undefined,
+    };
+  }
+
+  function matchProviderId(key: string, source: string) {
+    return String((Number(key) % 1e15) + (source === "tvdb" ? 100000 : 0));
+  }
+
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
       lib.sources = [
         lib.source === "plugin"
           ? `plugin:${lib.pluginId}:${lib.kindKey}`
           : lib.mediaType === "show"
-            ? "tmdb-tv"
+            ? metadataSources().find((source) => source.configured && source.shows)?.id === "tvdb"
+              ? "tvdb"
+              : "tmdb-tv"
             : "tmdb-movies",
       ];
     if (lib.source !== "plugin" && lib.rules === undefined) {
@@ -2620,12 +2706,20 @@ export function createFakeServer(opts: FakeOptions = {}) {
               health: "unknown",
               libraries: [],
             })),
-        ].map((source) => ({
-          ...source,
-          libraries: mockLibs
-            .filter((lib) => ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id))
-            .map((lib) => ({ id: lib.id, name: lib.name })),
-        })),
+        ]
+          .filter((source) => {
+            if (source.id === "tvdb")
+              return metadataSources().some((entry) => entry.id === "tvdb" && entry.configured);
+            if (source.id.startsWith("tmdb-"))
+              return metadataSources().some((entry) => entry.id === "tmdb" && entry.configured);
+            return true;
+          })
+          .map((source) => ({
+            ...source,
+            libraries: mockLibs
+              .filter((lib) => ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id))
+              .map((lib) => ({ id: lib.id, name: lib.name })),
+          })),
       });
     if (!seg[1]) {
       if (method === "POST") {
@@ -2635,6 +2729,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           key: `lib-${id}`,
           name: String(b.name ?? "Library"),
           sources: b.sources,
+          metadataSource: b.metadataSource,
           source: b.collectionId ? "collection" : "catalogue",
           collectionId: b.collectionId,
           mediaType: b.mediaType,
@@ -4017,24 +4112,22 @@ export function createFakeServer(opts: FakeOptions = {}) {
         return json({ config: state.config });
       case "PUT /config":
         state.config = body as EtherConfig;
+        for (const key of ["tmdbKey", "tvdbKey"] as const) {
+          if (state.config.catalog[key]) state.config.catalog[key] = "••••";
+        }
         return json({ config: state.config });
+      case "GET /metadata/sources":
+        return json({ sources: metadataSources() });
       case "GET /setup/status":
         return json({
           setupComplete: state.config.setupComplete,
-          requiredComplete: !catalogKeyMissing,
-          steps: [
-            {
-              id: "catalog",
-              title: "TMDB API key",
-              complete: !catalogKeyMissing,
-              required: true,
-            },
-          ],
+          requiredComplete: true,
+          steps: setupSteps(),
         });
       case "POST /setup/complete":
         state.config.setupComplete = true;
         state.boot.setupComplete = true;
-        return json({ setupComplete: true, requiredComplete: true, steps: [] });
+        return json({ setupComplete: true, requiredComplete: true, steps: setupSteps() });
       case "POST /setup/reopen":
         return json({
           setupComplete: state.config.setupComplete,
@@ -4520,11 +4613,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
               ?.value || DEFAULT_USER_AGENT,
         });
       }
+      case "POST /test/tvdb":
+      case "POST /test/tmdb": {
+        const key = (body as { key?: string } | null)?.key?.trim();
+        const source = route.endsWith("/tmdb") ? "tmdb" : "tvdb";
+        const configured = metadataSources().some(
+          (entry) => entry.id === source && entry.configured,
+        );
+        return json({ ok: Boolean(key && key !== "••••") || configured, durationMs: 73 });
+      }
       case "POST /test/usenet":
       case "POST /test/indexer":
       case "POST /test/debrid":
-      case "POST /test/tvdb":
-      case "POST /test/tmdb":
       case "POST /test/introdb":
       case "POST /test/llm":
       case "POST /test/trakt":
@@ -5656,6 +5756,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /catalog/search": {
         const needle = (q.get("q") ?? "").toLowerCase();
         const type = q.get("type");
+        const includeOrder = type === "show" && q.get("episodeOrder") === "1";
+        const limit = Number(q.get("limit") ?? 24);
         return json({
           items: catalog
             .filter(
@@ -5663,8 +5765,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 t.title.toLowerCase().includes(needle) &&
                 (!type || type === "mixed" || t.type === type),
             )
-            .slice(0, Number(q.get("limit") ?? 24))
-            .map(card),
+            .slice(0, includeOrder ? Math.min(15, limit) : limit)
+            .map((title) => {
+              const item = card(title);
+              if (!includeOrder) return item;
+              const order = episodeOrder(title.key);
+              return {
+                ...item,
+                episodeOrder: order && {
+                  effective: order.effective,
+                  override: order.override,
+                  libraryDefault: order.libraryDefault,
+                  libraryName: order.libraryName,
+                },
+              };
+            }),
         });
       }
       case "GET /catalog/facets": {
@@ -5968,9 +6083,42 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (followed) return json(followed);
       if (!t) return err(404, "not_found", "no such title");
       if (seg[3] === "refresh" && method === "POST") return new Response(null, { status: 204 });
-      if (seg[3] === "matches" && method === "GET") {
-        const search = (url.searchParams.get("q") ?? "").toLowerCase();
-        const year = Number(url.searchParams.get("year"));
+      if (seg[3] === "episode-order" && method === "PUT") {
+        const order = (body as { order: EpisodeOrder | null }).order;
+        const details = t.type === "show" ? episodeOrder(t.key) : undefined;
+        if (
+          !details ||
+          (order &&
+            !details.options.some(
+              (option) => option.source === order.source && option.kind === order.kind,
+            ))
+        )
+          return err(400, "bad_input", "Episode order unavailable");
+        if (order) episodeOverrides.set(t.key, order);
+        else episodeOverrides.delete(t.key);
+        return new Response(null, { status: 204 });
+      }
+      if ((seg[3] === "matches" && method === "GET") || (seg[3] === "match" && method === "PUT")) {
+        const provider = body as { source: string; providerId: string } | null;
+        const source = method === "GET" ? q.get("source") : provider?.source;
+        if (
+          !metadataSources().some(
+            (entry) =>
+              entry.id === source &&
+              entry.configured &&
+              (t.type === "show" ? entry.shows : entry.movies),
+          )
+        )
+          return err(400, "bad_input", "Metadata source unavailable");
+        if (method === "PUT") {
+          const next = [...byKey.values()].find(
+            (item) =>
+              item.type === t.type && matchProviderId(item.key, source!) === provider?.providerId,
+          );
+          return next ? json({ key: next.key }) : err(404, "not_found", "no such title");
+        }
+        const search = (q.get("q") ?? "").toLowerCase();
+        const year = Number(q.get("year"));
         return json(
           [...byKey.values()]
             .filter(
@@ -5980,15 +6128,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 (!year || item.year === year),
             )
             .slice(0, 20)
-            .map((item) => ({ ...card(item), tmdbId: Number(item.key) % 1e15 })),
+            .map((item) => ({
+              ...card(item),
+              source,
+              providerId: matchProviderId(item.key, source!),
+            })),
         );
-      }
-      if (seg[3] === "match" && method === "PUT") {
-        const id = (body as { tmdbId: number }).tmdbId;
-        const next = [...byKey.values()].find(
-          (item) => item.type === t.type && Number(item.key) % 1e15 === id,
-        );
-        return next ? json({ key: next.key }) : err(404, "not_found", "no such title");
       }
       if (seg[3] === "tags") {
         if (method === "PUT")
@@ -6017,6 +6162,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       return json({
         ...card(t),
+        episodeOrder: t.type === "show" ? episodeOrder(t.key) : undefined,
         tmdbId: Number(t.key) % 1e15,
         cast: t.people.map((id) => PEOPLE.find((p) => p.id === id)).filter(Boolean),
         directors: [],
@@ -6540,6 +6686,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
         (body as { claimed?: boolean }).claimed === false
       ) {
         value = { ...(value as Record<string, unknown>), token: "" };
+      }
+      if (key === "catalog" && value && typeof value === "object") {
+        const catalog = value as Record<string, unknown>;
+        for (const field of ["tmdbKey", "tvdbKey"]) {
+          if (catalog[field] && (body as Record<string, unknown>)?.[field]) catalog[field] = "••••";
+        }
       }
       if (key === "quality" && value && typeof value === "object" && !Array.isArray(value)) {
         const q = value as { rules?: { id?: string }[] | null };

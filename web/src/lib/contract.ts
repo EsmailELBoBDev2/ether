@@ -1,3 +1,5 @@
+import type { EpisodeOrderDetails, EpisodeOrderProvenance } from "./metadataSources";
+
 /**
  * Shapes of the owner-UI API contract. Kept in one file so the screens, the
  * fake backend and the tests agree on a single definition.
@@ -24,7 +26,12 @@ export interface TitleCard {
   episode?: number;
 }
 
+export interface ShowOrderCard extends TitleCard {
+  episodeOrder?: EpisodeOrderProvenance;
+}
+
 export interface TitleDetail extends TitleCard {
+  episodeOrder?: EpisodeOrderDetails;
   tmdbId?: number;
   imdbId?: string;
   cast?: { id: number; name: string; role?: string; image?: string }[];

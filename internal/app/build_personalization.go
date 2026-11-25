@@ -194,7 +194,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Surfaces:        a.recommendationSurfaces,
 		PageCandidates:  a.pluginPageCandidates,
 		UserPolicy:      a.safety.UserPolicy, Allowed: a.safety.Allowed,
-		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
+		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, FavoriteShowsFor: a.favorites.HasTitles, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionLayoutSource, error) {
 			opts := append(a.collectionOptions(cfg), collections.WithState(a.state), collections.WithAuth(a.users), collections.WithScorer(scorer), collections.WithLibrarySections(librarySections))

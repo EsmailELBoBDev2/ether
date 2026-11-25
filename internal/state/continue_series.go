@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -34,8 +36,15 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 	if uid <= 0 {
 		return nil, nil
 	}
+	// Capture the pending writes before reading history: an entry that
+	// drains during this read is already represented by the durable state.
+	var pending map[core.RatingKey]pendingWrite
+	if s.pending != nil {
+		pending = s.pending.snapshot(uid, s.pending.userKeys(uid))
+	}
+	limit = min(max(limit, 1), 200)
 	rows, err := s.db.QueryContext(ctx, continueSeriesQuery, uid,
-		int64(core.EpisodeKey(0, 0, 0)), int64(core.EpisodeKey(0, 0, 0))+1000000000000000, min(max(limit, 1), 200))
+		int64(core.EpisodeKey(0, 0, 0)), int64(core.EpisodeKey(0, 0, 0))+1000000000000000, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -48,5 +57,61 @@ func (s *State) ContinueSeriesHistory(ctx context.Context, uid int64, limit int)
 		}
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	var keys []core.RatingKey
+	for key, write := range pending {
+		if key.Kind() == core.KindEpisode && (write.kind == "scrobble" || (write.kind == "progress" && write.progress.state != "progress")) {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	statuses, err := s.GetMany(ctx, uid, keys)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		write := pending[key]
+		ws := statuses[key]
+		progress := write.progress
+		completes := write.kind == "scrobble" || progress.completes()
+		if !completes && !strings.HasPrefix(progress.state, "explicit-") && ws.Duration > 0 {
+			// Timelines can omit duration and reuse the last reported value.
+			completes = float64(progress.offset) >= WatchedThreshold*float64(ws.Duration)
+		}
+		if completes && ws.ViewCount > 0 && ws.ViewOffset == 0 && ws.LastViewedAt.Equal(progress.at) {
+			out = append(out, core.HistoryEntry{UserID: uid, Key: key, ViewedAt: progress.at, Completed: true})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].ViewedAt.Equal(out[j].ViewedAt) {
+			return out[i].ViewedAt.After(out[j].ViewedAt)
+		}
+		if out[i].ID == 0 && out[j].ID == 0 {
+			return pending[out[i].Key].seq > pending[out[j].Key].seq
+		}
+		if out[i].ID == 0 || out[j].ID == 0 {
+			return out[i].ID == 0
+		}
+		return out[i].ID > out[j].ID
+	})
+	seen := make(map[int64]bool, len(out))
+	distinct := out[:0]
+	for _, entry := range out {
+		show := entry.Key.TMDB()
+		if seen[show] {
+			continue
+		}
+		seen[show] = true
+		distinct = append(distinct, entry)
+		if len(distinct) == limit {
+			break
+		}
+	}
+	return distinct, nil
 }

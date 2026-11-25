@@ -19,6 +19,7 @@ import (
 // revalidation inside Experience. The app supplies source capabilities only.
 type RuntimeRowViews struct {
 	DB                  *sql.DB
+	PendingWatch        func(int64) uint64
 	CurrentAvailable    func(context.Context, []core.Title) []core.Title
 	Protocol            core.Protocol
 	Receipts            *Receipts
@@ -36,32 +37,36 @@ type RuntimeRowViews struct {
 	Snapshot            func(context.Context, frontend.RowRequest, core.HomeSituation) ([]frontend.Row, error)
 }
 
-// RowViewRevision reads shared preference and layout versions, so snapshots
+// rowViewRevision reads watch, preference and layout versions, so snapshots
 // created by another node fail closed after a relevant change.
-func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
+func (d RuntimeRowViews) rowViewRevision(ctx context.Context, user *core.User) (string, error) {
 	if proof := bootstrapProofFor(ctx, user.ID); proof != nil {
 		proof.mu.Lock()
 		defer proof.mu.Unlock()
 		if proof.revision != "" {
 			return proof.revision, nil
 		}
-		rev, err := readRowViewRevision(ctx, db, user)
+		rev, err := d.readRowViewRevision(ctx, user)
 		if err == nil {
 			proof.revision = rev
 		}
 		return rev, err
 	}
-	return readRowViewRevision(ctx, db, user)
+	return d.readRowViewRevision(ctx, user)
 }
-func readRowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
+func (d RuntimeRowViews) readRowViewRevision(ctx context.Context, user *core.User) (string, error) {
 	var layout string
 	var favorites, exclusions, rules int64
-	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID).Scan(&favorites, &exclusions, &rules)
+	var watch WatchRevision
+	if d.PendingWatch != nil {
+		watch.Pending = d.PendingWatch(user.ID)
+	}
+	err := d.DB.QueryRowContext(ctx, `SELECT `+watchRevisionSQL+`, COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID, user.ID).Scan(&watch.Persisted, &favorites, &exclusions, &rules)
 	if err != nil {
 		return "", err
 	}
 	// Saved Recommendations pages (one row per page, a handful at most).
-	rows, err := db.QueryContext(ctx, `SELECT page, revision FROM personalize_pages ORDER BY page`)
+	rows, err := d.DB.QueryContext(ctx, `SELECT page, revision FROM personalize_pages ORDER BY page`)
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +85,7 @@ func readRowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (stri
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	b, err := json.Marshal([]any{user.ID, user.IsOwner, user.MaxContentRating, user.AllowedLibraries, layout, favorites, exclusions, rules})
+	b, err := json.Marshal([]any{user.ID, user.IsOwner, user.MaxContentRating, user.AllowedLibraries, layout, favorites, exclusions, rules, watch})
 	if err != nil {
 		return "", err
 	}
@@ -145,7 +150,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	options := RowViewOptions{
 		DB: d.DB, TTL: 15 * time.Minute, Active: d.Active, Receipts: receipts,
 		PreparePolicy: func(ctx context.Context, u *core.User) (context.Context, error) {
-			revision, err := RowViewRevision(ctx, d.DB, u)
+			revision, err := d.rowViewRevision(ctx, u)
 			return context.WithValue(ctx, rowRevisionKey{}, rowRevisionProof{u, revision}), err
 		},
 		PrepareSnapshots: func(ctx context.Context, u *core.User, snaps []RowViewSnapshot) (context.Context, error) {
@@ -187,7 +192,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if request.Protocol != protocol {
 				return nil, core.ErrUnauthorized
 			}
-			before, err := RowViewRevision(ctx, d.DB, request.Viewer)
+			before, err := d.rowViewRevision(ctx, request.Viewer)
 			if err != nil {
 				return nil, err
 			}
@@ -202,7 +207,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if err != nil {
 				return nil, err
 			}
-			after, err := RowViewRevision(ctx, d.DB, request.Viewer)
+			after, err := d.rowViewRevision(ctx, request.Viewer)
 			if err != nil {
 				return nil, err
 			}
@@ -229,7 +234,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if shared && proof.viewer == u {
 				revision = proof.revision
 			} else {
-				revision, err = RowViewRevision(ctx, d.DB, u)
+				revision, err = d.rowViewRevision(ctx, u)
 			}
 			if err != nil || revision != s.Revision {
 				return false

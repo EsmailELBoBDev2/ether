@@ -754,7 +754,12 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.db != nil {
 		db := a.db
 		deps.HomeRevision = func(ctx context.Context, u *core.User) (frontend.HomeRevision, error) {
-			return experience.ReadHomeRevision(ctx, db, u)
+			pending := a.state.PendingWatchRevision(u.ID)
+			revision, err := experience.ReadHomeRevision(ctx, db, u)
+			if pending != 0 {
+				revision.Viewer += "." + strconv.FormatUint(pending, 36)
+			}
+			return revision, err
 		}
 		deps.NoProviderWait = func(ctx context.Context) context.Context {
 			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
@@ -802,6 +807,8 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			gen = gen*1099511628211 ^ a.pluginsRT.pluginitems.Generation()
 		}
 		return gen
+	}, rowWatch: func(ctx context.Context, id int64) (experience.WatchRevision, error) {
+		return experience.ReadWatchRevision(ctx, a.db, id, a.state.PendingWatchRevision(id))
 	}, rowGen: func() uint64 {
 		if stepAside == nil {
 			return 0
@@ -866,6 +873,7 @@ type surfaceExperience struct {
 	generation   func(context.Context) (int64, error)
 	catalogGen   func() uint64
 	rowGen       func() uint64
+	rowWatch     func(context.Context, int64) (experience.WatchRevision, error)
 	posters      func(context.Context, core.MediaType, int) ([]core.Title, error)
 	modelReady   func(int64) bool
 	rowMu        sync.Mutex
@@ -1381,8 +1389,13 @@ func (s *surfaceExperience) Item(ctx context.Context, req frontend.ItemRequest) 
 	return detail, nil
 }
 
+type rowCacheRevision struct {
+	stepAside uint64
+	watch     experience.WatchRevision
+}
+
 type rowCacheSlot struct {
-	gen   uint64
+	gen   rowCacheRevision
 	at    time.Time
 	rows  []frontend.Row
 	ready bool
@@ -1406,7 +1419,15 @@ func (s *surfaceExperience) cachedRows(ctx context.Context, req frontend.RowRequ
 	if issue || req.HomeFallbackOnly || (req.Placement != frontend.PlacementHome && req.Placement != frontend.PlacementLibrary) {
 		return s.loadRows(ctx, req, issue)
 	}
-	key, gen := s.rowCacheKey(req)
+	key, stepAside := s.rowCacheKey(req)
+	gen := rowCacheRevision{stepAside: stepAside}
+	if s.rowWatch != nil && req.Viewer != nil {
+		watch, err := s.rowWatch(ctx, req.Viewer.ID)
+		if err != nil {
+			return nil, err
+		}
+		gen.watch = watch
+	}
 	s.rowMu.Lock()
 	slot := s.rowCache[key]
 	fresh := slot.ready && slot.gen == gen && time.Since(slot.at) < homeRowCacheTTL
@@ -1433,7 +1454,7 @@ func (s *surfaceExperience) cachedRows(ctx context.Context, req frontend.RowRequ
 	return rows, nil
 }
 
-func (s *surfaceExperience) refreshRows(key string, gen uint64, req frontend.RowRequest, issue bool) {
+func (s *surfaceExperience) refreshRows(key string, gen rowCacheRevision, req frontend.RowRequest, issue bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	defer func() {
@@ -1450,7 +1471,7 @@ func (s *surfaceExperience) refreshRows(key string, gen uint64, req frontend.Row
 	s.storeRows(key, gen, rows)
 }
 
-func (s *surfaceExperience) storeRows(key string, gen uint64, rows []frontend.Row) {
+func (s *surfaceExperience) storeRows(key string, gen rowCacheRevision, rows []frontend.Row) {
 	s.rowMu.Lock()
 	defer s.rowMu.Unlock()
 	if s.rowCache == nil {

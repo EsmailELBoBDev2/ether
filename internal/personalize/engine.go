@@ -75,6 +75,8 @@ type Options struct {
 	PersonalWatchlist   func(context.Context, *core.User) ([]core.Title, error)
 	// Favorites is optional; nil or empty leaves existing ranking unchanged.
 	Favorites func(context.Context, *core.User) ([]FavoriteSignal, error)
+	// FavoriteShowsFor checks only the bounded set of Up Next candidates.
+	FavoriteShowsFor func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]bool, error)
 	// NotInterested supplies explicit recommendation exclusions for this viewer.
 	NotInterested func(context.Context, *core.User) ([]NotInterestedSignal, error)
 	// NotInterestedSnapshot returns signals and their atomically-read shared revision.
@@ -749,6 +751,27 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 			e.log.Debug("personalize: in progress failed", "err", err)
 		}
 	}
+	// Continuation depends on the current watch state, even while the taste
+	// model is reused. Include its ordered identities in the assembly memo.
+	var nextUp strings.Builder
+	if section == "" && u.ID > 0 && e.state != nil {
+		model := *m
+		model.rows = make([]*candRow, 0, len(m.rows)+1)
+		for _, row := range m.rows {
+			if row.kind != KindUpNext {
+				model.rows = append(model.rows, row)
+			}
+		}
+		b := builder{e: e, ctx: core.WithLocalResponse(ctx), user: u, now: hc.Now}
+		for _, row := range b.genUpNext() {
+			model.rows = append(model.rows, row)
+			for _, item := range row.items {
+				nextUp.WriteString(item.t.Key.String())
+				nextUp.WriteByte(',')
+			}
+		}
+		m = &model
+	}
 	pl := e.planFor(ctx, u.ID, e.sectionFor(section, hc))
 	owner, ownerVer := e.ownerRows(ctx, &u, hc, section, pl, wait)
 	// Rows the page builds for itself (another window, chosen libraries,
@@ -767,7 +790,7 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 		lead = e.homeLeadFor(ctx, &u, hc, limit, wait, allow)
 	}
 	key := memoKey{user: u.ID, section: section, homeScoped: hc.HomeScoped, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
-		layout: layoutVer, stats: stats.at.UnixNano(), owner: ownerVer, cw: progressSig(inprog),
+		layout: layoutVer, stats: stats.at.UnixNano(), owner: ownerVer, cw: progressSig(inprog), nextUp: nextUp.String(),
 		limits: u.MaxContentRating + "|" + fmt.Sprint(u.AllowedLibraries, u.IsOwner), intent: intentVer, tuning: tune.key(), exclusions: exclusionSig}
 	// A section is one library: same-type libraries never share an assembly.
 	if section != "" && hc.SectionID > 0 {
@@ -935,6 +958,7 @@ type memoKey struct {
 	stats      int64
 	owner      int64
 	cw         string
+	nextUp     string
 	limits     string
 	intent     uint64 // live session-intent version (#32); 0 = none
 	tuning     string // the page's resolved dials

@@ -177,12 +177,30 @@ func (b *builder) genUpNext() []*candRow {
 	if b.generic || b.e.state == nil {
 		return nil
 	}
-	hist, err := b.e.state.History(b.ctx, b.user.ID, time.Time{}, 300)
+	var hist []core.HistoryEntry
+	var err error
+	if source, ok := b.e.state.(interface {
+		ContinueSeriesHistory(context.Context, int64, int) ([]core.HistoryEntry, error)
+	}); ok {
+		hist, err = source.ContinueSeriesHistory(b.ctx, b.user.ID, 200)
+	} else {
+		hist, err = b.e.state.History(b.ctx, b.user.ID, time.Time{}, 300)
+	}
 	if err != nil {
 		return nil
 	}
-	if b.e.opts.Favorites != nil {
-		if favorites, e := b.e.opts.Favorites(b.ctx, &b.user); e == nil {
+	if b.e.opts.FavoriteShowsFor != nil {
+		var shows []core.RatingKey
+		for _, entry := range hist {
+			if entry.Completed && entry.Key.Kind() == core.KindEpisode {
+				shows = append(shows, core.ShowKey(entry.Key.TMDB()))
+			}
+		}
+		if favorites, err := b.e.opts.FavoriteShowsFor(b.ctx, &b.user, shows); err == nil {
+			sortFavoriteHistory(hist, favorites)
+		}
+	} else if b.e.opts.Favorites != nil {
+		if favorites, err := b.e.opts.Favorites(b.ctx, &b.user); err == nil {
 			prioritizeFavoriteHistory(hist, favorites)
 		}
 	}
@@ -198,7 +216,7 @@ func (b *builder) genUpNext() []*candRow {
 	var items []candItem
 	if batch, ok := b.e.catalog.(interface {
 		NextUnwatchedStoredEpisodes(context.Context, int64, []core.RatingKey) (map[core.RatingKey]*core.Title, error)
-	}); ok && len(recent) > 1 {
+	}); ok && len(recent) > 0 {
 		// Batch stored successor lookups and watch-state checks instead of
 		// walking each watched show one episode and one state query at a time.
 		const window = 60
@@ -1505,6 +1523,10 @@ func prioritizeFavoriteHistory(hist []core.HistoryEntry, favorites []FavoriteSig
 			shows[f.Key] = true
 		}
 	}
+	sortFavoriteHistory(hist, shows)
+}
+
+func sortFavoriteHistory(hist []core.HistoryEntry, shows map[core.RatingKey]bool) {
 	if len(shows) == 0 {
 		return
 	}

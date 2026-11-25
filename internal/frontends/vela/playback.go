@@ -404,6 +404,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.TitleID != "" {
 		p["titleId"] = b.TitleID
+		if !audioOnly {
+			setSkipMarkers(p, i.skipMarkers(r.Context(), item, plan.Media))
+		}
 	} else {
 		p["channelId"] = b.ChannelID
 		mode := b.LiveMode
@@ -1057,8 +1060,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		var audioTracks, subtitleTracks []object
 		var selectedAudio string
 		var selectedSub any
+		var markers []object
+		markerItem := s.item
 		if !s.port(w, func() {
 			audioTracks, subtitleTracks, selectedAudio, selectedSub = i.playbackTracks(r.Context(), i.access(r, v), id, plan.Media, plan.Decision, plan.Decision.SubtitleStream, original, formats, canBurn)
+			if plan.Media.Video() != nil || !plan.Media.HasPlayableMedia() {
+				markers = i.skipMarkers(r.Context(), markerItem, plan.Media)
+			}
 		}) {
 			return
 		}
@@ -1078,6 +1086,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		}
 		s.plan["selectedSubtitleTrackId"] = selectedSub
 		s.plan["chapters"] = chapters(plan.Media)
+		setSkipMarkers(s.plan, markers)
 		s.plan["fallback"] = object{"state": "unsupported"}
 		delete(s.plan, "qualityLimitations")
 		if plan.Media.Duration > 0 {

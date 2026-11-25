@@ -83,3 +83,27 @@ func WriteIndexersPaused(w http.ResponseWriter, err error, languages ...string) 
 	http.Error(w, msg, http.StatusServiceUnavailable)
 	return true
 }
+
+// WriteAppConnectionError reports admission failures before media headers are sent.
+func WriteAppConnectionError(w http.ResponseWriter, r *http.Request, err error) {
+	if WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+		return
+	}
+	var reqLang *RequiredAudioLanguageError
+	if errors.As(err, &reqLang) {
+		http.Error(w, reqLang.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	status := http.StatusServiceUnavailable
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		status = http.StatusUnauthorized
+	case errors.Is(err, ErrStreamLimit):
+		status = http.StatusTooManyRequests
+	}
+	http.Error(w, "Playback unavailable", status)
+}

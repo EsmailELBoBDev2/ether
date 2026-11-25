@@ -667,28 +667,41 @@ func (pf *postedFile) perSegmentWrapper(data []byte, part core.ArticlePart) bool
 		part.End == int64(len(data)) && part.FileSize <= part.End && pf.numSlots() > 1
 }
 
+// archiveChunkPart recognizes numbering for an entire archive split
+// across multiple NZB files. The RAR planner checks the chunks' contiguity,
+// even when a missing chunk makes the advertised part count too low.
+func (pf *postedFile) archiveChunkPart(i int, part core.ArticlePart) bool {
+	listed := pf.file.SegmentCount()
+	return part.Total > listed &&
+		(part.Part > i+1 || part.Total > listed*2+maxTailGrowth || (i == 0 && part.Begin > 1)) &&
+		nzb.Classify(pf.Name()).Kind.IsArchive()
+}
+
 func (pf *postedFile) validateArticleIdentity(i int, data []byte, part core.ArticlePart) error {
 	want := pf.expectedPart(i)
-	// NZB subjects and yEnc filenames can differ on valid posts and reposts.
-	// Slot identity is established by the independent layout fields.
+	listed := pf.file.SegmentCount()
+	// NZB subjects can rename valid posts, and yEnc offsets describe the
+	// article's placement, which the archive planner may reorder.
 	switch {
 	case pf.perSegmentWrapper(data, part):
 		return nil
+	case want.FileSize > 0 && part.FileSize > 0 && want.FileSize != part.FileSize:
+	case pf.archiveChunkPart(i, part):
+		return nil
+	case part.Total > 0 && (part.Total < listed || part.Part > part.Total):
 	case part.Part > 0 && part.Part != want.Part:
 		// Some obfuscated posts randomize the entire ybegin envelope.
-		// Accept their bytes only at a position established independently
-		// by the preceding parts. normalize discards the envelope's range.
-		if part.Total > pf.file.SegmentCount()*2+maxTailGrowth && nzb.IsObfuscated(pf.Name()) &&
+		// Accept only when the preceding parts corroborate its position;
+		// normalize discards the envelope's range.
+		if part.Total > listed*2+maxTailGrowth && nzb.IsObfuscated(pf.Name()) &&
 			pf.learnedPartSize() > 0 {
 			begin, _, _ := pf.rangeOf(i)
 			if part.Begin == begin+1 && part.End-part.Begin+1 == int64(len(data)) {
 				return nil
 			}
 		}
-	case want.FileSize > 0 && part.FileSize > 0 && want.FileSize != part.FileSize:
-	case want.Begin > 0 && part.Begin > 0 && (want.Begin != part.Begin || want.End != part.End):
 	case i == 0 && part.Begin > 1:
-	case part.Total > pf.file.SegmentCount()*2+maxTailGrowth && !nzb.IsObfuscated(pf.Name()):
+	case part.Total > listed*2+maxTailGrowth && !nzb.IsObfuscated(pf.Name()):
 	default:
 		return nil
 	}
@@ -713,7 +726,11 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 		if int64(len(data)) != want {
 			return nil, fmt.Errorf("stream: %s part %d decoded length %d differs from yEnc range %d: %w", pf.Name(), i+1, len(data), want, ErrCorrupt)
 		}
-		if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
+		if pf.archiveChunkPart(i, part) {
+			// This offset is relative to the whole archive. Its size and
+			// total are not metadata about this individual NZB file.
+			seg.fileSize, seg.total = 0, 0
+		} else if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
 			seg.fileSize, seg.total, seg.name = 0, 0, ""
 			seg.begin, _, _ = pf.rangeOf(i)
 			seg.untrustedMeta = true
@@ -837,6 +854,11 @@ func (pf *postedFile) acceptCachedSegment(i int, seg *segData) bool {
 		want := pf.expectedPart(i)
 		return (want.FileSize == 0 || seg.fileSize == want.FileSize) &&
 			(want.Begin == 0 || (seg.begin < want.Begin && seg.end() >= want.End))
+	}
+	if i == 0 && seg.begin > 0 && seg.fileSize == 0 && seg.total == 0 && nzb.Classify(pf.Name()).Kind.IsArchive() {
+		// Normalization retains the archive-relative offset of a chunk
+		// but strips the whole archive's size and part count.
+		return true
 	}
 	part := core.ArticlePart{
 		Name: seg.name, FileSize: seg.fileSize, Total: seg.total, Begin: seg.begin + 1, End: seg.end(),

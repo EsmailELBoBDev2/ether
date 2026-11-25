@@ -9,6 +9,11 @@ import (
 
 const stageSpaceInterval = 4 << 20
 
+// stageFloor is the free space a staging operation leaves on its volume:
+// 5% of it, at least 2 GiB and at most 20 GiB, so a large array is not
+// refused a restore while hundreds of gigabytes are free.
+var stageFloor = func(total int64) int64 { return max(2<<30, min(total/20, 20<<30)) }
+
 // stageSpace shares one disk budget across all files in a staging operation.
 type stageSpace struct {
 	path, operation string
@@ -20,7 +25,7 @@ func (s *stageSpace) check(need int64) error {
 	if err != nil {
 		return fmt.Errorf("could not check free disk space to %s: %w", s.operation, err)
 	}
-	available := max(0, free) - max(2<<30, total/20)
+	available := max(0, free) - stageFloor(total)
 	if available < need {
 		mib := float64(need-available) / (1 << 20)
 		return fmt.Errorf("not enough free disk space to %s: it needs about %.0f MiB more. Free up space and try again", s.operation, max(1, mib))

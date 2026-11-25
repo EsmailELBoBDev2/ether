@@ -319,7 +319,7 @@ func TestConsolePresetsDatabaseCheckAndNoSync(t *testing.T) {
 	customDeps := ConsoleDeps{
 		Dictionarry: NewDictionarry(DictionarryOptions{
 			ArchiveURL: archiveSrv.URL + "/database-v2.tar.gz",
-			Client: rewriteClient,
+			Client:     rewriteClient,
 			UserAgent:  "Ether/test",
 		}),
 		SaveConfig: func(mutate func(*config.Config) error) error {
@@ -343,13 +343,13 @@ func TestConsolePresetsDatabaseCheckAndNoSync(t *testing.T) {
 
 	// POST /quality-databases/check succeeds against the rewritten archive URL.
 	var okCheck struct {
-		OK       bool           `json:"ok"`
-		ID       string         `json:"id"`
-		Repo     string         `json:"repo"`
-		Branch   string         `json:"branch"`
-		Profiles []TrashProfile `json:"profiles"`
+		OK       bool   `json:"ok"`
+		ID       string `json:"id"`
+		Repo     string `json:"repo"`
+		Branch   string `json:"branch"`
+		Profiles int    `json:"profiles"`
 	}
-	if code := f.do(t, "POST", "/quality-databases/check", `{"repo":"https://github.com/owner/custom-db","branch":"main"}`, &okCheck); code != 200 || !okCheck.OK || okCheck.ID != norm.ID || len(okCheck.Profiles) == 0 {
+	if code := f.do(t, "POST", "/quality-databases/check", `{"repo":"https://github.com/owner/custom-db","branch":"main"}`, &okCheck); code != 200 || !okCheck.OK || okCheck.ID != norm.ID || okCheck.Profiles <= 0 {
 		t.Fatalf("ok check = %d %+v", code, okCheck)
 	}
 
@@ -361,7 +361,7 @@ func TestConsolePresetsDatabaseCheckAndNoSync(t *testing.T) {
 		t.Fatalf("custom database profiles = %d %+v", code, dbProfiles)
 	}
 
-	// POST /quality-import with NoSync:true saves profile with Import == nil.
+	// POST /quality-import with sync disabled preserves the import source.
 	var applied struct {
 		Name string `json:"name"`
 	}
@@ -380,7 +380,3 @@ func TestConsolePresetsDatabaseCheckAndNoSync(t *testing.T) {
 		t.Fatalf("expected NoSync profile to record Import.NoSync=true & Database=%q: %+v", norm.ID, last.Import)
 	}
 }
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

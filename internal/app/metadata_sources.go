@@ -37,27 +37,45 @@ func (a *App) validLibraryMetadataSource(media core.MediaType, id string) bool {
 
 // metadataLibrary finds the first owner-ordered library containing the title.
 func (a *App) metadataLibrary(ctx context.Context, title *core.Title) (core.Library, error) {
-	if a.libraries == nil {
-		return core.Library{}, nil
+	libs, err := a.metadataLibraries(ctx, []core.Title{*title})
+	return libs[title.Key], err
+}
+
+func (a *App) metadataLibraries(ctx context.Context, titles []core.Title) (map[core.RatingKey]core.Library, error) {
+	found := make(map[core.RatingKey]core.Library, len(titles))
+	if a.libraries == nil || len(titles) == 0 {
+		return found, nil
 	}
 	libs, err := a.libraries.List(ctx)
 	if err != nil {
-		return core.Library{}, err
+		return nil, err
 	}
-	// List is sorted by the owner-selected position, then by ID for ties.
+	// Library order comes from List. Remove owners from later probes once
+	// a higher priority library claims them.
+	unassigned := map[core.MediaType][]core.RatingKey{}
+	for _, title := range titles {
+		unassigned[title.Type] = append(unassigned[title.Type], title.Key)
+	}
 	for _, lib := range libs {
-		if lib.Source == core.LibraryPlugin || lib.MediaType != title.Type {
+		keys := unassigned[lib.MediaType]
+		if lib.Source == core.LibraryPlugin || len(keys) == 0 {
 			continue
 		}
-		member, err := a.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), title.Key)
+		members, err := a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
 		if err != nil {
-			return core.Library{}, err
+			return nil, err
 		}
-		if member {
-			return lib, nil
+		remaining := keys[:0]
+		for _, key := range keys {
+			if members[key] {
+				found[key] = lib
+			} else {
+				remaining = append(remaining, key)
+			}
 		}
+		unassigned[lib.MediaType] = remaining
 	}
-	return core.Library{}, nil
+	return found, nil
 }
 
 func (a *App) metadataSourceForLibrary(lib core.Library) core.MetadataSourceID {
@@ -80,11 +98,27 @@ func (a *App) libraryEpisodeOrder(ctx context.Context, show *core.Title) (catalo
 	if err != nil || lib.ID == 0 {
 		return catalog.EffectiveEpisodeOrder{}, err
 	}
+	return a.episodeOrderForLibrary(lib), nil
+}
+
+func (a *App) libraryEpisodeOrders(ctx context.Context, titles []core.Title) (map[core.RatingKey]catalog.EffectiveEpisodeOrder, error) {
+	libs, err := a.metadataLibraries(ctx, titles)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[core.RatingKey]catalog.EffectiveEpisodeOrder, len(libs))
+	for key, lib := range libs {
+		out[key] = a.episodeOrderForLibrary(lib)
+	}
+	return out, nil
+}
+
+func (a *App) episodeOrderForLibrary(lib core.Library) catalog.EffectiveEpisodeOrder {
 	out := catalog.EffectiveEpisodeOrder{LibraryID: lib.ID, LibraryName: lib.Name}
 	if source := a.metadataSourceForLibrary(lib); source != "" {
 		out.LibraryDefault = core.EpisodeOrder{Source: source, Kind: core.OrderAired}
 	}
-	return out, nil
+	return out
 }
 
 // StoredTitleEpisodeOrder adds provenance without hydrating the show, loading

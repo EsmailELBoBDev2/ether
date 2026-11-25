@@ -177,9 +177,12 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 }
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
-	if key.IsTitleKey() && (key.Allocated() || c.metadataSourceDefault.Load() != nil || !c.TMDBConfigured()) {
+	if key.IsTitleKey() && (key.Allocated() || c.metadataSourceDefault.Load() != nil || !c.MetadataSources().Get(core.MetadataTMDB).Configured()) {
 		t, err := c.storedTitle(ctx, key)
 		if err == nil {
+			if len(c.metadataSources.Configured()) == 0 || (noReadWait(ctx) && !core.ColdDetail(ctx, t.Key)) {
+				return t, nil
+			}
 			source, err := c.titleDetailsSource(ctx, t)
 			if err != nil {
 				return nil, err
@@ -190,7 +193,7 @@ func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, err
 			key = t.Key
 		} else if !errors.Is(err, core.ErrNotFound) {
 			return nil, err
-		} else if key.Allocated() || !c.TMDBConfigured() {
+		} else if key.Allocated() || !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
 			typ := core.TypeShow
 			if key.Kind() == core.KindMovie {
 				typ = core.TypeMovie
@@ -198,7 +201,7 @@ func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, err
 			return c.openSourceTitle(ctx, key, typ)
 		}
 	}
-	if key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode {
+	if (key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode) && (key.Allocated() || c.canProjectAlternateOrders()) {
 		parent, show, order, err := c.orderForParent(ctx, key)
 		if err != nil {
 			return nil, err
@@ -1168,25 +1171,30 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 	const showsPerStatement = 50
 	for start := 0; start < len(order); start += showsPerStatement {
 		part := order[start:min(start+showsPerStatement, len(order))]
-		keys := make([]core.RatingKey, len(part))
-		for i, w := range part {
-			keys[i] = w.from
+		var byKey map[core.RatingKey]core.Title
+		var choices map[core.RatingKey]showOrder
+		if c.canProjectAlternateOrders() {
+			keys := make([]core.RatingKey, len(part))
+			for i, w := range part {
+				keys[i] = w.from
+			}
+			filter, bind := c.keyMembership("key", false, keys)
+			anchors, err := c.scanTitleKeys(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE `+filter, bind...)
+			if err != nil {
+				return nil, err
+			}
+			showKeys := make([]core.RatingKey, 0, len(anchors))
+			byKey = make(map[core.RatingKey]core.Title, len(anchors))
+			for _, t := range anchors {
+				showKeys = append(showKeys, t.ShowKey)
+				byKey[t.Key] = t
+			}
+			choices, err = c.readShowOrders(ctx, showKeys)
+			if err != nil {
+				return nil, err
+			}
 		}
-		filter, bind := c.keyMembership("key", false, keys)
-		anchors, err := c.scanTitleKeys(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE `+filter, bind...)
-		if err != nil {
-			return nil, err
-		}
-		showKeys := make([]core.RatingKey, 0, len(anchors))
-		byKey := make(map[core.RatingKey]core.Title, len(anchors))
-		for _, t := range anchors {
-			showKeys = append(showKeys, t.ShowKey)
-			byKey[t.Key] = t
-		}
-		choices, err := c.readShowOrders(ctx, showKeys)
-		if err != nil {
-			return nil, err
-		}
+
 		branches := make([]string, 0, len(part))
 		var args []any
 		for i, w := range part {

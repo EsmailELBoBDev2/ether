@@ -286,10 +286,19 @@ func (c *Catalog) MovieReleaseTimeline(ctx context.Context, key core.RatingKey) 
 		return nil, fmt.Errorf("%w: key %s", core.ErrNotFound, key)
 	}
 	api, ok := c.tmdb().(releaseDatesTMDB)
-	if !ok || !c.TMDBConfigured() || key.Allocated() {
+	if !ok || !c.TMDBConfigured() {
 		return nil, nil
 	}
-	got, err := api.MovieReleaseDates(ctx, key.TMDB())
+	id := key.TMDB()
+	if title, err := c.storedTitle(ctx, key); err == nil && title.IDs.TMDB > 0 {
+		id = title.IDs.TMDB
+	} else if err != nil && !errors.Is(err, core.ErrNotFound) {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, nil
+	}
+	got, err := api.MovieReleaseDates(ctx, id)
 	if err != nil {
 		return nil, err
 	}

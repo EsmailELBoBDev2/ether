@@ -99,10 +99,7 @@ func (c *Catalog) ensureOrderManifest(ctx context.Context, show *core.Title, ord
 	}
 	source := c.metadataSources.Get(order.Source)
 	if source == nil || !source.Configured() {
-		if stamp != 0 {
-			return seasons, nil
-		}
-		return nil, core.ErrUnsupported
+		return seasons, nil
 	}
 	_, err = c.orderFlights.Do(ctx, orderFetchKey{show.Key, order, -1}, func(ctx context.Context) (struct{}, error) {
 		_, current, err := c.orderManifest(ctx, show.Key, order)
@@ -195,6 +192,11 @@ func (c *Catalog) storeOrderManifest(ctx context.Context, show *core.Title, orde
 		} else if err != nil {
 			return err
 		}
+		if key.Allocated() {
+			if err := saveAllocatedAncestry(ctx, tx, key, show.Key, show.Key, row.Season, 0); err != nil {
+				return err
+			}
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_seasons(show_key,provider,order_kind,season,season_key,title,summary,poster,air_date,episode_count,provider_id)
  VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(show_key,provider,order_kind,season) DO UPDATE SET
  season_key=excluded.season_key,title=excluded.title,summary=excluded.summary,poster=excluded.poster,
@@ -238,7 +240,11 @@ func (c *Catalog) storeOrderManifest(ctx context.Context, show *core.Title, orde
 	if err != nil {
 		return err
 	}
-	return c.commitOrderWrite(tx)
+	if err := c.commitOrderWrite(tx); err != nil {
+		return err
+	}
+	c.hasEpisodeLayouts.Store(true)
+	return nil
 }
 
 func (c *Catalog) commitOrderWrite(tx *sql.Tx) error {
@@ -255,10 +261,7 @@ func (c *Catalog) ensureOrderSeason(ctx context.Context, show *core.Title, order
 	}
 	source := c.metadataSources.Get(order.Source)
 	if source == nil || !source.Configured() {
-		if season.fetched != 0 {
-			return nil
-		}
-		return core.ErrUnsupported
+		return nil
 	}
 	_, err := c.orderFlights.Do(ctx, orderFetchKey{show.Key, order, season.Season}, func(ctx context.Context) (struct{}, error) {
 		var stamp int64
@@ -449,6 +452,16 @@ func (c *Catalog) storeOrderSeason(ctx context.Context, show *core.Title, order 
 				return err
 			}
 		}
+		if key.Allocated() {
+			sn, en := row.Season, row.Episode
+			if row.Aired != nil {
+				sn, en = row.Aired.Season, row.Aired.Episode
+			}
+			if err := saveAllocatedAncestry(ctx, tx, key, show.Key, season.key, sn, en); err != nil {
+				return err
+			}
+		}
+
 		_, err = tx.ExecContext(ctx, `INSERT INTO catalog_order_episodes(show_key,provider,order_kind,season,episode,episode_key,absolute,air_date,title,summary,still,runtime_min) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 			show.Key, order.Source, order.Kind, row.Season, row.Episode, key, row.Absolute, row.AirDate, row.Title, row.Summary, row.StillPath, row.RuntimeMinutes)
 		if err != nil {
@@ -519,4 +532,12 @@ func orderedSeason(seasons []orderSeason, n int) (orderSeason, bool) {
 		return seasons[i], true
 	}
 	return orderSeason{}, false
+}
+
+// The first established ancestry remains available after coordinate changes.
+// Effective numbering is read separately from the selected layout.
+func saveAllocatedAncestry(ctx context.Context, tx *sql.Tx, key, show, parent core.RatingKey, season, episode int) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO catalog_allocated_child(key,show_key,parent_key,kind,season,episode)
+ VALUES (?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING`, key, show, parent, key.Kind(), season, episode)
+	return err
 }

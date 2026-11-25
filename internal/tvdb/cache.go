@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/atomicfile"
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Per-URL compressed snapshots use fixed slots so the cache has a hard
@@ -107,21 +108,31 @@ func get[T any](ctx context.Context, c *Client, path string, policy cachePolicy)
 		return zero, pageLinks{}, ErrKeyRequired
 	}
 	digest := sha256.Sum256([]byte(path))
-	if cached, ok := c.readCache(digest); ok && time.Since(cached.Checked) < policy.fresh {
+	started := core.MetadataRefreshStarted(ctx)
+	force := !started.IsZero()
+	useCache := func(cached cacheRecord, now time.Time) bool {
+		return now.Sub(cached.Checked) < policy.fresh && (!force || !cached.Fetched.Before(started))
+	}
+
+	if cached, ok := c.readCache(digest); ok && useCache(cached, time.Now()) {
 		var data T
 		if json.Unmarshal(cached.Response.Data, &data) == nil {
 			return data, cached.Response.Links, nil
 		}
 	}
-	result, err := waitFlight(ctx, &c.fetch, path, func() (any, error) {
+	flightKey := path
+	if force {
+		flightKey = "refresh:" + path
+	}
+	result, err := waitFlight(ctx, &c.fetch, flightKey, func() (any, error) {
 		now := time.Now()
 		if cached, ok := c.readCache(digest); ok {
-			if time.Since(cached.Checked) < policy.fresh {
+			if useCache(cached, time.Now()) {
 				var data T
 				if json.Unmarshal(cached.Response.Data, &data) == nil {
 					return cached.Response, nil
 				}
-			} else if policy.changes.id > 0 && now.Sub(cached.Fetched) < entityMaxAge {
+			} else if !force && policy.changes.id > 0 && now.Sub(cached.Fetched) < entityMaxAge {
 				if checked := c.unchangedThrough(ctx, policy.changes, cached.Checked, now); !checked.IsZero() {
 					cached.Checked = checked
 					c.writeCache(cached)

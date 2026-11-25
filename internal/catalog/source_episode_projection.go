@@ -46,13 +46,34 @@ func (c *Catalog) readShowOrders(ctx context.Context, keys []core.RatingKey) (ma
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range items {
-			if item.order.Source == "" {
-				cfg, err := c.episodeLibraryDefault(ctx, &item.title)
+		var defaults map[core.RatingKey]EffectiveEpisodeOrder
+		batch := c.episodeOrderBatchDefault.Load()
+		if batch != nil && ctx.Value(resolvingEpisodeDefault{}) == nil {
+			var unresolved []core.Title
+			for _, item := range items {
+				if item.order.Source == "" {
+					unresolved = append(unresolved, item.title)
+				}
+			}
+			if len(unresolved) > 0 {
+				var err error
+				defaults, err = (*batch)(context.WithValue(ctx, resolvingEpisodeDefault{}, true), unresolved)
 				if err != nil {
 					return nil, err
 				}
-				item.order = cfg.LibraryDefault
+			}
+		}
+		for _, item := range items {
+			if item.order.Source == "" {
+				if batch != nil {
+					item.order = normalizeLibraryEpisodeOrder(&item.title, defaults[item.title.Key]).LibraryDefault
+				} else {
+					cfg, err := c.episodeLibraryDefault(ctx, &item.title)
+					if err != nil {
+						return nil, err
+					}
+					item.order = cfg.LibraryDefault
+				}
 			}
 			out[item.title.Key] = item
 		}
@@ -79,6 +100,23 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 	if ctx.Value(resolvingEpisodeDefault{}) != nil {
 		return nil
 	}
+	if !c.canProjectAlternateOrders() {
+		for i := range titles {
+			t := &titles[i]
+			switch t.Type {
+			case core.TypeShow:
+				t.EpisodeOrder = tmdbAired
+				if t.Key.Allocated() && t.IDs.TMDB == 0 && t.IDs.TVDB > 0 {
+					t.EpisodeOrder.Source = core.MetadataTVDB
+				}
+			case core.TypeSeason:
+				t.EpisodeOrder, t.ParentKey = tmdbAired, t.ShowKey
+			case core.TypeEpisode:
+				t.EpisodeOrder, t.ParentKey = tmdbAired, t.Key.Parent()
+			}
+		}
+		return nil
+	}
 	var shows []core.RatingKey
 	for _, t := range titles {
 		if t.Type == core.TypeShow {
@@ -96,8 +134,7 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 		return err
 	}
 	incoming := map[core.RatingKey][]int{}
-	var alternates, canon []core.RatingKey
-	canonical := map[core.RatingKey][]int{}
+	var alternates []core.RatingKey
 	for i := range titles {
 		t := &titles[i]
 		if t.Type == core.TypeShow {
@@ -121,7 +158,6 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 		if t.Type == core.TypeSeason {
 			t.ParentKey = t.ShowKey
 		} else {
-			t.EpisodeAirDate = t.Released
 			if !t.Key.Allocated() {
 				t.ParentKey = t.Key.Parent()
 			}
@@ -131,45 +167,8 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 				alternates = append(alternates, t.Key)
 			}
 			incoming[t.Key] = append(incoming[t.Key], i)
-		} else if t.Type == core.TypeEpisode {
-			if len(canonical[t.Key]) == 0 {
-				canon = append(canon, t.Key)
-			}
-			canonical[t.Key] = append(canonical[t.Key], i)
 		}
 	}
-	for part := range store.Chunks(canon, 200) {
-		filter, args := c.keyMembership("t.key", false, part)
-		rows, err := c.db.QueryContext(ctx, `SELECT t.key,COALESCE(p.air_ts,CASE WHEN e.earliest_ts=t.released_ts THEN 0 ELSE t.released_ts END)
- FROM catalog_titles t
- LEFT JOIN catalog_episode_provider_air p ON p.key=t.key
- LEFT JOIN catalog_episode_release e ON e.key=t.key
- WHERE `+filter, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var key core.RatingKey
-			var stamp int64
-			if err := rows.Scan(&key, &stamp); err != nil {
-				rows.Close()
-				return err
-			}
-			var date time.Time
-			if stamp != 0 {
-				date = time.Unix(stamp, 0).UTC()
-			}
-			for _, i := range canonical[key] {
-				titles[i].EpisodeAirDate = date
-			}
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-	}
-
 	for part := range store.Chunks(alternates, 200) {
 		args := make([]any, 0, len(part)*3)
 		values := ""
@@ -187,7 +186,14 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
  JOIN catalog_order_seasons s ON s.show_key=e.show_key AND s.provider=e.provider AND s.order_kind=e.order_kind AND s.season=e.season
  UNION ALL
  SELECT s.season_key,s.season,0,0,s.air_date,s.season_key,s.title,s.summary,s.poster,s.episode_count,1,'','','',0,s.provider_id
- FROM chosen x JOIN catalog_order_seasons s ON s.season_key=x.key AND s.provider=x.provider AND s.order_kind=x.order_kind`, args...)
+ FROM chosen x JOIN catalog_order_seasons s ON s.season_key=x.key AND s.provider=x.provider AND s.order_kind=x.order_kind
+ UNION ALL
+ SELECT e.key,0,`+canonicalSpecialNumber+`,0,'',
+ COALESCE(s.season_key,3000000000000000+e.show_tmdb*10000),COALESCE(s.title,e.season_title),'','',0,2,'','','',0,''
+ FROM chosen o JOIN catalog_titles e ON e.key=o.key
+ LEFT JOIN catalog_order_seasons s ON s.show_key=e.show_key AND s.provider=o.provider AND s.order_kind=o.order_kind AND s.season=0
+ WHERE o.provider<>'tmdb' AND e.type='episode' AND e.season=0 AND e.key<5000000000000000 AND e.show_tmdb>0
+ AND NOT EXISTS (SELECT 1 FROM catalog_order_episodes m WHERE m.show_key=e.show_key AND m.provider=o.provider AND m.order_kind=o.order_kind AND m.episode_key=e.key)`, args...)
 		if err != nil {
 			return err
 		}
@@ -202,7 +208,11 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 			e.AirDate = metadataDate(date)
 			for _, i := range incoming[e.Key] {
 				t := &titles[i]
-				if isSeason != 0 {
+				if isSeason == 2 {
+					e.AirDate = t.EpisodeAirDate
+					applyEpisodeCoordinate(t, e)
+					t.SeasonTitle = name
+				} else if isSeason == 1 {
 					t.Season, t.SeasonTitle, t.Title, t.Summary, t.PosterPath = e.Season, name, name, summary, poster
 					t.ChildCount, t.LeafCount, t.Released = max(count, 0), max(count, 0), e.AirDate
 					id, _ := strconv.ParseInt(seasonID, 10, 64)

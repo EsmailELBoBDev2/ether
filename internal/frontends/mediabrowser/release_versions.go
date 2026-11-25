@@ -368,23 +368,18 @@ func (i *instance) authorizePlaybackItem(r *http.Request, v *frontend.Viewer, ke
 	if key == 0 || v == nil {
 		return frontend.Title{}, false
 	}
+	detail, err := i.storedItem(r, v, key)
+	return detail.Title, err == nil
+}
+
+func (i *instance) storedItem(r *http.Request, v *frontend.Viewer, key frontend.RatingKey) (frontend.ItemDetail, error) {
 	req := frontend.ItemRequest{Viewer: v, Device: device(r), Key: key}
-	type storedItemReader interface {
+	if stored, ok := i.host.Experience.(interface {
 		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	}); ok {
+		return stored.StoredItem(i.identityContext(r), req)
 	}
-	var (
-		detail frontend.ItemDetail
-		err    error
-	)
-	if stored, ok := i.host.Experience.(storedItemReader); ok {
-		detail, err = stored.StoredItem(i.identityContext(r), req)
-	} else {
-		detail, err = i.host.Experience.Item(i.identityContext(r), req)
-	}
-	if err != nil {
-		return frontend.Title{}, false
-	}
-	return detail.Title, true
+	return i.host.Experience.Item(i.identityContext(r), req)
 }
 
 // playbackTitle loads the title facts the variants service needs. It uses

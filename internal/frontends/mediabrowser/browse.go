@@ -735,6 +735,7 @@ func (i *instance) browseRoutes() error {
 
 		}
 		if i.protocol == "emby" {
+			i.setVideoCanDownload(v, dto, d.Title)
 			i.embyItemDetailDTO(dto, d)
 		}
 		i.markUnreleased(dto, d.Title)

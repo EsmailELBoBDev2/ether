@@ -23,7 +23,7 @@ func (c *Catalog) refreshShowTree(ctx context.Context, client TMDB, show core.Ti
 		if !episodeKeyFits(season.SeasonNumber, 0) {
 			continue
 		}
-		sd, err := fresh.SeasonDetailsFresh(ctx, show.Key.TMDB(), season.SeasonNumber)
+		sd, err := fresh.SeasonDetailsFresh(ctx, show.IDs.TMDB, season.SeasonNumber)
 		if err != nil {
 			return err
 		}
@@ -44,7 +44,7 @@ func (c *Catalog) refreshShowTree(ctx context.Context, client TMDB, show core.Ti
 // Remove provider rows withdrawn from a complete payload. Viewer and
 // release bindings live independently of these mirror rows.
 func (c *Catalog) removeMissingChildren(ctx context.Context, tx *sql.Tx, show core.RatingKey, season *int, keep []core.RatingKey) error {
-	q := `DELETE FROM catalog_titles WHERE show_key=? AND tmdb_id<>0 AND type IN ('season','episode')`
+	q := `DELETE FROM catalog_titles WHERE show_key=? AND tmdb_id<>0 AND (type='season' AND key<3900000000000000 OR type='episode' AND key<5000000000000000)`
 	args := []any{int64(show)}
 	column := "season"
 	if season != nil {

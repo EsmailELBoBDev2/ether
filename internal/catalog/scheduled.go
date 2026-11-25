@@ -30,6 +30,13 @@ func (c *Catalog) ScheduledEpisodes(ctx context.Context, key core.RatingKey) ([]
 		}
 		return []core.Title{}, nil
 	}
+	if err := c.projectSingle(ctx, parent); err != nil {
+		return nil, err
+	}
+	if !c.visibleTitle(parent) {
+		return nil, core.ErrNotFound
+	}
+
 	if providerLayout(show, order) {
 		season, err := c.orderSeasonByKey(ctx, show.Key, order, key)
 		if errors.Is(err, core.ErrNotFound) {

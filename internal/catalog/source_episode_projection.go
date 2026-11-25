@@ -96,7 +96,8 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 		return err
 	}
 	incoming := map[core.RatingKey][]int{}
-	var alternates []core.RatingKey
+	var alternates, canon []core.RatingKey
+	canonical := map[core.RatingKey][]int{}
 	for i := range titles {
 		t := &titles[i]
 		if t.Type == core.TypeShow {
@@ -130,8 +131,45 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 				alternates = append(alternates, t.Key)
 			}
 			incoming[t.Key] = append(incoming[t.Key], i)
+		} else if t.Type == core.TypeEpisode {
+			if len(canonical[t.Key]) == 0 {
+				canon = append(canon, t.Key)
+			}
+			canonical[t.Key] = append(canonical[t.Key], i)
 		}
 	}
+	for part := range store.Chunks(canon, 200) {
+		filter, args := c.keyMembership("t.key", false, part)
+		rows, err := c.db.QueryContext(ctx, `SELECT t.key,COALESCE(p.air_ts,CASE WHEN e.earliest_ts=t.released_ts THEN 0 ELSE t.released_ts END)
+ FROM catalog_titles t
+ LEFT JOIN catalog_episode_provider_air p ON p.key=t.key
+ LEFT JOIN catalog_episode_release e ON e.key=t.key
+ WHERE `+filter, args...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var key core.RatingKey
+			var stamp int64
+			if err := rows.Scan(&key, &stamp); err != nil {
+				rows.Close()
+				return err
+			}
+			var date time.Time
+			if stamp != 0 {
+				date = time.Unix(stamp, 0).UTC()
+			}
+			for _, i := range canonical[key] {
+				titles[i].EpisodeAirDate = date
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+
 	for part := range store.Chunks(alternates, 200) {
 		args := make([]any, 0, len(part)*3)
 		values := ""
@@ -166,7 +204,7 @@ func (c *Catalog) ProjectEpisodeTitles(ctx context.Context, titles []core.Title)
 				t := &titles[i]
 				if isSeason != 0 {
 					t.Season, t.SeasonTitle, t.Title, t.Summary, t.PosterPath = e.Season, name, name, summary, poster
-					t.ChildCount, t.LeafCount, t.Released = count, count, e.AirDate
+					t.ChildCount, t.LeafCount, t.Released = max(count, 0), max(count, 0), e.AirDate
 					id, _ := strconv.ParseInt(seasonID, 10, 64)
 					switch t.EpisodeOrder.Source {
 					case core.MetadataTMDB:
@@ -230,7 +268,7 @@ func (c *Catalog) orderForParent(ctx context.Context, key core.RatingKey) (*core
 			showKey = core.ShowKey(key.TMDB())
 		}
 	}
-	show, err := c.StoredTitle(ctx, showKey)
+	show, err := c.storedTitle(ctx, showKey)
 	if errors.Is(err, core.ErrNotFound) {
 		return parent, nil, tmdbAired, nil
 	}
@@ -254,28 +292,28 @@ func (c *Catalog) orderSeasonByKey(ctx context.Context, show core.RatingKey, ord
 
 func (c *Catalog) orderedEpisodePage(ctx context.Context, show *core.Title, order core.EpisodeOrder, season, offset, limit int, scheduled bool) (core.Page, error) {
 	out := core.Page{Items: []core.Title{}}
-	date := c.now().UTC().Format(time.DateOnly)
-	cmp := "<="
-	if scheduled {
-		cmp = ">"
-	}
+	now := c.now()
+	date := now.UTC().Format(time.DateOnly)
+	scope, args := episodeScope([]core.RatingKey{show.Key}, map[core.RatingKey]showOrder{show.Key: {title: *show, order: order}})
 	var filter string
-	args := []any{show.Key, order.Source, order.Kind}
 	if season >= 0 {
 		filter = " AND e.season=?"
 		args = append(args, season)
 	}
-	q := ` FROM catalog_order_episodes e JOIN catalog_titles t ON t.key=e.episode_key
- WHERE e.show_key=? AND e.provider=? AND e.order_kind=?` + filter + ` AND t.adult=0 AND e.air_date<>'' AND e.air_date` + cmp + `?`
-	args = append(args, date)
-	if err := c.db.QueryRowContext(ctx, `SELECT count(*)`+q, args...).Scan(&out.Total); err != nil {
+	dateFilter := scopedAired
+	if scheduled {
+		dateFilter = scopedAirAfter
+	}
+	q := ` FROM scoped_episodes e JOIN catalog_titles t ON t.key=e.key WHERE t.adult=0` + filter + ` AND ` + dateFilter
+	args = append(args, now.Unix(), date)
+	if err := c.db.QueryRowContext(ctx, scope+`SELECT count(*)`+q, args...).Scan(&out.Total); err != nil {
 		return out, err
 	}
 	if offset >= out.Total {
 		return out, nil
 	}
 	args = append(args, limit, offset)
-	items, err := c.scanTitleKeys(ctx, `SELECT `+prefixedCols("t")+q+` ORDER BY e.season,e.episode LIMIT ? OFFSET ?`, args...)
+	items, err := c.scanTitleKeys(ctx, scope+`SELECT `+prefixedCols("t")+q+` ORDER BY e.season,e.episode LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return out, err
 	}
@@ -291,7 +329,7 @@ func (c *Catalog) orderedEpisodePage(ctx context.Context, show *core.Title, orde
 
 func selectedEpisodeReleased(t *core.Title, now time.Time) bool {
 	if t.Type == core.TypeEpisode && !t.EpisodeAirDate.IsZero() {
-		return !t.EpisodeAirDate.After(now)
+		return t.IsReleased(now) || !t.EpisodeAirDate.After(now)
 	}
 	return t.IsReleased(now)
 }

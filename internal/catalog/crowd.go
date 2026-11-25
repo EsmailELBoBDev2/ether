@@ -301,13 +301,7 @@ func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]co
 		if err != nil {
 			return nil, err
 		}
-		if c.writeGen.Load() == gen {
-			c.cacheMu.Lock()
-			for _, t := range ts {
-				c.putSnapshotLocked(t.Key, gen, minBucket, storedTitle{t: cloneTitle(t)})
-			}
-			c.cacheMu.Unlock()
-		}
+
 		for _, t := range ts {
 			byKey[t.Key] = t
 		}
@@ -317,6 +311,10 @@ func (c *Catalog) titlesByKeys(ctx context.Context, keys []core.RatingKey) ([]co
 			out = append(out, t)
 		}
 	}
+	if err := c.ProjectEpisodeTitles(ctx, out); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 

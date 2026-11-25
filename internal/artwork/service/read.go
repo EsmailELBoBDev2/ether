@@ -100,6 +100,9 @@ func (a Source) Read(ctx context.Context, req frontend.ArtworkRequest, img front
 	if req.Item.IsPluginKey() && (strings.HasPrefix(img.Path, "https://") || strings.HasPrefix(img.Path, "http://")) {
 		return a.readPluginItemArt(ctx, req, img, transform)
 	}
+	if img.Subject == frontend.CollectionCardArtworkSubject {
+		ctx = frontend.WithCollectionCardArtwork(ctx)
+	}
 	entries, _, err := a.entries(ctx, req)
 	if err != nil {
 		return nil, "", err

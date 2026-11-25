@@ -8,7 +8,7 @@ import (
 )
 
 type collectionCardSource interface {
-	CheckMembersBatch(context.Context, *core.User, []core.RatingKey, map[core.RatingKey][]core.RatingKey, int) (map[core.RatingKey]*core.Collection, map[core.RatingKey]bool, error)
+	CollectionCardHeaders(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]*core.Collection, error)
 	FindCollectionCardKeys(context.Context, string, int) ([]core.RatingKey, error)
 }
 
@@ -52,7 +52,7 @@ func (e *Engine) CollectionCardHubs(ctx context.Context, user *core.User, hc cor
 	if len(keys) == 0 {
 		return nil
 	}
-	collections, _, err := source.CheckMembersBatch(ctx, user, keys, nil, 0)
+	collections, err := source.CollectionCardHeaders(ctx, user, keys)
 	if err != nil {
 		return nil
 	}

@@ -30,7 +30,8 @@ func (i *instance) writePersonalCollections(w http.ResponseWriter, r *http.Reque
 	for n, c := range page {
 		titles[n] = frontend.Title{Key: c.Key, Type: "boxset"}
 	}
-	images := i.gridListImages(withJellyfinListFiles(withBrowseMemo(r)), titles)
+	artRequest := r.WithContext(frontend.WithCollectionCardArtwork(r.Context()))
+	images := i.gridListImages(withJellyfinListFiles(withBrowseMemo(artRequest)), titles)
 	items := make([]any, 0, len(page))
 	for _, c := range page {
 		dto := i.boxSetDTO(c)

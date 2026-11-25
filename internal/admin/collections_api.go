@@ -305,7 +305,18 @@ func (h *Handler) handleCollectionTemplates(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) handleCollectionArtwork(w http.ResponseWriter, r *http.Request) {
 	width, _ := strconv.Atoi(r.URL.Query().Get("w"))
-	data, ct, mod, err := h.deps.Collections.Artwork(r.Context(), r.PathValue("id"), width)
+	resolve := h.deps.Collections.Artwork
+	if r.URL.Query().Get("card") == "1" {
+		source, ok := h.deps.Collections.(interface {
+			CustomCardArtwork(context.Context, string, int) ([]byte, string, time.Time, error)
+		})
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", "no artwork for this collection")
+			return
+		}
+		resolve = source.CustomCardArtwork
+	}
+	data, ct, mod, err := resolve(r.Context(), r.PathValue("id"), width)
 	if err != nil {
 		if errors.Is(err, core.ErrNotFound) || isNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", "no artwork for this collection")

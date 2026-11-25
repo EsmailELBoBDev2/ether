@@ -21,6 +21,14 @@ func (s *Server) renderCollectionCardHub(ctx context.Context, pr *Request, hub f
 	for _, collection := range hub.Collections {
 		if vis.CollectionAllowed(pr.User, &collection) {
 			dir := s.collectionDirectory(ctx, &collection)
+			if collection.PosterPath != "" {
+				dir.Thumb += "?collectionCard=1"
+			} else {
+				dir.Thumb = ""
+			}
+			if dir.Art != "" {
+				dir.Art += "?collectionCard=1"
+			}
 			dir.Extra = append(dir.Extra, model.A("guid", "collection://"+collection.Key.String()), model.A("summary", collection.Summary))
 			out.Directory = append(out.Directory, dir)
 		}
@@ -63,4 +71,51 @@ func (s *Server) writeCollectionCardPage(w http.ResponseWriter, r *http.Request,
 		return true
 	}
 	return false
+}
+
+// A card image follows the viewer-scoped artwork authorization without opening
+// the collection or invoking its full poster renderer.
+func (s *Server) serveCardArtwork(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
+	art := s.getHost().Artwork
+	if art == nil {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	kind := frontend.ImagePoster
+	if element == "art" || element == "background" {
+		kind = frontend.ImageBackdrop
+	}
+	ctx := frontend.WithCollectionCardArtwork(r.Context())
+	req := frontend.ArtworkRequest{Viewer: FromContext(ctx).User, Item: key}
+	list, _, err := art.List(ctx, req)
+	if err != nil {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	for _, img := range list {
+		if img.Kind != kind {
+			continue
+		}
+		if width <= 0 {
+			width = unsizedImageWidth(element, 500)
+		}
+		data, ct, err := art.Read(ctx, req, img, frontend.ArtworkTransform{Width: width})
+		if err != nil {
+			break
+		}
+		data, ct, err = s.androidPhotoFormat(r, data, ct)
+		if err != nil {
+			break
+		}
+		setArtworkHeaders(w.Header(), ct)
+		w.Header().Set("Cache-Control", "private, no-cache")
+		w.Header().Add("Vary", "X-Plex-Token")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(data)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		return
+	}
+	writeHTTPError(w, http.StatusNotFound)
 }

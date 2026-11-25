@@ -3,14 +3,17 @@ package collections
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // The Collection Studio API, used by internal/admin.
@@ -567,11 +570,29 @@ func (s *Service) tmdbCollectionPoster(ctx context.Context, sp core.CollectionSp
 // FindCollectionCardKeys matches the start of a collection name using the
 // collection-card index. Stored IDs and match results use the same rating keys.
 func (s *Service) FindCollectionCardKeys(ctx context.Context, prefix string, limit int) ([]core.RatingKey, error) {
-	pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(prefix) + "%"
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM collections_specs
-		WHERE enabled=1 AND owner_user_id=0 AND json_extract(spec_json, '$.name') LIKE ? ESCAPE '\'
-		ORDER BY json_extract(spec_json, '$.name') COLLATE NOCASE, id LIMIT ?`, pattern, limit)
+	if prefix == "" || limit <= 0 {
+		return nil, nil
+	}
+	limit = min(limit, core.MaxCollectionCards)
+	var rows *sql.Rows
+	var err error
+	if store.DialectOf(s.db) == store.Postgres {
+		name := `LOWER(spec_json::jsonb->>'name') COLLATE "C"`
+		prefix = strings.ToLower(prefix)
+		seek := name + ">=?"
+		args := []any{prefix}
+		if upper := nextCollectionPrefix(prefix); upper != "" {
+			seek += " AND " + name + "<?"
+			args = append(args, upper)
+		}
+		rows, err = s.db.QueryContext(ctx, "SELECT id FROM collections_specs WHERE enabled=1 AND owner_user_id=0 AND "+seek+" ORDER BY "+name+",id LIMIT ?", append(args, limit)...)
+	} else {
+		pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(prefix) + "%"
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id FROM collections_specs
+			WHERE enabled=1 AND owner_user_id=0 AND json_extract(spec_json, '$.name') LIKE ? ESCAPE '\'
+			ORDER BY json_extract(spec_json, '$.name') COLLATE NOCASE, id LIMIT ?`, pattern, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -585,4 +606,20 @@ func (s *Service) FindCollectionCardKeys(ctx context.Context, prefix string, lim
 		keys = append(keys, core.SmartKey(id))
 	}
 	return keys, rows.Err()
+}
+
+// nextCollectionPrefix gives the exclusive upper bound of a prefix in byte order.
+func nextCollectionPrefix(prefix string) string {
+	for prefix != "" {
+		last, size := utf8.DecodeLastRuneInString(prefix)
+		prefix = prefix[:len(prefix)-size]
+		if last < utf8.MaxRune {
+			last++
+			if last == 0xD800 {
+				last = 0xE000
+			}
+			return prefix + string(last)
+		}
+	}
+	return ""
 }

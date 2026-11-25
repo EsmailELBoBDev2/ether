@@ -524,7 +524,10 @@ func previewRows(rows []core.HomeRow) []previewRow {
 			pr.Items = append(pr.Items, homeCard(t))
 		}
 		for _, c := range row.Hub.Collections {
-			poster := "/ether/api/collections/" + strconv.FormatInt(c.Key.TMDB(), 10) + "/artwork?v=" + strconv.FormatInt(c.UpdatedAt.Unix(), 10)
+			poster := adminImageURL(c.PosterPath, 342)
+			if c.PosterPath != "" && !validImagePath(c.PosterPath) {
+				poster = "/ether/api/collections/" + strconv.FormatInt(c.Key.TMDB(), 10) + "/artwork?card=1&v=" + strconv.FormatInt(c.UpdatedAt.Unix(), 10)
+			}
 			backdrop := poster
 			if validImagePath(c.BackdropPath) {
 				backdrop = adminImageURL(c.BackdropPath, 780)

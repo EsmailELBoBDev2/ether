@@ -191,6 +191,9 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 	}
 
 	authCtx := frontend.WithoutArtworkMetadata(ctx)
+	if image.Subject == frontend.CollectionCardArtworkSubject {
+		authCtx = frontend.WithCollectionCardArtwork(authCtx)
+	}
 	if image.Kind != "" {
 		authCtx = frontend.WithArtworkKinds(authCtx, map[string]bool{image.Kind: true})
 	}

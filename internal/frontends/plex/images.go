@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	kitimages "github.com/braedonsaunders/ether/internal/frontend/kit/images"
 )
@@ -146,6 +147,10 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
+	if r.URL.Query().Get("collectionCard") == "1" && key.Kind() == core.KindSmart {
+		s.serveCardArtwork(w, r, key, element, width)
+		return
+	}
 	if r.URL.Query().Has("ranked") {
 		s.serveRankedArtwork(w, r, key, width)
 		return
@@ -510,10 +515,10 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 			// The inner URL carries the variant (collection scope, Top 10 rank
 			// and shape). Clients such as Plex for Apple TV fetch every poster
 			// through this transcoder, so the variant must survive the hop.
-			if inner.Has("collection") || inner.Has("ranked") {
+			if inner.Has("collection") || inner.Has("ranked") || inner.Has("collectionCard") {
 				r = r.Clone(r.Context())
 				q := r.URL.Query()
-				for _, name := range []string{"collection", "ranked", "rankshape", "rv"} {
+				for _, name := range []string{"collection", "ranked", "rankshape", "rv", "collectionCard"} {
 					if v := inner.Get(name); v != "" {
 						q.Set(name, v)
 					}

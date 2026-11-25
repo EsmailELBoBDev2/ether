@@ -31,6 +31,7 @@ type Source struct {
 	Catalog          core.StoredTitleLookup
 	CollectionDevice string
 	Collections      core.Collections
+	CollectionCards  func(context.Context, *core.User, []core.RatingKey) (map[core.RatingKey]*core.Collection, error)
 	Playlists        core.Playlists
 	Visibility       experience.Visibility
 	LiveTV           interface {
@@ -227,6 +228,9 @@ func (a Source) ChannelImage(viewer *core.Viewer, channel livetv.Channel) fronte
 }
 
 func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]frontendArtworkEntry, bool, error) {
+	if frontend.CollectionCardArtwork(ctx) && req.Item.Kind() == core.KindSmart && req.Viewer != nil {
+		return a.collectionCardEntries(ctx, req)
+	}
 	if a.LandscapeThumb {
 		// Public cache tags must resolve to the same descriptor for every viewer.
 		req.Device.Language = ""
@@ -793,14 +797,14 @@ func (a Source) ListCollectionPage(ctx context.Context, viewer *core.Viewer, dev
 		ctx     context.Context
 		entries []frontendArtworkEntry
 	}
-	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	withMetadata := !frontend.CollectionCardArtwork(ctx) && a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
 	listed := make([]listedCollection, 0, len(cols))
 	var lookups []artworkMetadataLookup
 	for i := range cols {
 		c := &cols[i]
 		req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: c.Key}
 		listCtx := ctx
-		if c.Key.Kind() == core.KindCollection || (!c.Upcoming && c.PosterPath != "") {
+		if frontend.CollectionCardArtwork(ctx) || c.Key.Kind() == core.KindCollection || (!c.Upcoming && c.PosterPath != "") {
 			listCtx = frontend.WithArtworkCollection(ctx, c)
 		}
 		entries, _, err := a.entries(listCtx, req)
@@ -844,7 +848,7 @@ func (a Source) List(ctx context.Context, req frontend.ArtworkRequest) ([]fronte
 	if err != nil {
 		return nil, false, err
 	}
-	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	withMetadata := !frontend.CollectionCardArtwork(ctx) && a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
 	if withMetadata && a.meta != nil && len(entries) > 1 {
 		lookups := make([]artworkMetadataLookup, len(entries))
 		for i, e := range entries {

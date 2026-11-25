@@ -89,6 +89,7 @@ type Service struct {
 	images          *artwork.Images
 	catCfg          func() config.Catalog
 	librarySections func(context.Context) map[int]core.MediaType
+	cardFilter      func(context.Context, *core.User, core.MediaType) (core.Filter, bool, error)
 	kinds           *KindRegistry
 	traktCfg        func() config.Trakt
 	sealer          config.FieldSealer

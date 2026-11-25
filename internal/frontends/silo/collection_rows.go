@@ -18,7 +18,7 @@ func (i *instance) collectionSection(r *http.Request, v *frontend.Viewer, creden
 	if len(keys) == 0 {
 		return nil
 	}
-	art := i.sectionArtwork(r, v, credential, keys)
+	art := i.sectionArtwork(r.WithContext(frontend.WithCollectionCardArtwork(r.Context())), v, credential, keys)
 	for _, entry := range row.Entries {
 		c := entry.Collection
 		if entry.Kind != frontend.RowEntryCollection || c == nil {

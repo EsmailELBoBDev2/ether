@@ -3,14 +3,47 @@ package availability
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// RebindTitleReleases updates the sealed payloads before the match transaction
-// moves their rows. The owner has identified the content these releases bind
-// to, so their old title IDs must not veto the corrected assignment.
-func (s *Service) RebindTitleReleases(ctx context.Context, tx *sql.Tx, first, last int64, title *core.Title) error {
+func init() {
+	store.RegisterAfter("availability_title_match", "availability_gate")
+	store.Register("availability_title_match", 1, `
+CREATE INDEX IF NOT EXISTS availability_gate_title_match ON availability_gate(rating_key);
+`)
+}
+
+// RekeyTitle moves releases and gate evidence in the caller’s transaction. When
+// the service is active it also rewrites sealed release payloads for the new title.
+func (s *Service) RekeyTitle(ctx context.Context, tx *sql.Tx, ranges []core.TitleKeyRange, title *core.Title) error {
+	for _, r := range ranges {
+		if s != nil {
+			if err := s.rekeyReleasePayloads(ctx, tx, r.First, r.Last, title); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM availability_releases AS old WHERE old.rating_key BETWEEN ? AND ?
+			AND EXISTS (SELECT 1 FROM availability_releases AS dest WHERE dest.rating_key=old.rating_key+? AND dest.id=old.id AND dest.source_id=old.source_id)`, r.First, r.Last, r.Delta); err != nil {
+			return fmt.Errorf("title match: availability_releases: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE availability_releases AS old SET rating_key=rating_key+? WHERE old.rating_key BETWEEN ? AND ?`, r.Delta, r.First, r.Last); err != nil {
+			return fmt.Errorf("title match: availability_releases: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM availability_gate AS old WHERE old.rating_key BETWEEN ? AND ?
+			AND EXISTS (SELECT 1 FROM availability_gate AS dest WHERE dest.rating_key=old.rating_key+? AND dest.policy=old.policy)`, r.First, r.Last, r.Delta); err != nil {
+			return fmt.Errorf("title match: availability_gate: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE availability_gate AS old SET rating_key=rating_key+? WHERE old.rating_key BETWEEN ? AND ?`, r.Delta, r.First, r.Last); err != nil {
+			return fmt.Errorf("title match: availability_gate: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) rekeyReleasePayloads(ctx context.Context, tx *sql.Tx, first, last int64, title *core.Title) error {
 	rows, err := tx.QueryContext(ctx, `SELECT rating_key,id,source_id,payload FROM availability_releases WHERE rating_key BETWEEN ? AND ?`, first, last)
 	if err != nil {
 		return err

@@ -376,10 +376,22 @@ func candidateReason(tr *Trace, id string) string {
 	return "not playable for this client"
 }
 
-// RebindTitlePins moves the owner's release choices inside a title-match
+// RekeyTitle moves the owner's release choices inside a title-match
 // transaction. An existing destination pin remains the owner's choice.
-func (s *Service) RebindTitlePins(ctx context.Context, tx *sql.Tx, first, last, delta int64, name string) ([]core.RatingKey, error) {
-	rows, err := tx.QueryContext(ctx, `DELETE FROM resolver_pins WHERE rating_key BETWEEN ? AND ? RETURNING `+pinColumns, first, last)
+func (s *Service) RekeyTitle(ctx context.Context, tx *sql.Tx, ranges []core.TitleKeyRange, name string) ([]core.RatingKey, error) {
+	var changed []core.RatingKey
+	for _, r := range ranges {
+		keys, err := rekeyPins(ctx, tx, r, name)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, keys...)
+	}
+	return changed, nil
+}
+
+func rekeyPins(ctx context.Context, tx *sql.Tx, r core.TitleKeyRange, name string) ([]core.RatingKey, error) {
+	rows, err := tx.QueryContext(ctx, `DELETE FROM resolver_pins WHERE rating_key BETWEEN ? AND ? RETURNING `+pinColumns, r.First, r.Last)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +412,7 @@ func (s *Service) RebindTitlePins(ctx context.Context, tx *sql.Tx, first, last, 
 	}
 	keys := make([]core.RatingKey, 0, len(pins)*2)
 	for _, p := range pins {
-		dest := p.TitleKey + core.RatingKey(delta)
+		dest := p.TitleKey + core.RatingKey(r.Delta)
 		data, err := json.Marshal(p.Release)
 		if err != nil {
 			return nil, err

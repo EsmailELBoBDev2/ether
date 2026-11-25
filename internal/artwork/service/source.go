@@ -174,6 +174,11 @@ type frontendArtworkEntry struct {
 	generated                     *artwork.TitlePoster
 }
 
+// Absolute artwork paths are passed to the guarded URL image store by remote.
+func validRemoteArtwork(path string) bool {
+	return artwork.ValidPath(path) || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
 func artworkReference(req frontend.ArtworkRequest, kind, source string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", req.Viewer.ID, req.Item, req.Device.Language, kind, source, "artwork-v1")))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
@@ -365,7 +370,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 				if a.Variants != nil {
 					if variants, ready := a.Variants(title, req.Device.Language); ready && variants != nil {
 						for _, file := range variants.Backdrops {
-							if !artwork.ValidPath(file.FilePath) || file.Width <= file.Height {
+							if !validRemoteArtwork(file.FilePath) || file.Width <= file.Height {
 								continue
 							}
 							if path == "" {
@@ -378,7 +383,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 						}
 					}
 				}
-				if artwork.ValidPath(path) {
+				if validRemoteArtwork(path) {
 					add(item.kind, "landscape\x00"+path, frontendArtworkEntry{remotePath: path})
 				}
 			}
@@ -417,7 +422,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 				add(frontend.ImageBackdrop, "ultrablur\x00"+title.BackdropPath+"\x00"+stamp, frontendArtworkEntry{ultra: colors})
 			}
 		}
-		if artwork.ValidPath(title.StillPath) {
+		if validRemoteArtwork(title.StillPath) {
 			add(frontend.ImageStill, "still\x00"+title.StillPath, frontendArtworkEntry{remotePath: title.StillPath})
 		}
 		if virtualSeason == nil && a.Variants != nil {
@@ -441,7 +446,7 @@ func (a Source) entries(ctx context.Context, req frontend.ArtworkRequest) ([]fro
 							continue
 						}
 						for _, file := range group.files {
-							if artwork.ValidPath(file.FilePath) {
+							if validRemoteArtwork(file.FilePath) {
 								add(group.kind, "variant\x00"+file.FilePath, frontendArtworkEntry{remotePath: file.FilePath})
 								if primaryOnly {
 									break

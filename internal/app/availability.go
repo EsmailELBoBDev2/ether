@@ -16,23 +16,31 @@ func (a *App) buildAvailability() error {
 			return a.indexers.Search(ctx, req)
 		}, Watchlist: func(ctx context.Context) (map[core.RatingKey]bool, error) {
 			out := map[core.RatingKey]bool{}
-			follow := func(k core.RatingKey) {
+			follow := func(k, show core.RatingKey) {
 				out[k] = true
-				if k.Kind() == core.KindEpisode || k.Kind() == core.KindSeason {
-					out[core.ShowKey(k.TMDB())] = true
+				if show == 0 && !k.Allocated() {
+					switch k.Kind() {
+					case core.KindSeason:
+						show = k.Parent()
+					case core.KindEpisode:
+						show = k.Parent().Parent()
+					}
+				}
+				if show != 0 {
+					out[show] = true
 				}
 			}
-			rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT item_key FROM watchlist_items`)
+			rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT w.item_key, COALESCE(t.show_key,0) FROM watchlist_items w LEFT JOIN catalog_titles t ON t.key=w.item_key`)
 			if err != nil {
 				return nil, err
 			}
 			defer rows.Close()
 			for rows.Next() {
-				var key int64
-				if err := rows.Scan(&key); err != nil {
+				var key, show core.RatingKey
+				if err := rows.Scan(&key, &show); err != nil {
 					return nil, err
 				}
-				follow(core.RatingKey(key))
+				follow(key, show)
 			}
 			if err := rows.Err(); err != nil {
 				return nil, err
@@ -42,8 +50,19 @@ func (a *App) buildAvailability() error {
 				if err != nil {
 					return nil, err
 				}
+				var children []core.RatingKey
 				for _, k := range recent {
-					follow(k)
+					follow(k, 0)
+					if k.Allocated() && (k.Kind() == core.KindSeason || k.Kind() == core.KindEpisode) {
+						children = append(children, k)
+					}
+				}
+				titles, err := a.catalog.CachedTitles(ctx, children)
+				if err != nil {
+					return nil, err
+				}
+				for _, title := range titles {
+					follow(title.Key, title.ShowKey)
 				}
 			}
 			return out, nil

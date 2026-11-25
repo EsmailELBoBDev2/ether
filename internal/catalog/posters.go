@@ -133,7 +133,7 @@ func (c *Catalog) FillPosters(ctx context.Context, titles []core.Title, unknown 
 			pending = append(pending, i)
 		}
 	}
-	if len(pending) == 0 || c.tmdb() == nil {
+	if len(pending) == 0 || !c.TMDBConfigured() {
 		return
 	}
 	type found struct {

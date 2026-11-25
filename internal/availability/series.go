@@ -38,7 +38,7 @@ func (s *Service) filterDiscovery(ctx context.Context, items []core.Title, input
 				continue
 			}
 			eps := children[show.Key]
-			if len(eps) == 0 {
+			if len(eps) == 0 && !show.Key.Allocated() {
 				// Feed-first premiere evidence: this is only an S01E01 matching
 				// descriptor. It creates no catalogue item or playable endpoint.
 				// Once episodes are mirrored their own dates take precedence.

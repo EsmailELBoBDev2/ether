@@ -1217,7 +1217,7 @@ func (b *builder) genTrending() []*candRow {
 		return append(b.list("trending_day", t, 200), b.list("trending_week", t, 200)...)
 	})
 	items := b.rankWith(src, func(t *core.Title, idx, n int, fit float64, _ string) (float64, string) {
-		return 0.85*rankScore(idx, n) + 0.15*fit, "Trending globally on TMDB"
+		return 0.85*rankScore(idx, n) + 0.15*fit, "Trending this week"
 	}, true)
 	r := newRow(KindTrending, "trending", "Trending Now", "Global movie and TV trends, refreshed hourly.", capItems(items, 200))
 	r.typed = splitTyped(items, 200)
@@ -1383,7 +1383,7 @@ func (b *builder) genTopRated() []*candRow {
 }
 
 func (b *builder) genPopular() []*candRow {
-	return []*candRow{b.listRow(KindPopular, "popular", "Popular", "TMDB's most popular titles.", "popular", "Popular right now", core.TypeMovie, core.TypeShow)}
+	return []*candRow{b.listRow(KindPopular, "popular", "Popular", "Popular right now", "popular", "Popular right now", core.TypeMovie, core.TypeShow)}
 }
 
 func (b *builder) genAiringToday() []*candRow {

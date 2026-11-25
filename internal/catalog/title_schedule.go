@@ -109,7 +109,7 @@ func (c *Catalog) TitleShowSchedule(ctx context.Context, show core.RatingKey, si
 	if out.Seasons, err = c.seasonSummaries(ctx, show); err != nil {
 		return nil, err
 	}
-	if n := len(out.Seasons); n > 0 && out.Seasons[n-1].Episodes == 0 && out.Seasons[n-1].Season > 0 && episodeKeyFits(out.Seasons[n-1].Season, 0) {
+	if n := len(out.Seasons); c.TMDBConfigured() && n > 0 && out.Seasons[n-1].Episodes == 0 && out.Seasons[n-1].Season > 0 && episodeKeyFits(out.Seasons[n-1].Season, 0) {
 		if _, ferr := c.fetchSeason(ctx, show.TMDB(), out.Seasons[n-1].Season); ferr == nil {
 			if out.Seasons, err = c.seasonSummaries(ctx, show); err != nil {
 				return nil, err
@@ -267,8 +267,8 @@ func (c *Catalog) MovieReleaseTimeline(ctx context.Context, key core.RatingKey) 
 		return nil, fmt.Errorf("%w: key %s", core.ErrNotFound, key)
 	}
 	api, ok := c.tmdb().(releaseDatesTMDB)
-	if !ok || api == nil {
-		return nil, errors.New("catalog: TMDB is not configured")
+	if !ok || !c.TMDBConfigured() || key.Allocated() {
+		return nil, nil
 	}
 	got, err := api.MovieReleaseDates(ctx, key.TMDB())
 	if err != nil {

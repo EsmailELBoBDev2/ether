@@ -158,7 +158,7 @@ func (e *ValidationError) Add(field, msg string) { e.add(field, msg) }
 
 // NeedTMDB reports whether TMDB is available, recording a warning.
 func (g *Gather) NeedTMDB() bool {
-	if g.Svc.api == nil || g.Svc.api.c == nil {
+	if !g.Svc.api.configured() {
 		g.Warn("%s needs TMDB, which is not configured", sourceName(g.Src))
 		return false
 	}

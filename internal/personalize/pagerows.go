@@ -29,6 +29,33 @@ type pageRowBase struct {
 	source              string
 }
 
+// Rows that can only be built from an upstream chart. Rows with independent
+// local or Trakt inputs continue working without a metadata provider.
+func metadataRowList(kind string) string {
+	switch kind {
+	case KindTrending, KindTrendingTaste:
+		return "trending_week"
+	case KindPopular:
+		return "popular"
+	case KindAiringToday:
+		return "airing_today"
+	case KindUpcoming:
+		return "upcoming"
+	}
+	return ""
+}
+
+func (e *Engine) metadataRowAvailable(kind string, typ core.MediaType) bool {
+	list := metadataRowList(kind)
+	if list == "" {
+		return true
+	}
+	cat, ok := e.catalog.(interface {
+		SupportsMetadataList(string, core.MediaType) bool
+	})
+	return !ok || cat.SupportsMetadataList(list, typ)
+}
+
 // pageRows builds the page's derived rows for this viewer. owner holds the
 // placed collections and lists, m the viewer's model rows.
 func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner []*candRow, user *core.User, section core.MediaType) []*candRow {
@@ -42,6 +69,9 @@ func (e *Engine) pageRows(ctx context.Context, pl *pagePlan, m *userModel, owner
 			continue
 		}
 		row := r.row
+		if !e.metadataRowAvailable(row.Source.Kind, section) {
+			continue
+		}
 		if row.Source.Kind == SourceShelf && pl.key == core.PageHome {
 			out = append(out, e.homeShelfRows(ctx, pl, r, user, plugin)...)
 			continue
@@ -225,9 +255,9 @@ func (e *Engine) pageRowBase(ctx context.Context, row *core.Row, m *userModel, o
 	switch src.Kind {
 	case KindTrending:
 		if src.Param("window", "week") == "day" {
-			base = fromList(KindTrending, "trending_day", "Trending today on TMDB", core.TypeMovie, core.TypeShow)
+			base = fromList(KindTrending, "trending_day", "Trending today", core.TypeMovie, core.TypeShow)
 		} else if base = fromModel(KindTrending); base == nil {
-			base = fromList(KindTrending, "trending_week", "Trending this week on TMDB", core.TypeMovie, core.TypeShow)
+			base = fromList(KindTrending, "trending_week", "Trending this week", core.TypeMovie, core.TypeShow)
 		}
 	case KindPopular:
 		if base = fromModel(KindPopular); base == nil {

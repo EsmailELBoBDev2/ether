@@ -96,8 +96,8 @@ func (c *Catalog) SearchTitleMatches(ctx context.Context, typ core.MediaType, qu
 		return out, nil
 	}
 	client := c.tmdb()
-	if client == nil {
-		return nil, core.ErrNotAvailable
+	if !c.TMDBConfigured() {
+		return out, nil
 	}
 	// Native app identify forms can submit a TMDB ID instead of a name.
 	if rawID, ok := strings.CutPrefix(query, "tmdb-"); ok {

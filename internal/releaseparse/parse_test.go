@@ -414,3 +414,77 @@ func TestDualAudioVsBareDualParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestTitleTooGenericAndLeadingFragment(t *testing.T) {
+	for _, tc := range []struct {
+		title string
+		want  bool
+	}{
+		{"", true},
+		{"---", true},
+		{"The", true},
+		{"A", true},
+		{"An", true},
+		{"Le", true},
+		{"La", true},
+		{"Les", true},
+		{"El", true},
+		{"Los", true},
+		{"Las", true},
+		{"Der", true},
+		{"Die", true},
+		{"Das", true},
+		{"Il", true},
+		{"Gli", true},
+		{"De La", true},
+		{"In The", true},
+		{"Of A", true},
+		{"The & A", true},
+		{"X", true},
+		{"It", true},
+		{"Up", true},
+		{"TV", true},
+		{"L.A.", true},
+		{"Los It", true},
+		{"愛", true},
+		{"괴물", false},
+		{"怪物", false},
+		{"One", false},
+		{"CSI", false},
+		{"Star", false},
+		{"The Wire", false},
+		{"The Mentalist", false},
+		{"Los Simpsons", false},
+		{"This Is Us", false},
+		{"Pilote Spatial", false},
+	} {
+		if got := TitleTooGeneric(tc.title); got != tc.want {
+			t.Errorf("TitleTooGeneric(%q) = %v, want %v", tc.title, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		parsed, want string
+		frag         bool
+	}{
+		{"The", "The Mentalist", true},
+		{"Star", "Star Trek", true},
+		{"Star Trek", "Star Trek: The Next Generation", true},
+		{"Walking", "The Walking Dead", true},
+		{"The Walking", "The Walking Dead", true},
+		{"Dragon Ball", "Dragon Ball Z", true},
+		{"Mentalist", "The Mentalist", false},
+		{"The Mentalist", "The Mentalist", false},
+		{"Los Simpsons", "Los Simpson", false},
+		{"Los Simpsons", "The Simpsons", false},
+		{"Pilote Spatial", "Space Pilot", false},
+		{"Los Viajeros", "The Travelers", false},
+		{"", "The Mentalist", false},
+	} {
+		if got := TitleLeadingFragment(tc.parsed, tc.want); got != tc.frag {
+			t.Errorf("TitleLeadingFragment(%q, %q) = %v, want %v", tc.parsed, tc.want, got, tc.frag)
+		}
+	}
+	if p := Parse("The.S01E03.A.Knock.Out.Punch.2160p.HULU.WEB-DL.DD+5.1.H.265-playWEB"); p.Title != "The" || !TitleTooGeneric(p.Title) || !TitleLeadingFragment(p.Title, "The Mentalist") {
+		t.Fatalf("parsed=%+v generic=%v frag=%v", p, TitleTooGeneric(p.Title), TitleLeadingFragment(p.Title, "The Mentalist"))
+	}
+}

@@ -19,7 +19,7 @@ func (a *App) releaseTitleIDs(ctx context.Context, kind core.MediaType, title st
 	if a.tmdb == nil {
 		return core.IDs{}, errors.New("metadata unavailable")
 	}
-	if strings.TrimSpace(title) == "" {
+	if strings.TrimSpace(title) == "" || releaseparse.IsObfuscated(title) || releaseparse.TitleTooGeneric(title) {
 		return core.IDs{}, nil
 	}
 	switch kind {

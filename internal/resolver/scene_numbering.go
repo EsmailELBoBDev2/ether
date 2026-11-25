@@ -99,12 +99,12 @@ func numberingTitleMatches(rel core.Release, req core.SearchRequest) bool {
 	if conflict {
 		return false
 	}
-	if !match && !releaseparse.TitleMatchesAny(rel.Info, req.Title, req.AlternativeTitles) &&
-		(req.OriginalTitle == "" || !releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) &&
-		(req.EnglishTitle == "" || !releaseparse.TitleMatches(rel.Info, req.EnglishTitle)) {
-		return false
+	if match && titleMismatchRecoverable(rel.Info.Title, nil, req) {
+		return true
 	}
-	return true
+	return releaseparse.TitleMatchesAny(rel.Info, req.Title, req.AlternativeTitles) ||
+		(req.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) ||
+		(req.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, req.EnglishTitle))
 }
 
 // A different show's same-numbered result cannot settle this show's lookup,

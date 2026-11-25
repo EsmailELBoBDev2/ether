@@ -22,9 +22,10 @@ var diacritics = map[rune]rune{
 	'ł': 'l', 'ð': 'd', 'þ': 't', 'ğ': 'g', 'ř': 'r', 'ť': 't', 'ď': 'd',
 }
 
-// NormalizeTitle lowercases, strips diacritics and punctuation, expands
-// "&" to "and", and drops a leading article, for title comparisons.
-func NormalizeTitle(s string) string {
+// normalizeTitleFields lowercases, collapses dotted initialisms, strips
+// diacritics and punctuation, expands "&" to "and", and splits into tokens
+// while preserving any leading article.
+func normalizeTitleFields(s string) []string {
 	s = strings.TrimSpace(s)
 	if strings.ContainsAny(s, ".*") {
 		s = collapseDottedInitialisms(s)
@@ -49,14 +50,23 @@ func NormalizeTitle(s string) string {
 			b.WriteRune(' ')
 		}
 	}
-	fields := strings.Fields(b.String())
+	return strings.Fields(b.String())
+}
+
+func stripLeadingArticle(fields []string) []string {
 	if len(fields) > 1 {
 		switch fields[0] {
 		case "the", "a", "an", "le", "la", "les", "der", "die", "das", "el", "il":
-			fields = fields[1:]
+			return fields[1:]
 		}
 	}
-	return strings.Join(fields, " ")
+	return fields
+}
+
+// NormalizeTitle lowercases, strips diacritics and punctuation, expands
+// "&" to "and", and drops a leading article, for title comparisons.
+func NormalizeTitle(s string) string {
+	return strings.Join(stripLeadingArticle(normalizeTitleFields(s)), " ")
 }
 
 // collapseDottedInitialisms joins single-letter sequences separated by dots
@@ -610,6 +620,119 @@ func IsObfuscated(title string) bool {
 // detail to consider a release whose title cannot be verified.
 func HasUsableInfo(info core.ReleaseInfo) bool {
 	return info.Height > 0 || info.Source != core.SourceUnknown || info.VideoCodec != ""
+}
+
+// genericTitleStopwords holds articles, contractions, and core function words
+// across the supported release languages. A release whose parsed title consists
+// solely of these tokens (or too few non-stopword characters) cannot identify
+// a show or movie on its own during title-mismatch recovery.
+var genericTitleStopwords = map[string]bool{
+	// English
+	"a": true, "an": true, "the": true,
+	"and": true, "or": true, "nor": true, "but": true,
+	"of": true, "in": true, "on": true, "at": true, "to": true, "for": true, "by": true, "as": true,
+	"it": true, "is": true, "be": true,
+	// French
+	"le": true, "la": true, "les": true, "l": true,
+	"un": true, "une": true, "des": true, "du": true, "de": true, "d": true,
+	"au": true, "aux": true, "et": true, "ou": true, "en": true,
+	// Spanish
+	"el": true, "los": true, "las": true,
+	"uno": true, "una": true, "unos": true, "unas": true,
+	"al": true, "del": true, "y": true, "e": true, "o": true, "u": true, "por": true,
+	// German
+	"der": true, "die": true, "das": true, "den": true, "dem": true,
+	"ein": true, "eine": true, "einen": true, "einem": true, "einer": true, "eines": true,
+	"und": true, "oder": true, "von": true, "vom": true, "zum": true, "zur": true,
+	"im": true, "am": true, "zu": true, "mit": true, "auf": true, "aus": true,
+	// Italian
+	"il": true, "lo": true, "i": true, "gli": true,
+	"di": true, "da": true, "su": true,
+	"dello": true, "della": true, "dei": true, "degli": true, "delle": true,
+	"allo": true, "alla": true, "ai": true, "agli": true, "alle": true,
+	"nel": true, "nello": true, "nella": true, "nei": true, "negli": true, "nelle": true,
+	// Portuguese
+	"os": true, "um": true, "uma": true, "uns": true, "umas": true,
+	"do": true, "dos": true, "no": true, "na": true, "nos": true, "nas": true,
+	// Dutch and Nordic
+	"het": true, "een": true, "det": true, "ett": true, "och": true, "og": true,
+	// Russian
+	"и": true, "в": true, "во": true, "на": true, "по": true, "из": true, "от": true,
+	"до": true, "за": true, "для": true, "без": true, "или": true, "но": true,
+	"к": true, "с": true, "у": true, "о": true, "об": true, "а": true,
+}
+
+// TitleTooGeneric reports whether title is too generic to identify a show or
+// movie during title-mismatch recovery: empty after normalization, made only
+// of articles/stopwords, or too short once stopwords are excluded. Plain
+// exact title matching is unaffected; this only guards recovery paths.
+func TitleTooGeneric(title string) bool {
+	fields := normalizeTitleFields(title)
+	if len(fields) == 0 {
+		return true
+	}
+	nonStopRunes := 0
+	hasWideScript := false
+	for _, tok := range fields {
+		if genericTitleStopwords[tok] {
+			continue
+		}
+		for _, r := range tok {
+			nonStopRunes++
+			if !hasWideScript && unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana) {
+				hasWideScript = true
+			}
+		}
+	}
+	if nonStopRunes == 0 {
+		return true
+	}
+	if hasWideScript {
+		return nonStopRunes < 2
+	}
+	return nonStopRunes < 3
+}
+
+// TitleLeadingFragment reports whether parsed is a strict leading token prefix
+// of want (for example "The" against "The Mentalist", "Star" against "Star
+// Trek", or "Walking" against "The Walking Dead"). Equal titles return false.
+func TitleLeadingFragment(parsed, want string) bool {
+	// A disambiguating qualifier ("Doctor Who (2005)", "Shameless (US)") is
+	// not more of the name: a release named without it is the same show.
+	pa, wa := normalizeTitleFields(parsed), trimTitleQualifiers(normalizeTitleFields(want))
+	if isStrictTokenPrefix(pa, wa) {
+		return true
+	}
+	return isStrictTokenPrefix(stripLeadingArticle(pa), stripLeadingArticle(wa))
+}
+
+// titleQualifierCountries are the country codes catalogues append to tell
+// same-named shows apart.
+var titleQualifierCountries = map[string]bool{"us": true, "uk": true, "au": true, "ca": true, "nz": true, "ie": true, "za": true, "in": true, "kr": true, "jp": true, "de": true, "fr": true, "es": true, "it": true, "nl": true, "se": true, "no": true, "dk": true, "br": true, "mx": true}
+
+// trimTitleQualifiers drops trailing year and country-code tokens.
+func trimTitleQualifiers(tokens []string) []string {
+	for len(tokens) > 1 {
+		last := tokens[len(tokens)-1]
+		isYear := len(last) == 4 && (strings.HasPrefix(last, "19") || strings.HasPrefix(last, "20")) && strings.Trim(last, "0123456789") == ""
+		if !isYear && !titleQualifierCountries[last] {
+			break
+		}
+		tokens = tokens[:len(tokens)-1]
+	}
+	return tokens
+}
+
+func isStrictTokenPrefix(prefix, full []string) bool {
+	if len(prefix) == 0 || len(prefix) >= len(full) {
+		return false
+	}
+	for i := range prefix {
+		if prefix[i] != full[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // EpisodeMatchesAbsolute reports whether parsed info is the episode whose

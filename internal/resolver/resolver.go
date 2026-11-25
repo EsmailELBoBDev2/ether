@@ -2835,7 +2835,8 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 			}
 		}
 	}
-	titleOK := metadataMatch || miniseriesPart > 0 ||
+	canRecoverTitle := titleMismatchRecoverable(rel.Info.Title, t, sreq)
+	titleOK := (metadataMatch && canRecoverTitle) || miniseriesPart > 0 ||
 		releaseparse.TitleMatches(rel.Info, wantTitle) ||
 		(sreq.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, sreq.OriginalTitle)) ||
 		(!isEpisode && t.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.OriginalTitle)) ||
@@ -2882,7 +2883,7 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 	if titleOK && !idMatch && regionTagConflicts(rel.Info.Title, wantTitle, t.Countries) {
 		titleOK = false
 	}
-	if !titleOK && !idMatch {
+	if !titleOK && !(idMatch && canRecoverTitle) {
 		obf := releaseparse.IsObfuscated(rel.Info.Title)
 		if obf && !releaseparse.HasUsableInfo(rel.Info) {
 			return "obfuscated, no usable info"

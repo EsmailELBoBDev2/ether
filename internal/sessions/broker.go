@@ -118,11 +118,18 @@ type BrokerDeps struct {
 	Now       func() time.Time
 }
 
+// versionAdmission holds the limits and delivery options before source-specific admission.
+type versionAdmission struct {
+	caps core.ClientCaps
+	opts core.DecideOptions
+}
+
 type brokerPlan struct {
-	request  frontend.PlanRequest
-	source   *core.PlaySession
-	decision core.Decision
-	created  time.Time
+	versionAdmission versionAdmission
+	request          frontend.PlanRequest
+	source           *core.PlaySession
+	decision         core.Decision
+	created          time.Time
 	// requested is when the play request that made this plan arrived.
 	requested     time.Time
 	etag          string
@@ -150,6 +157,7 @@ type clientCapPolicy struct {
 	ownerHeight int
 }
 type brokerSession struct {
+	versionAdmission versionAdmission
 	// queued is a prefetched next item (PlayIntent.Queued) not yet observed
 	// playing: it supersedes nothing until activateQueued.
 	queued bool
@@ -814,20 +822,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if !req.Intent.Queued && !req.Intent.AudioSet && !req.Intent.SubtitleSet &&
 		req.Intent.AudioOrdinal == nil && req.Intent.SubtitleOrdinal == nil && detail == nil &&
 		req.ExpectedSourceETag == "" && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) {
-		candidate := copyRequest(req)
-		ctx = core.WithSourceDecision(ctx, core.SourceDecision{
-			Options: candidate.Intent.Options,
-			Decide: func(info core.MediaInfo, res *core.Resolution) core.Decision {
-				probe := &core.PlaySession{Info: info, Resolution: res}
-				if info.Estimated {
-					d, _ := b.decideProfile(probe, candidate)
-					return d
-				}
-				request := candidate
-				d, _ := b.admitPlanDecision(probe, &request)
-				return d
-			},
-		})
+		ctx = b.withSourceDecision(ctx, req)
 	}
 	var ps *core.PlaySession
 	// autoRelease: the handle names Auto's release, so the session may play
@@ -929,6 +924,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			b.releasePlanSource(ps.ID, pinned)
 		}
 	}()
+	admission := versionAdmission{caps: req.Caps, opts: req.Intent.Options}
 	var pinErr error
 	ps, pinned, pinErr = b.pinRequestedTracks(ctx, &req, ps)
 	if pinErr != nil {
@@ -981,7 +977,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if detail != nil {
 		exactRelease = detail.release
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, autoRelease: autoRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
+	b.plans[id] = brokerPlan{versionAdmission: admission, request: req, source: ps, decision: dec, created: b.deps.Now(), requested: requested, etag: etag, exactRelease: exactRelease, autoRelease: autoRelease, versionHandle: versionHandle, pinned: pinned, budgetCapKbps: budgetCapKbps, clientCap: clientCap}
 	if budgetCapKbps > 0 && b.deps.RecordUploadCap != nil && ps != nil && ps.ID != "" {
 		constrained := ps.Info.BitrateKbps <= 0 || ps.Info.BitrateKbps > budgetCapKbps || dec.Kind == core.DecisionTranscode
 		b.deps.RecordUploadCap(ps.ID, budgetCapKbps, constrained)
@@ -1184,7 +1180,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 	if deliverySession == "" {
 		deliverySession = id
 	}
-	s := &brokerSession{autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, autoRelease: p.autoRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
+	s := &brokerSession{versionAdmission: p.versionAdmission, autoSubtitleIdentity: new(int), manualSubtitle: p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle), public: copySession(session), grant: grant, playID: ps.ID, clientID: p.request.Caps.ClientID, playbackID: playbackID, caps: p.request.Caps, opts: p.request.Intent.Options, decision: p.decision, allowTranscoding: p.request.Intent.AllowTranscoding, versionHandle: p.versionHandle, exactRelease: p.exactRelease, autoRelease: p.autoRelease, sourcePinned: p.pinned, sourceETag: p.etag, clientCap: p.clientCap, deliverySession: deliverySession}
 	barrier, barrierErr := b.admitSessionBarrier(ctx, v.ID, string(req.Protocol), p.request.Device.ID, p.request.Item, ps.ID, id)
 	if barrierErr != nil {
 		if errors.Is(barrierErr, errTransferCommitUnknown) {

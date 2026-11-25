@@ -149,7 +149,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		b.mu.Unlock()
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
-	b.plans[id] = brokerPlan{request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
+	b.plans[id] = brokerPlan{versionAdmission: versionAdmission{caps: caps, opts: opts}, request: req, source: ps, decision: dec, created: b.deps.Now(), etag: etag, external: true}
 	stored = true
 	b.mu.Unlock()
 	return frontend.PlayPlan{ID: id, Media: publicMedia(media), Decision: dec, VideoTranscodingOff: videoOff, ETag: etag}, nil
@@ -192,6 +192,7 @@ func (b *Broker) reusePlexSession(_ context.Context, v *core.Viewer, req fronten
 	current.playID = ps.ID
 	current.playbackID = p.request.Intent.PlaybackID
 	current.decision = p.decision
+	current.versionAdmission = p.versionAdmission
 	current.caps = p.request.Caps
 	current.opts = p.request.Intent.Options
 	current.clientID = p.request.Caps.ClientID

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -276,10 +277,14 @@ func TestSwitchVersionDeclarationIsCopied(t *testing.T) {
 
 func TestSwitchVersionAfterTrackRestartKeepsOriginal(t *testing.T) {
 	ctx := context.Background()
-	f := newSwitchOriginalFixture(t, nil, nil)
+	video := core.StreamInfo{Type: "video", Index: 0, Codec: "h264", Width: 1920, Height: 1080}
+	f := newSwitchOriginalFixture(t, nil, map[string][]core.StreamInfo{
+		"edition-a": {video, {Type: "audio", Index: 1, Codec: "truehd", Language: "eng"}, {Type: "audio", Index: 2, Codec: "truehd", Language: "jpn"}},
+		"edition-b": {video, {Type: "audio", Index: 1, Codec: "truehd", Language: "eng"}, {Type: "audio", Index: 3, Codec: "truehd", Language: "jpn"}},
+	})
 	_, s := f.open(t, f.req)
-	audio := 1
-	if _, err := f.b.StartStream(ctx, f.access, s.ID, frontend.StreamRequest{Format: frontend.StreamHLS, AudioStream: &audio, LazyStart: true}); err != nil {
+	audio, off := 2, -1
+	if _, err := f.b.StartStream(ctx, f.access, s.ID, frontend.StreamRequest{Format: frontend.StreamHLS, AudioStream: &audio, SubtitleStream: &off, LazyStart: true}); err != nil {
 		t.Fatal(err)
 	}
 	f.b.mu.Lock()
@@ -295,6 +300,12 @@ func TestSwitchVersionAfterTrackRestartKeepsOriginal(t *testing.T) {
 	}
 	if fresh.Decision.Reason != "original_runtime" || sw.Decision.Reason != "original_runtime" || sw.Decision.Kind != core.DecisionDirectPlay {
 		t.Fatalf("after a track restart: switch %s/%s, fresh %s/%s", sw.Decision.Kind, sw.Decision.Reason, fresh.Decision.Kind, fresh.Decision.Reason)
+	}
+	f.b.mu.Lock()
+	live := *f.b.sessions[s.ID]
+	f.b.mu.Unlock()
+	if sw.Decision.AudioStream != 3 || sw.SubtitleStream() != -1 || !live.manualSubtitle || live.streamPosition != time.Minute {
+		t.Fatalf("switch lost selected tracks or position: decision %+v, position %v", sw.Decision, live.streamPosition)
 	}
 }
 
@@ -347,16 +358,29 @@ func TestSwitchVersionFailureReleasesNewPin(t *testing.T) {
 }
 
 func TestSwitchVersionKeepsClientLimits(t *testing.T) {
-	f := newSwitchOriginalFixture(t, nil, nil)
-	r := f.req
-	r.Intent.Options.MaxHeight = 720
-	plan, s := f.open(t, r)
-	sw, err := f.b.SwitchVersion(context.Background(), f.access, s.ID, f.handles["slot:b"], time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Decision.Reason == "original_runtime" || sw.Decision.Reason == "original_runtime" || sw.Decision.Kind == core.DecisionDirectPlay {
-		t.Fatalf("1080p original admitted under a 720p limit: start %+v switch %+v", plan.Decision, sw.Decision)
+	for _, liftAtStart := range []bool{false, true} {
+		var videoOff atomic.Bool
+		videoOff.Store(liftAtStart)
+		f := newSwitchOriginalFixture(t, func(d *BrokerDeps) {
+			d.VideoTranscodingOff = videoOff.Load
+		}, nil)
+		f.req.Intent.Options.MaxHeight = 720
+		if liftAtStart {
+			f.req.Intent.Options.MaxBitrateKbps = 4000
+		}
+		plan, s := f.open(t, f.req)
+		if original := plan.Decision.Reason == "original_runtime"; original != liftAtStart {
+			t.Fatalf("lift=%v: start %+v", liftAtStart, plan.Decision)
+		}
+		videoOff.Store(false)
+		fresh := f.freshPlan(t, "slot:b")
+		sw, err := f.b.SwitchVersion(context.Background(), f.access, s.ID, f.handles["slot:b"], time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sw.Decision.Kind == core.DecisionDirectPlay || sw.Decision.Kind != fresh.Decision.Kind || sw.Decision.MaxHeight != fresh.Decision.MaxHeight {
+			t.Fatalf("lift=%v: switch %+v, fresh %+v", liftAtStart, sw.Decision, fresh.Decision)
+		}
 	}
 }
 
@@ -371,6 +395,14 @@ func TestSwitchVersionSameSourcePinsOriginal(t *testing.T) {
 	if plan.Decision.Reason == "original_runtime" || f.src.pinned("edition-a") {
 		t.Fatalf("start on the DTS track: %+v pins=%v", plan.Decision, f.src.pins)
 	}
+	// Select the supported track over HLS, then re-admit this source without
+	// losing the track or the original runtime declaration.
+	audio := 1
+	if _, err := f.b.StartStream(context.Background(), f.access, s.ID, frontend.StreamRequest{
+		Format: frontend.StreamHLS, AudioStream: &audio, LazyStart: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	sw, err := f.b.SwitchVersion(context.Background(), f.access, s.ID, f.handles["slot:a"], time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +410,7 @@ func TestSwitchVersionSameSourcePinsOriginal(t *testing.T) {
 	f.b.mu.Lock()
 	live := *f.b.sessions[s.ID]
 	f.b.mu.Unlock()
-	if sw.Decision.Reason != "original_runtime" || live.playID != "edition-a" {
+	if sw.Decision.Reason != "original_runtime" || sw.Decision.AudioStream != 1 || live.playID != "edition-a" {
 		t.Fatalf("same-version switch = %+v on %s", sw.Decision, live.playID)
 	}
 	if !f.src.pinned("edition-a") || !live.sourcePinned || live.sourceETag == "" {

@@ -183,6 +183,7 @@ func (b *Broker) reuseDirectFileSession(v *core.Viewer, req frontend.OpenRequest
 			(p.request.Intent.PlaybackID != "" && p.request.Intent.PlaybackID != s.playbackID) {
 			continue
 		}
+		s.versionAdmission = p.versionAdmission
 		s.opts = p.request.Intent.Options
 		s.decision = p.decision
 		s.manualSubtitle = s.manualSubtitle || p.request.Intent.SubtitleSet || (p.request.Intent.Hints != nil && p.request.Intent.Hints.ManualSubtitle)

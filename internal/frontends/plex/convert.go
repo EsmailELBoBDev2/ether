@@ -904,6 +904,13 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 		}
 	}
 	m := buildMedia(t, info, stamp)
+	if !withStreams && !sessionMedia && info.Estimated {
+		var claim *frontend.Release
+		if ps != nil && ps.Resolution != nil && ps.Resolution.Release.ID != "" && !strings.HasPrefix(ps.Resolution.Release.ID, frontend.VersionSelectorPrefix) {
+			claim = &ps.Resolution.Release
+		}
+		unprobedListMedia(&m, t, claim)
+	}
 	// Detail pages and live sessions render with the ids this client was
 	// issued (play_identity.go); /status/sessions names the Media the
 	// session was admitted on. Batch metadata fetches do not allocate new
@@ -1050,6 +1057,91 @@ func buildMedia(t *frontend.Title, info frontend.MediaInfo, stamp int64) model.M
 	}
 	m.Part = []model.Part{p}
 	return m
+}
+
+// unprobedListMedia keeps only the facts Ether knows on a list row (section
+// listings, hubs, On Deck) whose Media was drawn from an estimate. The
+// estimate fills every attribute from the quality profile (2160p H.264 at
+// 20 Mbps, E-AC-3 5.1, a default runtime), and clients that badge or pick a
+// quality from the listing read those as the file's facts. The Media and
+// Part elements stay (clients treat an item without Media as unplayable),
+// with their ids, keys, file name and container; picture, sound, bitrate and
+// size are reported only when the release Ether would play claims them in
+// its name or size. claim is nil for a title without a picked release (a
+// cold configured slot or the plain estimate). Detail pages, play queues and
+// decisions are not list rows and keep their estimate until the probe lands.
+func unprobedListMedia(m *model.Media, t *frontend.Title, claim *frontend.Release) {
+	var info frontend.ReleaseInfo
+	var size int64
+	if claim != nil {
+		info, size = claim.Info, claim.Size
+	}
+	dur := ms(t.Runtime)
+	m.Duration = dur
+	m.Bitrate = 0
+	if size > 0 && t.Runtime > 0 {
+		m.Bitrate = int(float64(size) * 8 / t.Runtime.Seconds() / 1000)
+	}
+	// Width and aspect ratio are never in a release name; height is.
+	m.Width, m.AspectRatio = 0, 0
+	m.Height, m.VideoResolution = 0, ""
+	if info.Height > 0 {
+		m.Height = info.Height
+		m.VideoResolution = videoResolution(0, info.Height)
+	}
+	if info.VideoCodec != "" {
+		m.VideoCodec = plexCodec(info.VideoCodec)
+	} else {
+		m.VideoCodec = ""
+	}
+	m.VideoFrameRate, m.VideoProfile = "", ""
+	if info.AudioCodec != "" {
+		m.AudioCodec = plexCodec(info.AudioCodec)
+		m.AudioProfile = audioProfile(&frontend.StreamInfo{Codec: info.AudioCodec})
+		if m.AudioCodec == "dca" && m.AudioProfile == "ma" {
+			m.AudioCodec = "dca-ma"
+		}
+	} else {
+		m.AudioCodec, m.AudioProfile = "", ""
+	}
+	m.AudioChannels = releaseChannelCount(info.Channels)
+	m.OptimizedForStreaming, m.Has64bitOffsets = nil, nil
+	for i := range m.Part {
+		p := &m.Part[i]
+		p.Duration = dur
+		p.Size = size
+		p.VideoProfile = ""
+		p.AudioProfile = m.AudioProfile
+		p.OptimizedForStreaming, p.Has64bitOffsets = nil, nil
+	}
+}
+
+func releaseChannelCount(s string) int {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "":
+		return 0
+	case "7.1":
+		return 8
+	case "6.1":
+		return 7
+	case "5.1":
+		return 6
+	case "2.1":
+		return 3
+	case "2.0":
+		return 2
+	case "1.0":
+		return 1
+	}
+	if a, b, ok := strings.Cut(s, "."); ok {
+		ai, err1 := strconv.Atoi(a)
+		bi, err2 := strconv.Atoi(b)
+		if err1 == nil && err2 == nil && ai > 0 && bi >= 0 {
+			return ai + bi
+		}
+	}
+	return 0
 }
 
 // audioProfile is PMS's audioProfile ("lc" for AAC, "dts"/"ma" for DTS...).

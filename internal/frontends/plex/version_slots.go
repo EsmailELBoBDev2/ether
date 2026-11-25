@@ -131,6 +131,15 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 		}
 		v.Info = variantInfoForClient(v.Info, caps)
 		m := buildMediaVariant(t, v, stamp, s.variantIDs)
+		if !streams && v.Info.Estimated {
+			// A list row: a picked release reports what its name and size
+			// claim; a cold slot (no release yet) claims nothing.
+			var claim *frontend.Release
+			if v.Release.ID != "" && !strings.HasPrefix(v.Release.ID, frontend.VersionSelectorPrefix) {
+				claim = &v.Release
+			}
+			unprobedListMedia(&m, t, claim)
+		}
 		if streams {
 			if issuePlayID {
 				m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, now)

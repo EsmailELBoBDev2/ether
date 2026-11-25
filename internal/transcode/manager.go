@@ -5,6 +5,7 @@ package transcode
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -253,7 +254,7 @@ func (m *Manager) stageExternalSubtitles(dir string, info core.MediaInfo, source
 type Manager struct {
 	textCues     textCueStore
 	slotChanged  chan struct{}
-	slotViewers  int
+	slotViewers  list.List
 	slotHolders  []*transcodeSlot
 	subtitleMu   sync.Mutex
 	continuousWG sync.WaitGroup
@@ -988,7 +989,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		// on that same clock; never change the timeline on a VSR fallback.
 		adapt.FastStart = false
 	}
-	atCap := m.transcodeFullLocked(req.MultiviewGroup, req.SessionID)
+	atCap := m.transcodeFullLocked(req.MultiviewGroup, req.SessionID) || m.slotViewers.Len() > 0
 	m.mu.Unlock()
 	id := req.SessionID
 	if id == "" {
@@ -1316,27 +1317,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			startSeg = at
 		}
 	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return nil, errors.New("transcode: manager closed")
+	if err := m.admitStartEncoding(ctx, req, life, d.EncodesVideo(req.Info)); err != nil {
+		return nil, err
 	}
-	if !req.LiveInput && d.EncodesVideo(req.Info) && (req.NoVideoTranscode || m.cfg.VideoTranscodingOff()) {
-		m.mu.Unlock()
-		return nil, ErrVideoTranscodingDisabled
-	}
-	if d.EncodesVideo(req.Info) {
-		for m.transcodeFullLocked(req.MultiviewGroup, "") && m.preemptBackgroundLocked() {
-		}
-		if m.transcodeFullLocked(req.MultiviewGroup, "") {
-			n := m.encodingLocked("")
-			m.mu.Unlock()
-			return nil, fmt.Errorf("%w (%d running)", ErrTooManyTranscodes, n)
-		}
-	}
-	life.multiviewGroup = req.MultiviewGroup
-	life.encoding.Store(d.EncodesVideo(req.Info))
-	m.mu.Unlock()
 
 	safe := unsafeID.ReplaceAllString(id, "_")
 	if len(safe) > 48 {

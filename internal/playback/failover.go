@@ -219,6 +219,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	})
 	defer rt.close(m)
 	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
+		if alt := m.copySourceAtCapacity(ctx, s, profile, g, tried); alt != nil {
+			m.dropGeneration(g)
+			g = alt
+		}
 		rt.commitPendingRejections(m.ctx, m, s)
 		s.mu.Lock()
 		s.tried = append(s.tried, tried...)

@@ -1,7 +1,6 @@
 package plex
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -167,7 +166,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		s.stopPlexHLS(p.sessionID)
 	}
 	firstSegmentAt := s.resumeStartHint(ctx, pr, p, entry, priorEntry)
-	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
+	hs, err := s.startPlexHLS(ctx, pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
 		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,

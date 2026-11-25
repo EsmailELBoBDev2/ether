@@ -214,6 +214,10 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error, l
 		}
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
 	}
+	if msg := frontend.VideoEncoderCapacityMessage(err, languages...); msg != "" {
+		http.Error(w, msg, http.StatusServiceUnavailable)
+		return
+	}
 	http.Error(w, "Playback unavailable", http.StatusServiceUnavailable)
 }
 func queryBool(r *http.Request, key string, def bool) bool {

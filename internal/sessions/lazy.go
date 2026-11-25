@@ -779,6 +779,10 @@ func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request,
 		}
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 	}
+	if msg := frontend.VideoEncoderCapacityMessage(err, r.Header.Get("Accept-Language")); msg != "" {
+		http.Error(w, msg, http.StatusServiceUnavailable)
+		return
+	}
 	http.Error(w, "playback unavailable", http.StatusServiceUnavailable)
 }
 func serveSourceGone(policy core.SessionPolicy, w http.ResponseWriter, r *http.Request) {

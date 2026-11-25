@@ -644,6 +644,11 @@ func qualityPhrase(info core.ReleaseInfo) string {
 	return strings.Join(parts, " ")
 }
 
+// EstimateReleaseMedia returns the resolver's playback estimate for a ranked release.
+func (s *Service) EstimateReleaseMedia(t *core.Title, rel core.Release, wanted []string) core.MediaInfo {
+	return estimateVariantInfo(t, sizedForEpisode(rel), wanted)
+}
+
 // estimateVariantInfo derives the expected MediaInfo from a parsed release
 // name: resolution, codecs, HDR/DV, channels, and a bitrate from the
 // release size over the title runtime (typical bitrates when unknown).

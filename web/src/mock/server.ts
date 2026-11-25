@@ -1525,6 +1525,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           os: "darwin",
           arch: "arm64",
           ffmpeg: "8.0.1",
+          videoEncoderLimit: state.config.transcode?.maxTranscodes ?? 2,
           filtersProbed: true,
           toneMap: ["videotoolbox"],
           colour: ["zscale", "colorspace", "scale"],

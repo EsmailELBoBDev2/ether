@@ -1,7 +1,6 @@
 package plex
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -186,7 +185,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.stopPlexHLS(p.sessionID)
 	}
-	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
+	hs, err := s.startPlexHLS(ctx, pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SessionID:        p.sessionID,
 		ReleaseID:        ps.SourceReleaseID(),
 		InputURL:         s.playback().InputURL(ps.ID),

@@ -68,6 +68,9 @@ const (
 // own account has video transcoding switched off.
 func (s *Server) playbackMessageFor(pr *Request, err error) string {
 	if pr != nil {
+		if msg := frontend.VideoEncoderCapacityMessage(err, pr.Language); msg != "" {
+			return msg
+		}
 		if msg := frontend.IndexersPausedMessage(err, pr.Language); msg != "" {
 			return msg
 		}
@@ -79,6 +82,9 @@ func (s *Server) playbackMessageFor(pr *Request, err error) string {
 }
 
 func playbackMessage(err error) string {
+	if msg := frontend.VideoEncoderCapacityMessage(err); msg != "" {
+		return msg
+	}
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		return bedtime.Error()
@@ -833,6 +839,13 @@ func (s *Server) resumeStartHint(ctx context.Context, pr *Request, p playRequest
 	return 0
 }
 
+func (p *playRequest) sourceDecisionContext(ctx context.Context) context.Context {
+	if p.audioSel >= 0 || p.audioStream != nil || p.subSel >= 0 || p.subStream != nil {
+		return ctx
+	}
+	return frontend.WithSourceDecision(ctx, frontend.SourceDecision{Options: p.opts})
+}
+
 // sourceSelectionCaps keeps request quality limits at delivery selection. Device
 // decoder limits and owner quality rules still govern which source may open.
 // An HD output request may softly prefer a suitable HD source on new admission.
@@ -1321,7 +1334,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	// A genuine failure is answered now so admission does not repeat the search.
 	// A restart after a track change waits for the release being watched.
 	release, exact := s.restartRelease(s.playIdentityFor(pr, p.key), "")
-	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), release, exact); err != nil {
+	if _, err := pw.PrepareWithin(p.sourceDecisionContext(ctx), decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), release, exact); err != nil {
 		return t, err
 	}
 	return nil, nil
@@ -2062,7 +2075,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	if dec.VideoCopy {
 		resumeHint = s.resumeStartHint(ctx, pr, p, entry, priorEntry)
 	}
-	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
+	hs, err := s.startPlexHLS(ctx, pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
 		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
 		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,

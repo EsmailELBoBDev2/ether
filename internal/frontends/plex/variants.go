@@ -718,7 +718,7 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 	p.variantRelease = s.resolveVariantSelection(ctx, pr, p)
 	// A restart after a track change keeps the release being watched.
 	releaseID, exact := s.restartRelease(s.playIdentityFor(pr, p.key), p.variantRelease)
-	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID, exact)
+	ps, err := s.prepareForRelease(p.sourceDecisionContext(ctx), pr.User, p.key, p.sourceSelectionCaps(), releaseID, exact)
 	if err != nil {
 		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
 	}

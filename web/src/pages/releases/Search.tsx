@@ -380,10 +380,10 @@ export function ReleaseSearch({ onPinsChanged }: { onPinsChanged?: () => void })
           }}
         />
         <div className="flex flex-wrap items-end gap-3">
-          <Field label={t("Quality profile")} htmlFor={`${id}-profile`} className="w-64">
+          <Field label={t("Release profile")} htmlFor={`${id}-profile`} className="w-64">
             <Select
               id={`${id}-profile`}
-              aria-label={t("Quality profile")}
+              aria-label={t("Release profile")}
               value={profile}
               onChange={(e) => setProfile(e.target.value)}
             >

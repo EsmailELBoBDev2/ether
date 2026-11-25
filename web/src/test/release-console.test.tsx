@@ -85,7 +85,7 @@ describe("Release search", () => {
     const movie = fake.catalog.filter((t) => t.type === "movie")[5]!;
     await pickTitle(movie.title);
     await screen.findByText("Plays first", {}, WAIT);
-    await choose("Quality profile", "No profile limits");
+    await choose("Release profile", "No profile limits");
     await waitFor(() =>
       expect(
         calls(fake, "GET", "/releases/search").some((c) => c.path.includes("profile=none")),

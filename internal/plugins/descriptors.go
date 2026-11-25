@@ -24,6 +24,7 @@ func textOf(plugin, s string) extend.Text {
 // DescriptorsFor builds the registry descriptors a manifest contributes.
 // Exported for the kit and Studio previews.
 func DescriptorsFor(man Manifest) []extend.Descriptor {
+	isStremio := man.SpeaksStremio()
 	man.Ether = man.EffectiveEther()
 	id := man.ID
 	c := man.Ether.Contributes
@@ -132,8 +133,14 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindMetadataProvider, "metadata", textOf(id, man.Name), c.Metadata)
 	}
 	if man.HasCapability(CapSubtitles) && c.Subtitles != nil {
-		add(extend.KindSubtitleProvider, "subtitles", textOf(id, man.Name), map[string]any{
-			"languages": c.Subtitles.Languages, "formats": c.Subtitles.Formats})
+		meta := map[string]any{
+			"languages": c.Subtitles.Languages,
+			"formats":   c.Subtitles.Formats,
+		}
+		if isStremio {
+			meta["stremio"] = true
+		}
+		add(extend.KindSubtitleProvider, "subtitles", textOf(id, man.Name), meta)
 	}
 	if man.HasCapability(CapMarkers) && c.Markers != nil {
 		add(extend.KindMarkerSource, "markers", textOf(id, man.Name), map[string]any{"kinds": c.Markers.Kinds})

@@ -806,7 +806,7 @@ func (e *Engine) withSurfaceRows(ctx context.Context, rows []core.HomeRow, pl *p
 		}
 		row := core.HomeRow{HubID: id, RowID: r.RowID, Kind: SourceSurface, Title: title, Source: core.RowSourceOwner,
 			Layer: r.Layer, Mode: r.Mode, Look: r.Look, Why: r.why(r.Slot), Hub: core.Hub{ID: id, Title: title},
-			Present: core.RowPresentation{RowID: r.RowID, Surface: &core.RowSurface{Plugin: info.Plugin, Surface: info.WireID}}}
+			Present: core.RowPresentation{RowID: r.RowID, Surface: &core.RowSurface{Plugin: info.Plugin, PluginName: info.PluginName, Surface: info.WireID}}}
 		at := len(rows)
 		switch {
 		case pl.curated:

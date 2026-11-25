@@ -375,6 +375,11 @@ func (h *Handler) handleCatalogSearch(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
+	typ := mediaTypeParam(q.Get("type"))
+	withOrder := typ == core.TypeShow && q.Get("episodeOrder") == "1" && h.deps.TitleManagement != nil
+	if withOrder {
+		limit = min(limit, 15)
+	}
 	ctx := core.WithExplicitSearch(r.Context())
 	var (
 		items []core.Title
@@ -382,19 +387,35 @@ func (h *Handler) handleCatalogSearch(w http.ResponseWriter, r *http.Request) {
 	)
 	if (q.Get("all") == "1" || q.Get("all") == "true") && h.deps.CatalogHelper != nil {
 		if all, ok := h.deps.CatalogHelper.(CatalogUnfilteredSearch); ok {
-			items, err = all.SearchAllTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+			items, err = all.SearchAllTitles(ctx, q.Get("q"), typ, limit)
 		} else {
-			items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+			items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), typ, limit)
 		}
 	} else {
 		// The console search finds titles hidden from browsing only.
-		items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), mediaTypeParam(q.Get("type")), limit)
+		items, err = h.deps.CatalogHelper.SearchTitles(ctx, q.Get("q"), typ, limit)
 	}
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": cardsFor(items)})
+	if !withOrder {
+		writeJSON(w, http.StatusOK, map[string]any{"items": cardsFor(items)})
+		return
+	}
+	type card struct {
+		TitleCard
+		EpisodeOrder *EpisodeOrderProvenance `json:"episodeOrder,omitempty"`
+	}
+	out := make([]card, 0, min(len(items), limit))
+	for _, title := range items[:min(len(items), limit)] {
+		item := card{TitleCard: CardFor(title)}
+		if order, err := h.deps.TitleManagement.StoredTitleEpisodeOrder(ctx, title.Key); err == nil {
+			item.EpisodeOrder = &order
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 func (h *Handler) handleCatalogFacets(w http.ResponseWriter, r *http.Request) {
@@ -479,6 +500,8 @@ type titleDetail struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	} `json:"collection"`
+	EpisodeOrder *TitleEpisodeOrder `json:"episodeOrder,omitempty"`
+
 	// Facts for the drawer's overview; dates are YYYY-MM-DD.
 	Tagline                string   `json:"tagline,omitempty"`
 	OriginalTitle          string   `json:"originalTitle,omitempty"`
@@ -549,6 +572,11 @@ func (h *Handler) handleCatalogTitle(w http.ResponseWriter, r *http.Request) {
 			ID   int64  `json:"id"`
 			Name string `json:"name"`
 		}{t.CollectionID, t.CollectionName}
+	}
+	if key.Kind() == core.KindShow && !key.IsPluginKey() && h.deps.TitleManagement != nil {
+		if order, err := h.deps.TitleManagement.TitleEpisodeOrder(r.Context(), t); err == nil {
+			d.EpisodeOrder = order
+		}
 	}
 	writeJSON(w, http.StatusOK, d)
 }

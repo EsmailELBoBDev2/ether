@@ -247,6 +247,7 @@ func (a *App) buildAdmin() http.Handler {
 		}(),
 		CatalogHelper:      a.collections,
 		TitleManagement:    a,
+		MetadataSources:    a.metadataSources,
 		PluginTitleDetail:  a.pluginTitleDetail,
 		ViewerCatalogRules: a.catalog,
 		TitleSchedules:     a.catalog,

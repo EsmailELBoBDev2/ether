@@ -430,6 +430,7 @@ func (c *librariesConsole) handler() http.Handler {
 	mux.HandleFunc("POST /{$}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Sources           []string                `json:"sources"`
+			MetadataSource    *string                 `json:"metadataSource"`
 			Name              string                  `json:"name"`
 			Rules             []core.LibraryExclusion `json:"rules"`
 			VisibilityDefault string                  `json:"visibilityDefault"`
@@ -451,12 +452,24 @@ func (c *librariesConsole) handler() http.Handler {
 		if body.Present != nil {
 			present = *body.Present
 		}
+		media := core.MediaType(core.NormalizeRuleMediaType(string(body.MediaType)))
+		var source string
+		if body.MetadataSource == nil {
+			source = string(c.app.defaultMetadataSource(media))
+		} else {
+			source = *body.MetadataSource
+			if !c.app.validLibraryMetadataSource(media, source) {
+				libJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metadata_source"})
+				return
+			}
+		}
+		option := libraries.WithMetadataSource(source)
 		var lib core.Library
 		var err error
 		if body.CollectionID > 0 {
-			lib, err = c.app.libraries.CreateCollection(r.Context(), body.Name, body.CollectionID, body.MediaType, present)
+			lib, err = c.app.libraries.CreateCollection(r.Context(), body.Name, body.CollectionID, body.MediaType, present, option)
 		} else {
-			lib, err = c.app.libraries.Create(r.Context(), body.Name, body.MediaType, body.Rules, body.VisibilityDefault, present)
+			lib, err = c.app.libraries.Create(r.Context(), body.Name, body.MediaType, body.Rules, body.VisibilityDefault, present, option)
 		}
 		if err != nil {
 			libError(w, libErrStatus(err), "Could not create the library")
@@ -508,6 +521,7 @@ func (c *librariesConsole) handler() http.Handler {
 		var body struct {
 			CollectionID      *int64                    `json:"collectionId"`
 			Sources           *[]string                 `json:"sources"`
+			MetadataSource    *string                   `json:"metadataSource"`
 			Name              *string                   `json:"name"`
 			Hidden            *bool                     `json:"hidden"`
 			Sort              *int                      `json:"sort"`
@@ -520,6 +534,11 @@ func (c *librariesConsole) handler() http.Handler {
 			Tabs              *[]core.LibraryTab        `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
+			return
+		}
+		if body.MetadataSource != nil && (lib.Source == core.LibraryPlugin ||
+			!c.app.validLibraryMetadataSource(lib.MediaType, *body.MetadataSource)) {
+			libJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_metadata_source"})
 			return
 		}
 		ctx := r.Context()
@@ -647,6 +666,12 @@ func (c *librariesConsole) handler() http.Handler {
 					libError(w, libErrStatus(err), err.Error())
 					return
 				}
+			}
+		}
+		if body.MetadataSource != nil {
+			if err := svc.SetMetadataSource(ctx, lib.ID, *body.MetadataSource); err != nil {
+				libJSON(w, libErrStatus(err), map[string]string{"code": "metadata_source_write_failed"})
+				return
 			}
 		}
 		if sectionsChanged {

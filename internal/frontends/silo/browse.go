@@ -261,6 +261,11 @@ func (i *instance) views(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, map[string]any{"id": wire, "name": view.Name, "type": kind, "sort_order": n + 1})
 	}
+	if lib, ok := i.host.LiveTV.(frontend.CatchUpLibrary); ok {
+		if visible, err := lib.CatchUpLibraryVisible(r.Context(), v); err == nil && visible {
+			items = append(items, map[string]any{"id": frontend.CatchUpLibraryID, "name": frontend.CatchUpLibraryName, "type": "series", "sort_order": len(items) + 1})
+		}
+	}
 	if !published {
 		if _, ok := i.nowAvailableTitles(r, v); ok {
 			items = append([]any{map[string]any{"id": nowAvailableLibraryID, "name": nowAvailableTitle, "type": "mixed", "sort_order": 0}}, items...)
@@ -331,6 +336,10 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = r.WithContext(frontend.WithRequestMemo(r.Context()))
+	if r.PathValue("library") == frontend.CatchUpLibraryID {
+		i.catchUpSections(w, r, v, credential)
+		return
+	}
 	var configGen uint64
 	if i.host.PageFreshness != nil {
 		configGen = i.host.PageFreshness().Config
@@ -727,6 +736,10 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 	v, credential, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if id := r.PathValue("id"); frontend.IsCatchUpGUID(id) {
+		i.catchUpDetail(w, r, v, credential, id)
 		return
 	}
 	if rawChannel, err := ids.ParseGUID(ids.Channel, r.PathValue("id")); err == nil {

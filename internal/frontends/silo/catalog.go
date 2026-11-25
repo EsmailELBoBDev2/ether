@@ -41,6 +41,10 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if q.Get("library_id") == frontend.CatchUpLibraryID {
+		i.catchUpCatalog(w, r, v, token, offset, limit)
+		return
+	}
 	if q.Get("source") == "section" && q.Get("section_id") != "" {
 		i.sectionBrowse(w, r, offset, limit)
 		return
@@ -199,8 +203,9 @@ func (i *instance) childItems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	key, err := ids.ParseRatingKeyGUID(r.PathValue("id"))
-	if err != nil {
+	wire := r.PathValue("id")
+	key, err := ids.ParseRatingKeyGUID(wire)
+	if err != nil && !frontend.IsCatchUpGUID(wire) {
 		http.NotFound(w, r)
 		return
 	}
@@ -237,6 +242,21 @@ func (i *instance) childItems(w http.ResponseWriter, r *http.Request) {
 		query.Types = []frontend.MediaType{"episode"}
 	} else {
 		query.Types = []frontend.MediaType{"season"}
+	}
+	if parent, kind := frontend.CatchUpGUIDGroup(wire); kind != "" {
+		if query.Season != nil && *query.Season != 1 {
+			reply(w, 200, map[string]any{"items": []any{}, "page": map[string]any{"has_more": false}})
+			return
+		}
+		items, page, ok := i.catchUpPage(w, r, v, token, frontend.CatchUpQuery{Parent: parent, Recursive: episode, Offset: offset, Limit: limit})
+		if ok {
+			reply(w, 200, map[string]any{"items": items, "page": catchUpNext(page, offset, encodeEpisodeCursor)})
+		}
+		return
+	}
+	if frontend.IsCatchUpGUID(wire) {
+		notFound(w)
+		return
 	}
 	page, err := i.host.Experience.Children(r.Context(), v, device(r), key, query)
 	if err != nil {

@@ -34,8 +34,15 @@ func (*CatchUpLive) VisibleTo(context.Context, *frontend.User) bool { return tru
 func (*CatchUpLive) CatchUpLibraryVisible(context.Context, *frontend.Viewer) (bool, error) {
 	return true, nil
 }
-func (f *CatchUpLive) CatchUpItems(context.Context, *frontend.Viewer, frontend.CatchUpQuery) (frontend.CatchUpPage, error) {
-	return frontend.CatchUpPage{Items: []frontend.CatchUpItem{f.Item}, Total: 1}, nil
+func (f *CatchUpLive) CatchUpItems(_ context.Context, _ *frontend.Viewer, q frontend.CatchUpQuery) (frontend.CatchUpPage, error) {
+	item := f.Item
+	if _, kind := frontend.CatchUpGUIDGroup(q.Parent); !q.Recursive && kind != frontend.TypeSeason {
+		item.Type, item.ID = frontend.TypeShow, item.ShowID
+		if kind == frontend.TypeShow {
+			item.Type, item.ID = frontend.TypeSeason, item.SeasonID
+		}
+	}
+	return frontend.CatchUpPage{Items: []frontend.CatchUpItem{item}, Total: 1}, nil
 }
 func (f *CatchUpLive) CatchUpItem(_ context.Context, _ *frontend.Viewer, id string) (frontend.CatchUpItem, error) {
 	if id != f.Item.ID && id != frontend.CatchUpGUID(f.Item) {

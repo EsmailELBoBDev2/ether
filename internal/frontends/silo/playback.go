@@ -177,6 +177,10 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	// rendition, read with the picture instead of extracted from the file.
 	cap.Client.HLSTextRenditions = slices.Contains(b.Features, "hls_subtitle_renditions_v1")
 	scope := frontend.VersionScope{Viewer: v, Device: d, Protocol: "silo", Caps: cap.Client}
+	if frontend.IsCatchUpGUID(b.FileID) {
+		i.startCatchUp(w, r, v, b, cap.Client)
+		return
+	}
 	// A channel GUID or live channel file_id tunes through the same live
 	// session as Jellyfin and Plex instead of a catalogue file.
 	channel, liveFile, err := i.resolveLiveFile(r, v, b.FileID)
@@ -731,6 +735,21 @@ func (i *instance) progress(w http.ResponseWriter, r *http.Request) {
 	}
 	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: "silo"}
 	sessionID := r.PathValue("session")
+	if _, ok := i.catchUpSession(r, v, sessionID); ok {
+		if stop {
+			_ = i.host.LiveTV.Stop(r.Context(), sessionID, v)
+			reply(w, 200, map[string]any{"outcome": "stopped", "stop_id": b.StopID})
+		} else if b.Sequence == 0 || b.Position == nil || b.Paused == nil || *b.Position < 0 {
+			http.Error(w, "Bad Request", 400)
+		} else if archive, ok := i.host.LiveTV.(frontend.LiveCatchUp); ok {
+			if err := archive.TouchLiveSession(r.Context(), v, sessionID); err != nil {
+				i.playbackError(w, v, err)
+				return
+			}
+			reply(w, 200, map[string]any{"outcome": "applied", "accepted": map[string]any{"position": *b.Position, "sequence": b.Sequence, "is_paused": *b.Paused}})
+		}
+		return
+	}
 	hasSample := b.Sequence != 0 || b.Position != nil || b.Paused != nil
 	if !hasSample && stop {
 		if err = i.host.Sessions.Stop(r.Context(), access, sessionID); err != nil {
@@ -965,6 +984,10 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("session")
+	if info, ok := i.catchUpSession(r, v, id); ok {
+		i.replanCatchUp(w, r, v, info, b)
+		return
+	}
 	if !i.ownsSession(r.Context(), v, device(r), id) {
 		problem(w, http.StatusNotFound, "urn:ether:problem:playback-session-not-found", "Playback session not found", "No playback session matches this device.")
 		return
@@ -1214,6 +1237,10 @@ func (i *instance) serveSessionMedia(w http.ResponseWriter, r *http.Request, ses
 	viewer, _, err := i.deviceViewer(r)
 	if err != nil || viewer == nil {
 		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if _, ok := i.catchUpSession(r, viewer, sessionID); ok {
+		i.catchUpMedia(w, r, viewer, sessionID, resource)
 		return
 	}
 	media, ok := i.host.Sessions.(sessionMedia)

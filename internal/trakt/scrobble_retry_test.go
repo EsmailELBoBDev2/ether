@@ -69,53 +69,25 @@ func pendingStops(c *Client) int {
 	return len(c.stops)
 }
 
-// settledStop reports whether k has a pending stop whose last send has
-// been settled.
-func settledStop(c *Client, k scrobbleKey) bool {
-	c.scMu.Lock()
-	defer c.scMu.Unlock()
-	p := c.stops[k]
-	return p != nil && p.attempts > 0
-}
-
 func playEvent(user int64, key core.RatingKey, st string, frac float64) state.Event {
 	return state.Event{Kind: state.EventProgress, UserID: user, Key: key, State: st, Fraction: frac, At: time.Now()}
 }
 
-func TestFailedStopIsRetriedByWorker(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestThresholdStopSurvivesContinuingReports(t *testing.T) {
+	ctx := context.Background()
 	f := &fakeTrakt{scrobbleSeq: []int{503}}
 	c, clock := newRetryClient(t, f, 1)
-	done := make(chan struct{})
-	go func() { c.Start(ctx); close(done) }()
-	defer func() { c.Close(); <-done }()
 	key := core.MovieKey(949)
-
-	c.evMu.Lock()
-	c.queue = append(c.queue, stopEvent(1, key, 0.95, true))
-	c.evMu.Unlock()
-	c.notify <- struct{}{}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for !settledStop(c, scrobbleKey{1, key}) {
-		if time.Now().After(deadline) {
-			t.Fatal("the failed stop was not kept for a retry")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// Move the clock past the retry spacing once and wake the worker, as its
-	// ticker would.
-	clock.add(31 * time.Second)
-	c.notify <- struct{}{}
-	for len(acceptedStops(f)) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	completed := stopEvent(1, key, 0.91, true)
+	completed.State = "playing"
+	c.HandleEvent(ctx, completed)
+	c.HandleEvent(ctx, playEvent(1, key, "playing", 0.93))
+	c.HandleEvent(ctx, playEvent(1, key, "paused", 0.94))
+	clock.add(stopRetrySpace)
+	c.retryStops(ctx)
+	c.HandleEvent(ctx, stopEvent(1, key, 0.96, false))
 	if got := acceptedStops(f); len(got) != 1 || got[0] != 100 {
 		t.Fatalf("accepted stops %v, want one at 100", got)
-	}
-	if n := f.count("/scrobbling/stop"); n != 2 {
-		t.Fatalf("stop requests %d, want 2", n)
 	}
 }
 
@@ -126,7 +98,11 @@ func TestFailedStopDoesNotSuppressNextStop(t *testing.T) {
 	key := core.MovieKey(949)
 
 	c.HandleEvent(ctx, stopEvent(1, key, 0.95, true))
-	clock.add(10 * time.Second)
+	clock.add(time.Minute)
+	c.retryStops(ctx)
+	if len(acceptedStops(f)) != 0 {
+		t.Fatal("permanent failure was retried")
+	}
 	c.HandleEvent(ctx, stopEvent(1, key, 0.96, false))
 	if got := acceptedStops(f); len(got) != 1 || got[0] != 96 {
 		t.Fatalf("accepted stops %v, want one at 96", got)
@@ -142,7 +118,7 @@ func TestDuplicateStopWhilePendingIsNotSent(t *testing.T) {
 	c.HandleEvent(ctx, stopEvent(1, key, 0.6, false))
 	clock.add(10 * time.Second)
 	c.HandleEvent(ctx, stopEvent(1, key, 0.95, true)) // raises the pending stop
-	if n := f.count("/scrobbling/stop"); n != 1 {
+	if n := f.count("/scrobble/stop"); n != 1 {
 		t.Fatalf("stop requests %d, want 1: a duplicate was sent while pending", n)
 	}
 	clock.add(31 * time.Second)
@@ -151,7 +127,7 @@ func TestDuplicateStopWhilePendingIsNotSent(t *testing.T) {
 	if got := acceptedStops(f); len(got) != 1 || got[0] != 100 {
 		t.Fatalf("accepted stops %v, want one at 100", got)
 	}
-	if n := f.count("/scrobbling/stop"); n != 2 {
+	if n := f.count("/scrobble/stop"); n != 2 {
 		t.Fatalf("stop requests %d, want 2", n)
 	}
 }
@@ -163,7 +139,7 @@ func TestStopRetrySpacingAndBudget(t *testing.T) {
 	key := core.MovieKey(949)
 	sends := func(want int, when string) {
 		t.Helper()
-		if n := f.count("/scrobbling/stop"); n != want {
+		if n := f.count("/scrobble/stop"); n != want {
 			t.Fatalf("%s: stop requests %d, want %d", when, n, want)
 		}
 	}
@@ -201,7 +177,7 @@ func TestLostStopResponseThenConflict(t *testing.T) {
 		c.retryStops(ctx)
 	}
 	c.HandleEvent(ctx, stopEvent(1, core.MovieKey(949), 0.95, true)) // the 409 counts as sent
-	if n := f.count("/scrobbling/stop"); n != 2 {
+	if n := f.count("/scrobble/stop"); n != 2 {
 		t.Fatalf("stop requests %d, want 2 (409 counts as recorded)", n)
 	}
 	if got := acceptedStops(f); len(got) != 1 {
@@ -223,7 +199,7 @@ func TestStopRetriedAfterTransportError(t *testing.T) {
 	if got := acceptedStops(f); len(got) != 1 || got[0] != 100 {
 		t.Fatalf("accepted stops %v, want one at 100", got)
 	}
-	if n := f.count("/scrobbling/stop"); n != 2 {
+	if n := f.count("/scrobble/stop"); n != 2 {
 		t.Fatalf("stop requests %d, want 2", n)
 	}
 }
@@ -239,39 +215,59 @@ func TestStopRetriedAfterTruncated503(t *testing.T) {
 	if got := acceptedStops(f); len(got) != 1 || got[0] != 100 {
 		t.Fatalf("accepted stops %v, want one at 100", got)
 	}
-	if n := f.count("/scrobbling/stop"); n != 2 {
+	if n := f.count("/scrobble/stop"); n != 2 {
 		t.Fatalf("stop requests %d, want 2", n)
 	}
 }
 
-func TestStopNotRetriedOnClientError(t *testing.T) {
+func TestRelinkDuringRetryRefresh(t *testing.T) {
 	ctx := context.Background()
-	f := &fakeTrakt{scrobbleSeq: []int{400}}
-	c, clock := newRetryClient(t, f, 1)
-
-	c.HandleEvent(ctx, stopEvent(1, core.MovieKey(949), 0.95, true))
-	clock.add(time.Minute)
-	c.retryStops(ctx)
-	if n := f.count("/scrobbling/stop"); n != 1 {
-		t.Fatalf("stop requests %d, want 1", n)
+	refreshStarted, releaseRefresh := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseRefresh) })
+	f := &fakeTrakt{
+		scrobbleSeq: []int{503},
+		beforeRefresh: func() {
+			close(refreshStarted)
+			<-releaseRefresh
+		},
 	}
-}
-
-func TestRelinkDropsPendingStop(t *testing.T) {
-	ctx := context.Background()
-	f := &fakeTrakt{scrobbleSeq: []int{503}}
-	c, clock := newRetryClient(t, f)
-	connectAs(t, c, 1, "alice", "acc-alice")
-
-	c.HandleEvent(ctx, stopEvent(1, core.MovieKey(949), 0.95, true))
-	connectAs(t, c, 1, "bob", "acc-bob") // another Trakt account linked meanwhile
-	clock.add(31 * time.Second)
-	c.retryStops(ctx)
-	if n := f.count("/scrobbling/stop"); n != 1 {
-		t.Fatalf("stop requests %d, want 1: the stop went to the new account", n)
+	c, clock := newRetryClient(t, f, 2)
+	connectAs(t, c, 1, "", "first")
+	key := core.MovieKey(949)
+	c.HandleEvent(ctx, stopEvent(1, key, 0.95, true))
+	clock.add(stopRetrySpace)
+	if _, err := c.db.ExecContext(ctx, `UPDATE trakt_tokens SET expires_at=? WHERE user_id=?`, clock.now().Unix(), 1); err != nil {
+		t.Fatal(err)
 	}
-	if n := pendingStops(c); n != 0 {
-		t.Fatalf("pending stops %d, want 0", n)
+
+	retryDone := make(chan struct{})
+	go func() {
+		defer close(retryDone)
+		c.retryStops(ctx)
+	}()
+	defer func() {
+		release()
+		<-retryDone
+	}()
+	select {
+	case <-refreshStarted:
+	case <-retryDone:
+		t.Fatal("retry did not attempt to refresh the original connection")
+	}
+
+	c.HandleEvent(ctx, playEvent(2, key, "playing", 0.5))
+	if n := f.count("/scrobble/start"); n != 1 {
+		t.Fatal("another viewer's playback did not proceed during the refresh")
+	}
+	connectAs(t, c, 1, "", "replacement")
+	release()
+	<-retryDone
+	tokens, ok, err := c.Tokens(ctx, 1)
+	if err != nil || !ok || tokens.AccessToken != "replacement" {
+		t.Fatal("refresh overwrote the replacement link")
+	}
+	if f.count("/scrobble/stop") != 1 || pendingStops(c) != 0 {
+		t.Fatal("the stale stop survived or reached the replacement link")
 	}
 }
 
@@ -292,10 +288,10 @@ func TestNewStartCancelsPendingStop(t *testing.T) {
 		clock.add(time.Minute)
 		c.retryStops(ctx)
 	}
-	if n := f.count("/scrobbling/stop"); n != 1 {
+	if n := f.count("/scrobble/stop"); n != 1 {
 		t.Fatalf("stop requests %d, want 1: the stale stop was retried", n)
 	}
-	if n := f.count("/scrobbling/start"); n != 2 {
+	if n := f.count("/scrobble/start"); n != 2 {
 		t.Fatalf("start requests %d, want 2: the restart was suppressed", n)
 	}
 }
@@ -325,12 +321,12 @@ func TestPlaybackReportsCancelPendingStop(t *testing.T) {
 			}
 			clock.add(time.Minute)
 			c.retryStops(ctx)
-			if n := f.count("/scrobbling/stop"); n != 1 {
+			if n := f.count("/scrobble/stop"); n != 1 {
 				t.Fatalf("stop requests %d, want 1", n)
 			}
 			// The cancelled stop's stamp is gone: the next stop is sent.
 			c.HandleEvent(ctx, stopEvent(1, key, 0.95, true))
-			if n := f.count("/scrobbling/stop"); n != 2 {
+			if n := f.count("/scrobble/stop"); n != 2 {
 				t.Fatalf("stop requests %d, want 2: the next stop was suppressed", n)
 			}
 		})
@@ -349,7 +345,7 @@ func TestQueuedStartIsHandledBeforeRetry(t *testing.T) {
 	c.evMu.Unlock()
 	clock.add(time.Minute)
 	c.retryStops(ctx) // leaves it to the queued start
-	if n := f.count("/scrobbling/stop"); n != 1 {
+	if n := f.count("/scrobble/stop"); n != 1 {
 		t.Fatalf("stop requests %d, want 1: the retry went ahead of the queued start", n)
 	}
 }
@@ -367,33 +363,12 @@ func TestDisconnectDropsPendingStop(t *testing.T) {
 	connect(t, c, 1)
 	clock.add(time.Minute)
 	c.retryStops(ctx)
-	if n := f.count("/scrobbling/stop"); n != 1 {
+	if n := f.count("/scrobble/stop"); n != 1 {
 		t.Fatalf("stop requests %d, want 1: the dropped stop was retried", n)
 	}
 	c.HandleEvent(ctx, stopEvent(1, key, 0.95, true))
 	if got := acceptedStops(f); len(got) != 1 {
 		t.Fatalf("accepted stops %v, want the next stop sent", got)
-	}
-}
-
-func TestOtherViewerHandledWhileStopPending(t *testing.T) {
-	ctx := context.Background()
-	f := &fakeTrakt{scrobbleSeq: []int{503}}
-	c, clock := newRetryClient(t, f, 1, 2)
-	key := core.MovieKey(949)
-
-	c.HandleEvent(ctx, stopEvent(1, key, 0.95, true))
-	c.HandleEvent(ctx, playEvent(2, key, "playing", 0.2))
-	if n := f.count("/scrobbling/start"); n != 1 {
-		t.Fatalf("viewer 2 start requests %d, want 1", n)
-	}
-	if n := pendingStops(c); n != 1 {
-		t.Fatalf("pending stops %d, want viewer 1's", n)
-	}
-	clock.add(31 * time.Second)
-	c.retryStops(ctx)
-	if got := acceptedStops(f); len(got) != 1 || got[0] != 100 {
-		t.Fatalf("accepted stops %v, want viewer 1's at 100", got)
 	}
 }
 
@@ -408,7 +383,7 @@ func TestPendingStopDroppedWhenOld(t *testing.T) {
 	c.evMu.Unlock()
 	clock.add(11 * time.Minute)
 	c.retryStops(ctx)
-	if n := f.count("/scrobbling/stop"); n != 1 {
+	if n := f.count("/scrobble/stop"); n != 1 {
 		t.Fatalf("stop requests %d, want 1", n)
 	}
 	if n := pendingStops(c); n != 0 {

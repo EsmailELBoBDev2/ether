@@ -79,6 +79,11 @@ func (s *Server) searchPlaylists(ctx context.Context, pr *Request, query, direct
 
 func (s *Server) playlistInDirectories(pl *frontend.Playlist, raw string, entrySecs map[frontend.RatingKey]Section) bool {
 	wants := strings.Split(raw, ",")
+	for _, want := range wants {
+		if strings.EqualFold(strings.TrimSpace(want), "playlists") {
+			return true
+		}
+	}
 	matches := func(id int) bool {
 		for _, want := range wants {
 			if strconv.Itoa(id) == want {

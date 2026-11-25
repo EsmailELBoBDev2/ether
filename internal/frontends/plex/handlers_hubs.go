@@ -1581,7 +1581,9 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 	for _, t := range allowedTypes {
 		allowedSet[t] = true
 		queryTypes = append(queryTypes, t)
-		if t == frontend.TypeShow {
+		// Only /hubs/search emits reasoned episode rows; /library/search uses
+		// section directory pills whose sections are never episode sections.
+		if inHub && t == frontend.TypeShow {
 			allowedSet[frontend.TypeEpisode] = true
 			queryTypes = append(queryTypes, frontend.TypeEpisode)
 		}
@@ -1608,14 +1610,19 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 	// The batched path judges rows; it resolves their shows from rows too.
 	vis := s.visibility()
 	now := s.now()
-	creditLimit := max(limit*3, 30)
+	creditLimit := min(max(limit*3, 30), 120)
 	// A person whose whole name is the query leads, then the most credited.
 	// Each person costs a credit walk, so only as many are walked as a hub
 	// can show, with headroom for people with nothing visible.
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return personSearchScore(query, candidates[i].Name) > personSearchScore(query, candidates[j].Name)
 	})
-	walkBudget, partialBudget := limit+limit/2, max(limit/2, 3)
+	walkBudget, partialBudget := limit+limit/2, min(max(limit/2, 3), 15)
+	if !inHub {
+		creditLimit = min(max(limit, 30), 60)
+		walkBudget = min(walkBudget, 60)
+		partialBudget = min(partialBudget, 12)
+	}
 	var walked []frontend.Person
 	budgetSpent := false
 	for _, cand := range candidates {
@@ -1765,12 +1772,14 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 						h.thumbKey = t.Key
 					}
 				}
-				actorTitles = append(actorTitles, reasonedTitle{
-					title:       t,
-					reason:      "actor",
-					reasonID:    idStr,
-					reasonTitle: cand.Name,
-				})
+				if inHub {
+					actorTitles = append(actorTitles, reasonedTitle{
+						title:       t,
+						reason:      "actor",
+						reasonID:    idStr,
+						reasonTitle: cand.Name,
+					})
+				}
 			}
 			if p, ok := role(&t, "director"); ok {
 				if secBrowsable {
@@ -1785,12 +1794,14 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 						h.thumbKey = t.Key
 					}
 				}
-				directorTitles = append(directorTitles, reasonedTitle{
-					title:       t,
-					reason:      "director",
-					reasonID:    idStr,
-					reasonTitle: cand.Name,
-				})
+				if inHub {
+					directorTitles = append(directorTitles, reasonedTitle{
+						title:       t,
+						reason:      "director",
+						reasonID:    idStr,
+						reasonTitle: cand.Name,
+					})
+				}
 			}
 		}
 		for _, sec := range secs {
@@ -2597,12 +2608,16 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		pluginItems = s.searchPluginTitles(ctx, pr, query, 0, limit)
 	}
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
+	// /library/search renders titles as list items (no trailers, keywords,
+	// or full cast). Request visibility-only candidate rows here and hydrate
+	// list facts only for the <= limit titles that survive final ranking.
+	searchCtx, listDetails := s.hubSearchCandidates(frontend.WithSearchListFacts(ctx), pr.User)
 	var result frontend.SearchResults
 	var err error
 	if len(queryTypes) > 0 {
-		result, err = s.searchExperience().Resolve(ctx, pr.User, query, queryTypes, fetch, true)
+		result, err = s.searchExperience().Resolve(searchCtx, pr.User, query, queryTypes, fetch, true)
 	} else if sf.wantCollections && len(baseTypes) > 0 {
-		result, err = s.searchExperience().Resolve(ctx, pr.User, query, baseTypes, fetch, true)
+		result, err = s.searchExperience().Resolve(searchCtx, pr.User, query, baseTypes, fetch, true)
 	}
 	var people peopleSearchResult
 	if peopleDone != nil {
@@ -2634,7 +2649,25 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			res = filtered
 		}
 	}
-	var leading []model.SearchResult
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	storedCtx := withStoredPolicy(ctx)
+	vis := s.visibilityCtx(storedCtx)
+	filterOpenable := func(ts []frontend.Title) []frontend.Title {
+		if len(ts) == 0 {
+			return nil
+		}
+		rowCtx := s.withSeriesRows(storedCtx, pr.User, ts)
+		return s.openableTitlesWith(rowCtx, vis, pr.User, ts, false)
+	}
+	type librarySearchEntry struct {
+		sr       model.SearchResult
+		raw      float64
+		titleKey frontend.RatingKey
+	}
+	var leading []librarySearchEntry
+	var leadingTitles []frontend.Title
 	if result.AIItems > 0 {
 		var aiTitles, kwTitles []frontend.Title
 		for _, t := range res {
@@ -2645,11 +2678,18 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		res = kwTitles
-		aiMD := s.renderTitles(ctx, pr, aiTitles, renderOpts{media: true})
-		for i := range aiMD {
-			aiMD[i].LibrarySectionID, aiMD[i].LibrarySectionKey = 0, ""
+		aiTitles = filterOpenable(aiTitles)
+		if len(aiTitles) > limit {
+			aiTitles = aiTitles[:limit]
+		}
+		leadingTitles = aiTitles
+		for i := range aiTitles {
 			sc := max(0.96, math.Round((1-float64(i)*0.0001)*10000)/10000)
-			leading = append(leading, model.SearchResult{Score: sc, Metadata: &aiMD[i]})
+			leading = append(leading, librarySearchEntry{
+				sr:       model.SearchResult{Score: sc},
+				raw:      sc,
+				titleKey: aiTitles[i].Key,
+			})
 		}
 		if isVibe && vibe != nil && sf.wantCollections {
 			d := s.collectionDirectory(ctx, vibe)
@@ -2657,7 +2697,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			if len(leading) == 0 {
 				sc = 1
 			}
-			leading = append(leading, model.SearchResult{Score: sc, Directory: &d})
+			leading = append(leading, librarySearchEntry{
+				sr:  model.SearchResult{Score: sc, Directory: &d},
+				raw: sc,
+			})
 		}
 	}
 	var peopleDirs []model.Directory
@@ -2671,24 +2714,28 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	for i := range res {
 		scores[res[i].Key.String()] = titleSearchScore(&res[i], i, len(res)+len(peopleDirs))
 	}
-	md := s.renderTitles(ctx, pr, res, renderOpts{media: true})
-	mc := &model.MediaContainer{}
-	totalRanked := len(md) + len(peopleDirs)
-	raw := make([]float64, 0, totalRanked)
-	for i := range md {
-		score, ok := scores[md[i].RatingKey]
+	res = filterOpenable(res)
+	kwByKey := make(map[frontend.RatingKey]frontend.Title, len(res))
+	totalRanked := len(res) + len(peopleDirs)
+	entries := make([]librarySearchEntry, 0, totalRanked)
+	for i := range res {
+		kwByKey[res[i].Key] = res[i]
+		score, ok := scores[res[i].Key.String()]
 		if !ok {
 			score = searchScore(i, totalRanked)
 		}
-		// PMS names the section here but sends no section id or key.
-		md[i].LibrarySectionID, md[i].LibrarySectionKey = 0, ""
-		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: math.Round(reportedScore(score)*10000) / 10000, Metadata: &md[i]})
-		raw = append(raw, score)
+		entries = append(entries, librarySearchEntry{
+			sr:       model.SearchResult{Score: math.Round(reportedScore(score)*10000) / 10000},
+			raw:      score,
+			titleKey: res[i].Key,
+		})
 	}
 	for i := range peopleDirs {
 		d := peopleDirs[i]
-		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: math.Round(peopleScores[i]*10000) / 10000, Directory: &d})
-		raw = append(raw, peopleScores[i])
+		entries = append(entries, librarySearchEntry{
+			sr:  model.SearchResult{Score: math.Round(peopleScores[i]*10000) / 10000, Directory: &d},
+			raw: peopleScores[i],
+		})
 	}
 	if sf.wantOwnedCollections {
 		dirs, _, _ := s.searchCollections(ctx, pr, query, 0, limit)
@@ -2706,8 +2753,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 				sc = 0.5
 			}
 			dir := d
-			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: math.Round(sc*10000) / 10000, Directory: &dir})
-			raw = append(raw, sc)
+			entries = append(entries, librarySearchEntry{
+				sr:  model.SearchResult{Score: math.Round(sc*10000) / 10000, Directory: &dir},
+				raw: sc,
+			})
 		}
 	}
 	if sf.wantPlaylists {
@@ -2725,41 +2774,98 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			md := m
 			score, _ := strconv.ParseFloat(md.Score, 64)
 			md.Score = ""
-			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: score, Metadata: &md})
-			raw = append(raw, score)
+			entries = append(entries, librarySearchEntry{
+				sr:  model.SearchResult{Score: score, Metadata: &md},
+				raw: score,
+			})
 		}
 	}
 	for i := range live.results {
-		mc.SearchResult = append(mc.SearchResult, live.results[i])
-		raw = append(raw, live.scores[i])
+		entries = append(entries, librarySearchEntry{
+			sr:  live.results[i],
+			raw: live.scores[i],
+		})
 	}
 	// PMS lists every result best match first.
-	order := make([]int, len(raw))
-	for i := range order {
-		order[i] = i
-	}
-	sort.SliceStable(order, func(a, b int) bool { return raw[order[a]] > raw[order[b]] })
-	ranked := make([]model.SearchResult, len(order))
-	for i, j := range order {
-		ranked[i] = mc.SearchResult[j]
-		if len(leading) > 0 && ranked[i].Score > 0.95 {
-			ranked[i].Score = 0.95
-		} else if live.hasChannelMatches && raw[j] < liveChannelMatchRawFloor && ranked[i].Score > 0.98 {
-			ranked[i].Score = 0.98
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].raw > entries[j].raw })
+	for i := range entries {
+		if len(leading) > 0 && entries[i].sr.Score > 0.95 {
+			entries[i].sr.Score = 0.95
+		} else if live.hasChannelMatches && entries[i].raw < liveChannelMatchRawFloor && entries[i].sr.Score > 0.98 {
+			entries[i].sr.Score = 0.98
 		}
 	}
+	var combined []librarySearchEntry
 	if len(leading) > 0 {
-		mc.SearchResult = append(leading, ranked...)
+		combined = append(leading, entries...)
 	} else {
-		mc.SearchResult = ranked
+		combined = entries
 		if isVibe && vibe != nil && sf.wantCollections {
 			d := s.collectionDirectory(ctx, vibe)
-			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Directory: &d})
+			combined = append(combined, librarySearchEntry{
+				sr:  model.SearchResult{Score: 1, Directory: &d},
+				raw: 1,
+			})
 		}
 	}
 	// A flat search has one window across every result family.
-	if len(mc.SearchResult) > limit {
-		mc.SearchResult = mc.SearchResult[:limit]
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
+	aiByKey := make(map[frontend.RatingKey]frontend.Title, len(leadingTitles))
+	for _, t := range leadingTitles {
+		aiByKey[t.Key] = t
+	}
+	surviving := make([]frontend.Title, 0, len(combined))
+	savedKeywords := make(map[frontend.RatingKey][]string)
+	for _, e := range combined {
+		if e.titleKey == 0 {
+			continue
+		}
+		t, ok := aiByKey[e.titleKey]
+		if !ok {
+			t, ok = kwByKey[e.titleKey]
+		}
+		if !ok {
+			continue
+		}
+		if len(t.Keywords) > 0 {
+			savedKeywords[t.Key] = t.Keywords
+		}
+		surviving = append(surviving, t)
+	}
+	mdByKey := make(map[string]model.Metadata, len(surviving))
+	if len(surviving) > 0 {
+		if listDetails != nil {
+			if surviving, err = listDetails(surviving); err != nil {
+				s.writeSearchErr(w, r, err, &model.MediaContainer{})
+				return
+			}
+			for i := range surviving {
+				if len(surviving[i].Keywords) == 0 {
+					if kw := savedKeywords[surviving[i].Key]; len(kw) > 0 {
+						surviving[i].Keywords = kw
+					}
+				}
+			}
+		}
+		rendered := s.renderTitles(ctx, pr, surviving, renderOpts{media: true})
+		for i := range rendered {
+			// PMS names the section here but sends no section id or key.
+			rendered[i].LibrarySectionID, rendered[i].LibrarySectionKey = 0, ""
+			mdByKey[rendered[i].RatingKey] = rendered[i]
+		}
+	}
+	mc := &model.MediaContainer{SearchResult: make([]model.SearchResult, 0, len(combined))}
+	for _, e := range combined {
+		if e.titleKey != 0 {
+			md, ok := mdByKey[e.titleKey.String()]
+			if !ok {
+				continue
+			}
+			e.sr.Metadata = &md
+		}
+		mc.SearchResult = append(mc.SearchResult, e.sr)
 	}
 	mc.Size = len(mc.SearchResult)
 	s.write(w, r, mc)

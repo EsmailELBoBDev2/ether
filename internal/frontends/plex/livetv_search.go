@@ -102,7 +102,8 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
+	rawQuery := r.URL.Query().Get("query")
+	query := strings.ToLower(strings.TrimSpace(rawQuery))
 	if utf8.RuneCountInString(query) > 256 {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
@@ -112,6 +113,8 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 		s.write(w, r, mc)
 		return
 	}
+	r, leave := s.enterSearch(r, rawQuery)
+	defer leave()
 	search, ok := s.svc().liveTV.(frontend.LiveTVSearch)
 	if !ok {
 		s.write(w, r, mc)
@@ -119,7 +122,7 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 	}
 	results, err := search.SearchLiveTV(r.Context(), FromContext(r.Context()).User, query, limit)
 	if err != nil {
-		s.writeErr(w, r, err)
+		s.writeSearchErr(w, r, err, mc)
 		return
 	}
 	source := s.liveProviderSource()
@@ -199,7 +202,9 @@ func (s *Server) searchLiveTVLibrary(r *http.Request, pr *Request, query string,
 	}
 	results, err := search.SearchLiveTV(ctx, pr.User, query, limit)
 	if err != nil {
-		s.log.Warn("live search unavailable", "error", err)
+		if !frontend.SearchWasSuperseded(ctx) && ctx.Err() == nil {
+			s.log.Warn("live search unavailable", "error", err)
+		}
 		return liveLibrarySearchResult{}
 	}
 	source := s.liveProviderSource()
@@ -322,7 +327,9 @@ func (s *Server) appendLiveSearchHubs(r *http.Request, mc *model.MediaContainer,
 	}
 	results, err := search.SearchLiveTV(r.Context(), pr.User, query, limit)
 	if err != nil {
-		s.log.Warn("live search unavailable", "error", err)
+		if !frontend.SearchWasSuperseded(r.Context()) && r.Context().Err() == nil {
+			s.log.Warn("live search unavailable", "error", err)
+		}
 		return
 	}
 	source := s.liveProviderSource()

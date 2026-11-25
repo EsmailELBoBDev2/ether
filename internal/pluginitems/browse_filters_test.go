@@ -10,6 +10,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func sampleAlbumFilterDecl() plugins.MediaKindMeta {
@@ -354,7 +355,8 @@ func TestBrowseEmptyCrossFieldAnyAndExcludeQuery(t *testing.T) {
 
 	// Verify SQLite query plan for excludeQuery, empty, and cross-field anyGroups
 	// stays correlated / index-driven without temp B-tree sorts or full table scans.
-	eqpRows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN
+	if store.DialectOf(s.db) == store.SQLite {
+		eqpRows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN
 SELECT i.item_ref FROM plugin_items i
 WHERE i.library_id = ? AND i.level = ?
   AND NOT EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text <> '')
@@ -363,23 +365,24 @@ WHERE i.library_id = ? AND i.level = ?
   AND NOT EXISTS (SELECT 1 FROM plugin_item_fts ef WHERE ef.rowid = i.seq AND ef.plugin_item_fts MATCH ?)
 ORDER BY i.sort_title ASC, i.item_ref ASC
 LIMIT 11`, int64(20), "album", "genres", "label", "North", "parentLabel", "North", `"live"*`)
-	if err != nil {
-		t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
-	}
-	defer eqpRows.Close()
-	var planLines []string
-	for eqpRows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := eqpRows.Scan(&id, &parent, &notused, &detail); err != nil {
-			t.Fatal(err)
+		if err != nil {
+			t.Fatalf("EXPLAIN QUERY PLAN: %v", err)
 		}
-		planLines = append(planLines, detail)
-	}
-	planText := strings.Join(planLines, "\n")
-	t.Logf("SQLite EXPLAIN QUERY PLAN:\n%s", planText)
-	if strings.Contains(planText, "USE TEMP B-TREE") {
-		t.Errorf("unexpected TEMP B-TREE in SQLite plan:\n%s", planText)
+		defer eqpRows.Close()
+		var planLines []string
+		for eqpRows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := eqpRows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			planLines = append(planLines, detail)
+		}
+		planText := strings.Join(planLines, "\n")
+		t.Logf("SQLite EXPLAIN QUERY PLAN:\n%s", planText)
+		if strings.Contains(planText, "USE TEMP B-TREE") {
+			t.Errorf("unexpected TEMP B-TREE in SQLite plan:\n%s", planText)
+		}
 	}
 
 	// Verify PostgreSQL SQL shape uses correlated EXISTS + md5 + direct search_tsv.

@@ -133,6 +133,13 @@ type PinnedSlot struct {
 	Breaks     *ChannelLook    `json:"breaks,omitempty"`
 }
 
+// ChannelArchive describes the catch-up window reported by a channel's provider.
+type ChannelArchive struct {
+	Days   int    `json:"days"`
+	Mode   string `json:"mode"`
+	Source string `json:"source,omitempty"`
+}
+
 type Channel struct {
 	Pins                 []PinnedSlot `json:"pins,omitempty"`
 	programmingFill      bool
@@ -179,6 +186,7 @@ type Channel struct {
 	SourceID              string             `json:"sourceId,omitempty"`
 	GuideID               string             `json:"guideId,omitempty"`
 	TvgName               string             `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
+	Archive               *ChannelArchive    `json:"archive,omitempty"`
 	StreamURL             string             `json:"streamUrl,omitempty"`     // owner API only
 	StreamSources         []StreamSource     `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
 	SuppressedAutoBackups []string           `json:"suppressedAutoBackups,omitempty"`

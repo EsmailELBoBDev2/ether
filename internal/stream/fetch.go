@@ -606,6 +606,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, i int, id string,
 	}
 	defer release()
 	started := fo.meter.begin()
+	ctx = core.WithProviderMissHint(ctx, &pf.misses)
 	ctx = core.WithArticlePartValidator(ctx, func(data []byte, part core.ArticlePart) error {
 		return pf.validateArticleIdentity(i, data, part)
 	})
@@ -727,9 +728,9 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 			return nil, fmt.Errorf("stream: %s part %d decoded length %d differs from yEnc range %d: %w", pf.Name(), i+1, len(data), want, ErrCorrupt)
 		}
 		if pf.archiveChunkPart(i, part) {
-			// This offset is relative to the whole archive. Its size and
-			// total are not metadata about this individual NZB file.
-			seg.fileSize, seg.total = 0, 0
+			// This offset is relative to the whole archive. Drop the
+			// archive's file metadata before indexing the individual chunk.
+			seg.fileSize, seg.total, seg.name = 0, 0, ""
 		} else if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
 			seg.fileSize, seg.total, seg.name = 0, 0, ""
 			seg.begin, _, _ = pf.rangeOf(i)

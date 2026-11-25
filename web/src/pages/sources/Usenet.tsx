@@ -10,6 +10,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  Select,
   SettingsSection,
   confirmDialog,
   toast,
@@ -61,12 +62,10 @@ function providerName(p: UsenetProvider, i: number) {
   return p.name || p.host || t("Provider {number}", { number: i + 1 });
 }
 
-function role(p: UsenetProvider, i: number) {
-  return i === 0
-    ? t("Tried first")
-    : p.backfill
-      ? t("Backfill")
-      : t("Priority {number}", { number: i + 1 });
+function role(p: UsenetProvider, i: number, balanced: boolean) {
+  if (p.backfill) return t("Backfill");
+  if (balanced) return t("Shares load");
+  return i === 0 ? t("Tried first") : t("Priority {number}", { number: i + 1 });
 }
 
 /**
@@ -139,6 +138,7 @@ export function UsenetProviders({
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  const [savingLoad, setSavingLoad] = useState(false);
   const { tests, runTest, reset } = useTests();
 
   const cfg = config.data;
@@ -176,14 +176,27 @@ export function UsenetProviders({
 
   async function commit(list: UsenetProvider[], message: string) {
     if (!cfg) return;
-    const usenet: EtherConfig["usenet"] = {
-      ...cfg.usenet,
+    await api.putSection("usenet", {
       providers: list.map((p, priority) => ({ ...p, priority })),
-    };
-    await api.putSection("usenet", usenet);
+    });
     toast.success(message);
     await config.reload();
     void refreshDashboard();
+  }
+
+  async function setLoadMode(loadMode: "inOrder" | "balanced") {
+    if (!cfg || savingLoad) return;
+    setSavingLoad(true);
+    try {
+      await api.putSection("usenet", { loadMode });
+      toast.success(t("Server load saved"));
+      await config.reload();
+      void refreshDashboard();
+    } catch (e) {
+      toastError(t("Couldn't save server load"), e);
+    } finally {
+      setSavingLoad(false);
+    }
   }
 
   async function saveRepair() {
@@ -191,7 +204,7 @@ export function UsenetProviders({
     setSaving(true);
     setError(null);
     try {
-      await api.putSection("usenet", { ...cfg.usenet, repair: repairDraft });
+      await api.putSection("usenet", { repair: repairDraft });
       toast.success(t("Repair settings saved"));
       setRepairDraft(null);
       await config.reload();
@@ -278,6 +291,8 @@ export function UsenetProviders({
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (!cfg) return <LoadingRows rows={3} />;
 
+  const balanced = cfg.usenet.loadMode === "balanced";
+  const primaries = providers.filter((p) => p.enabled && !p.backfill).length;
   const draft = editing?.draft;
   const selectedStatus = live.find((p) => p.id === draft?.id);
   const set = (patch: Partial<UsenetProvider>) =>
@@ -287,12 +302,23 @@ export function UsenetProviders({
 
   return (
     <>
+      {!balanced && providers.length > 1 ? (
+        <p className="text-sm text-fg-muted">
+          {t("Drag a card to choose which account Ether tries first.")}
+        </p>
+      ) : null}
       <Section
         id="sources-usenet"
         title={t("Usenet providers")}
-        description={t(
-          "Ether downloads articles from these accounts in order. A backfill account is used only when the article is missing everywhere else.",
-        )}
+        description={
+          balanced
+            ? t(
+                "Ether spreads downloads across these accounts, least busy first. A backfill account is used only when the article is missing everywhere else.",
+              )
+            : t(
+                "Ether downloads articles from these accounts in order. A backfill account is used only when the article is missing everywhere else.",
+              )
+        }
         actions={
           <Button size="sm" onClick={() => open(providers.length, blankProvider(providers.length))}>
             <Plus size={14} /> {t("Add a Usenet provider")}
@@ -322,7 +348,7 @@ export function UsenetProviders({
                   name={label}
                   position={i + 1}
                   description={[
-                    role(p, i),
+                    role(p, i, balanced),
                     p.host ? `${p.host}:${p.port}` : t("No host"),
                     ...connectionText(stat, p.connections),
                     stat?.bytes ? t("{size} fetched", { size: formatBytes(stat.bytes) }) : "",
@@ -360,6 +386,33 @@ export function UsenetProviders({
             }}
           />
         )}
+        {primaries >= 2 || balanced ? (
+          <SettingsRow
+            title={t("Server load")}
+            description={
+              balanced
+                ? t(
+                    "Every non-backfill account takes requests, the least busy first. Use this when you pay for several unlimited accounts.",
+                  )
+                : t(
+                    "The first account takes every request it has room for; the next ones only take overflow.",
+                  )
+            }
+            control={
+              <Select
+                aria-label={t("Server load")}
+                disabled={savingLoad}
+                value={balanced ? "balanced" : "inOrder"}
+                onChange={(e) =>
+                  void setLoadMode(e.currentTarget.value === "balanced" ? "balanced" : "inOrder")
+                }
+              >
+                <option value="inOrder">{t("In order")}</option>
+                <option value="balanced">{t("Balanced")}</option>
+              </Select>
+            }
+          />
+        ) : null}
       </Section>
 
       <PluginSourceCards
@@ -495,7 +548,7 @@ export function UsenetProviders({
         open={editing !== null}
         onClose={close}
         title={isNew ? t("New provider") : name}
-        description={editing && !isNew ? role(editing.draft, editing.index) : undefined}
+        description={editing && !isNew ? role(editing.draft, editing.index, balanced) : undefined}
         onSave={() => void save()}
         saving={saving}
         saveLabel={t("Save")}

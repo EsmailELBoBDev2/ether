@@ -1948,9 +1948,8 @@ func (s *Service) fresh(p Payload) bool {
 // fresher link stored by another process path is reused without an API
 // call. The same provider regenerates the link (re-adding the torrent by
 // magnet when it was removed); otherwise another provider holding the same
-// file takes over. Errors wrap core.ErrSourceUnavailable for transient or
-// no-longer-cached outcomes (failover without marking the release bad) and
-// core.ErrArticleMissing when the file itself is gone from the torrent.
+// file takes over. ErrOriginalLost means every eligible account confirmed
+// the loss. A missing torrent member also carries ErrArticleMissing.
 func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, error) {
 	if p.IsDirect() {
 		// An addon's link resolves itself on every request: a failed
@@ -1974,7 +1973,8 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		switch {
 		case errors.Is(err, errFileMissing):
 			missing++
-		case errors.Is(err, ErrGone) || errors.Is(err, core.ErrNotCached):
+		case !refusal(err) && !errors.Is(err, core.ErrDownloadLimit) &&
+			(errors.Is(err, ErrGone) || errors.Is(err, core.ErrNotCached)):
 			gone++
 		}
 		errs = append(errs, err)
@@ -1997,7 +1997,11 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 	}
 	// Another provider may hold the same torrent.
 	for _, e := range s.active() {
-		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
+		if e.cfg.ID == p.Provider {
+			continue
+		}
+		if err := e.blocked(s.now()); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Private: p.Private, Target: p.Target, Release: p.Release}
@@ -2019,9 +2023,9 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 	}
 	switch {
 	case missing > 0 && missing+gone == len(errs):
-		return p, fmt.Errorf("debrid: %s is gone: %w (%v)", p.Name(), core.ErrArticleMissing, joined)
+		return p, fmt.Errorf("debrid: %s is gone: %w (%v)", p.Name(), errors.Join(core.ErrArticleMissing, core.ErrOriginalLost), joined)
 	case gone > 0 && gone+missing == len(errs):
-		return p, fmt.Errorf("debrid: %s: %w: %w", p.Name(), core.ErrSourceUnavailable, core.ErrNotCached)
+		return p, fmt.Errorf("debrid: %s: %w: %w", p.Name(), core.ErrOriginalLost, core.ErrNotCached)
 	}
 	return p, fmt.Errorf("debrid: refresh link for %s: %w (%v)", p.Name(), core.ErrSourceUnavailable, joined)
 }

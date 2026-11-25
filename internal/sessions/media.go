@@ -113,6 +113,19 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			return "", err
 		}
 	}
+	if s.originalFailure {
+		return "", frontend.ErrVersionUnavailable
+	}
+	if req.ExpectedOriginalRevision != nil {
+		revision := ""
+		if s.originalReplaced {
+			revision = s.sourceETag
+		}
+		if *req.ExpectedOriginalRevision != revision {
+			return "", frontend.ErrSourceGone
+		}
+	}
+
 	if s.sourcePinned {
 		ps, ok := b.deps.Playback.Session(s.playID)
 		if !ok || ps == nil || sourceRevision(ps) != s.sourceETag {
@@ -158,6 +171,10 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		b.mu.Lock()
 		if live := b.sessions[id]; live != nil {
 			live.format = req.Format
+			live.streamPosition = req.Position
+			if req.Position != s.streamPosition {
+				live.originalPosition = nil
+			}
 			live.public.MediaPath = path + "file"
 			live.public.PlayMethod = "DirectPlay"
 		}
@@ -688,13 +705,22 @@ func (b *Broker) ServeSessionMedia(w http.ResponseWriter, r *http.Request, a fro
 	live := b.sessions[sessionID]
 	grant := ""
 	tuned := false
+	replacementRevision := ""
 	if live != nil {
 		grant = live.grant
 		tuned = live.live
+		if live.originalReplaced && resource == "file" && a.Viewer != nil && a.Viewer.ID == live.public.ViewerID && a.Protocol == live.public.Protocol && a.Device.ID != "" && a.Device.ID == live.public.Device.ID {
+			replacementRevision = live.sourceETag
+		}
 	}
 	b.mu.Unlock()
 	if grant == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if replacementRevision != "" && r.URL.Query().Get("sourceRevision") != replacementRevision {
+		w.Header().Set("X-Ether-Playback-Error", "source_replaced")
+		w.WriteHeader(http.StatusConflict)
 		return
 	}
 	resourcePath := resource
@@ -798,6 +824,12 @@ func (b *Broker) serveMedia(protocol frontend.Protocol, access *frontend.Session
 // serveMediaAt allows a broker-owned wrapper to keep live playlist resources
 // on its own authorized path. Empty base preserves the existing media URLs.
 func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.SessionAccess, w http.ResponseWriter, r *http.Request, liveBase string) {
+	var lost func()
+	defer func() {
+		if lost != nil {
+			lost()
+		}
+	}()
 	mediasafety.SetHeaders(w)
 	if b.servePreview(protocol, access, w, r) {
 		return
@@ -929,6 +961,12 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 		}
 	}
 	tail := parts[2:]
+	if s.originalFailure && len(tail) == 1 && tail[0] == "file" {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Ether-Playback-Error", "version_unavailable")
+		w.WriteHeader(http.StatusConflict)
+		return
+	}
 	if serveAudioRendition(w, r, s, tail) {
 		return
 	}
@@ -979,6 +1017,17 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 			policy, _ := core.RangeResponseFrom(r.Context())
 			policy.StrictRanges = true
 			r = r.WithContext(core.WithRangeResponse(r.Context(), policy))
+		}
+		ctx := r.Context()
+		if _, ok := b.deps.Playback.(core.OriginalRecovery); ok && !s.live && !s.restored {
+			revision := ""
+			if s.sourcePinned || s.originalReplaced {
+				revision = s.sourceETag
+			}
+			request := core.OriginalRange{Revision: revision, Lost: func() {
+				lost = func() { b.recoverOriginal(context.WithoutCancel(ctx), s, viewer, false) }
+			}}
+			r = r.WithContext(core.WithOriginalRange(ctx, request))
 		}
 		b.deps.Playback.ServeRange(w, r, s.playID)
 		return

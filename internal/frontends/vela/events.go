@@ -151,6 +151,10 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				if e.SessionID != id {
 					continue
 				}
+				if e.Type == "SessionOriginalChanged" {
+					i.pollOriginalRecovery(ctx, viewer, device, id, s)
+					continue
+				}
 				s.mu.Lock()
 				if !s.ended.IsZero() {
 					s.mu.Unlock()

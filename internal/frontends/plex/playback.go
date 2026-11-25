@@ -1543,6 +1543,9 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		}
 		m.Part[0].Key = s.playIDs.partKey(ik, m.ID, m.Part[0].Key, s.now())
 	}
+	if ps.OriginalRevision != "" {
+		m.Part[0].Key += "?sourceRevision=" + ps.OriginalRevision
+	}
 	if ps.Resolution != nil && s.trickplayAvailable(frontend.TrickplayCacheKey(ps)) {
 		m.Part[0].Indexes = "sd"
 	}
@@ -3392,8 +3395,20 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 	}
 	downloadServed = true
 	cw := s.newCountWriter(w, r)
-	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
+	q := parts.Request(r)
+	var recoverOriginal func()
+	if reader, ok := s.broker().(frontend.PlexOriginalRange); ok && !download {
+		request := reader.PlexOriginalRange(q.Context(), s.plexAccess(pr), key, ps.ID, releaseID, q.URL.Query().Get("sourceRevision"))
+		if recover := request.Lost; recover != nil {
+			request.Lost = func() { recoverOriginal = recover }
+			q = q.WithContext(frontend.WithOriginalRange(q.Context(), request))
+		}
+	}
+	s.plexSources().ServePart(cw, q, ps.ID)
 	cw.finish()
+	if recoverOriginal != nil {
+		recoverOriginal()
+	}
 }
 
 // Part acquisition failures distinguish an absent provider file from a failed

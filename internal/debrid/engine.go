@@ -1518,7 +1518,7 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			if ctx.Err() != nil || reqCtx.Err() != nil {
 				err = errRunCancelled
 			} else {
-				err = fmt.Errorf("debrid: read %s: %w: %v", f.name(), core.ErrSourceUnavailable, sanitize(err))
+				err = fmt.Errorf("debrid: read %s: %w: %w", f.name(), core.ErrSourceUnavailable, sanitize(err))
 				f.e.log.Warn("debrid range failed", "release", f.id, "offset", idx*f.e.block, "runOffset", first*f.e.block, "origin", core.SourceReadOrigin(ctx).Component, "reason", core.SourceReadOrigin(ctx).Reason, "mode", mode.String(), "err", err)
 			}
 			fail(err)
@@ -1897,7 +1897,11 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			fails := f.linkFails
 			f.mu.Unlock()
 			if fails > maxLinkFailures {
-				return nil, tm, servedBy{}, directMediaError(payload, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing))
+				failure := core.ErrSourceUnavailable
+				if payload.IsDirect() || payload.IsPluginProvider() {
+					failure = core.ErrArticleMissing
+				}
+				return nil, tm, servedBy{}, directMediaError(payload, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, failure))
 			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err
@@ -1970,7 +1974,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			fails := f.linkFails
 			f.mu.Unlock()
 			if fails > maxLinkFailures {
-				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrArticleMissing)
+				return nil, tm, servedBy{}, fmt.Errorf("debrid: link for %s keeps failing (HTTP %d): %w", f.name(), resp.StatusCode, core.ErrSourceUnavailable)
 			}
 			if _, _, err := f.link(ctx, true, gen); err != nil {
 				return nil, tm, servedBy{}, err

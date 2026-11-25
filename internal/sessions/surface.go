@@ -150,6 +150,25 @@ func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, i
 	return core.Decision{}, core.ErrNotAvailable
 }
 
+func (s surface) PlexOriginalRange(ctx context.Context, a frontend.SessionAccess, item core.RatingKey, playID, release, revision string) core.OriginalRange {
+	if a.Protocol == s.protocol && s.protocol == "plex" {
+		if reader, ok := s.broker.(frontend.PlexOriginalRange); ok {
+			return reader.PlexOriginalRange(ctx, a, item, playID, release, revision)
+		}
+	}
+	return core.OriginalRange{}
+}
+
+func (s surface) OriginalPlaybackState(ctx context.Context, a frontend.SessionAccess, id string) (frontend.OriginalPlaybackState, error) {
+	if a.Protocol != s.protocol {
+		return frontend.OriginalPlaybackState{}, core.ErrUnauthorized
+	}
+	if reader, ok := s.broker.(frontend.OriginalPlaybackReader); ok {
+		return reader.OriginalPlaybackState(ctx, a, id)
+	}
+	return frontend.OriginalPlaybackState{}, core.ErrNotAvailable
+}
+
 func (s surface) PlayingRelease(ctx context.Context, a frontend.SessionAccess, id string) (core.Release, core.MediaInfo, error) {
 	if a.Protocol != s.protocol {
 		return core.Release{}, core.MediaInfo{}, core.ErrUnauthorized

@@ -567,6 +567,7 @@ func siloMediaURL(sessionID string, format frontend.StreamFormat) string {
 }
 
 type playbackPlan struct {
+	replacement     string
 	format          frontend.StreamFormat
 	live            bool
 	baseID          string
@@ -1069,6 +1070,16 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	access := frontend.SessionAccess{Viewer: v, Device: device(r), Protocol: "silo"}
+	failedKey := b.PlanKey
+	if b.FailedPlan != "" {
+		failedKey = b.FailedPlan
+	}
+	if failedKey == "" {
+		failedKey = currentKey
+	}
+	if !snap.live && !nonFailureReplan(b.Operation) && i.replanRecoveredOriginal(w, r, access, id, failedKey, snap, document, plan) {
+		return
+	}
 	pos := time.Duration(b.Position * float64(time.Second))
 	if snap.live {
 		pos = 0
@@ -1150,6 +1161,9 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		plan["stream"] = stream
 	}
 	stream["url"] = siloMediaURL(id, nextFormat)
+	if snap.replacement != "" && nextFormat == frontend.StreamDirect {
+		stream["url"] = siloMediaURL(id, nextFormat) + "?sourceRevision=" + snap.replacement
+	}
 	if nextFormat == frontend.StreamHLS {
 		stream["protocol"] = "hls"
 		stream["container"] = "hls"
@@ -1179,7 +1193,7 @@ func (i *instance) playbackReplan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	document["session_id"] = id
-	i.rememberPlan(id, playbackPlan{format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start, media: snap.media, hlsRenditions: snap.hlsRenditions, audioCopy: snap.audioCopy && nextDelivery != "server_transcode_hls"})
+	i.rememberPlan(id, playbackPlan{replacement: snap.replacement, format: nextFormat, live: snap.live, baseID: baseID, delivery: nextDelivery, requireAuthored: snap.requireAuthored, body: document, start: snap.start, media: snap.media, hlsRenditions: snap.hlsRenditions, audioCopy: snap.audioCopy && nextDelivery != "server_transcode_hls"})
 	reply(w, http.StatusOK, document)
 }
 

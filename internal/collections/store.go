@@ -70,9 +70,9 @@ CREATE TABLE collections_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');
 	store.Register("collections", 4, `UPDATE collections_specs SET build_hash='';`)
 	store.Register("collections", 6, `CREATE TABLE collections_air_dates (show_key INTEGER PRIMARY KEY, episode_ts INTEGER NOT NULL, premiere_ts INTEGER NOT NULL, fetched_at INTEGER NOT NULL, attempted_at INTEGER NOT NULL, failed INTEGER NOT NULL);`)
 	store.Register("collections", 7, repairNanoStampsSQL)
-	store.RegisterDialect("collections", 10, store.SQLite, `CREATE INDEX collections_card_name ON collections_specs
+	store.RegisterDialect("collections", 12, store.SQLite, `CREATE INDEX collections_card_name ON collections_specs
 		(json_extract(spec_json, '$.name') COLLATE NOCASE, id) WHERE enabled=1 AND owner_user_id=0;`)
-	store.RegisterDialect("collections", 10, store.Postgres, `CREATE INDEX collections_card_name ON collections_specs
+	store.RegisterDialect("collections", 12, store.Postgres, `CREATE INDEX collections_card_name ON collections_specs
 		(LOWER(spec_json::jsonb->>'name') COLLATE "C", id) WHERE enabled=1 AND owner_user_id=0;`)
 }
 

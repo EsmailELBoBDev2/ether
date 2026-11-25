@@ -93,7 +93,7 @@ describe("Sources › Debrid", () => {
     expect(within(drawer).queryByText("Requests")).not.toBeInTheDocument();
     expect(within(drawer).queryByText("Response time")).not.toBeInTheDocument();
     expect(within(drawer).queryByText("Throughput")).not.toBeInTheDocument();
-    const test = within(drawer).getByRole("button", { name: /Test/ });
+    const test = within(drawer).getByRole("button", { name: /^Test$/ });
     expect(test).toBeDisabled();
     await choose("Service", "AllDebrid");
     fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "AD" } });
@@ -125,7 +125,7 @@ describe("Sources › Debrid", () => {
     const drawer = await screen.findByRole("dialog", { name: "Real-Debrid" });
     expect(within(drawer).getByText("Requests")).toBeInTheDocument();
     expect(within(drawer).getByText("Cached")).toBeInTheDocument();
-    fireEvent.click(within(drawer).getByRole("button", { name: /Test/ }));
+    fireEvent.click(within(drawer).getByRole("button", { name: /^Test$/ }));
     await waitFor(() => expect(calls(fake, "POST", "/test/debrid")).toHaveLength(1));
     expect(calls(fake, "POST", "/test/debrid")[0]!.body).toMatchObject({
       id: "rd-1",

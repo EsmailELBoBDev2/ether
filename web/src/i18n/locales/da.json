@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Tilføj en døgnperiode eller programblok for at forme dagen.",
   "m_03a83b35a93323": "Intro- og rulleteksttider fra IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Indstillinger for live-tv",
   "m_03ab9b48aadc12": "Importer kataloger…",
   "m_03abba36eab8f5": "Sete enheder",
   "m_03abee25fafc93": "Vis en serie i dvd-, absolut eller historieorden. Afspilning beholder de oprindelige afsnitsnumre.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Serveren afviste sit token. Rediger serveren, og indsæt et nyt token.",
   "m_0b6e0cfd55b64c": "Udskift video",
   "m_0b6e7f08fa07b8": "Tilføj, erstat eller fjern headere oven på den valgte identitet. Følsomme værdier krypteres i hvile og maskeres i forhåndsvisninger.",
+  "m_0b6eda483b2023": "Dine ændringer af grænsen for tilbagespoling er ikke gemt.",
   "m_0b7040c707f838": "Populære: Science fiction",
   "m_0b7138711862cd": "Gennemsnitlig bitrate",
   "m_0b725108f96a25": "Installeret",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Beholder brugerdefineret navn “{name}”",
   "m_128fa41a415266": "Ny forbindelse påkrævet",
   "m_129060a2bccbd9": "Ether prøver selv igen om {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} dag",
+    "other": "Catch-up: {count} dage"
+  },
   "m_129228a903b15e": "Det seneste gennemløb returnerede ikke {missing} af {total} eksisterende elementer. Det sker, når et plugin henter fra et søge- eller skiftende API, eller rammer en midlertidig fejl. Ether beholdt dine elementer som standard.",
   "m_1293156b01c1d8": "Alle regioner",
   "m_1293ff9d406225": "Tilføj fra link",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "Skjult i apps",
   "m_1a398cdd93409b": "Kanalnumre",
   "m_1a3a3f14648f50": "Endpoint-URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Spol live-tv op til {count} minut tilbage",
+    "other": "Spol live-tv op til {count} minutter tilbage"
+  },
   "m_1a3c710193f62d": "{name} (kopi)",
   "m_1a3c8e2a4a33fe": "Udeladte film og serier",
   "m_1a3d943e9f94d1": "Tilladt",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Kassér dem",
   "m_1d218ad59632e4": "Minutter",
   "m_1d2244e7ae66fa": "Kanalerne kunne ikke opdateres",
+  "m_1d23714a591982": "Bruger omkring 3 GB diskplads pr. seertime ved 6–8 Mbps. Sæt til 0 for kun live-afspilning.",
   "m_1d240c1034bd02": "Næste trin",
   "m_1d2516f81747b0": "Streamer torrents, som Offcloud allerede har.",
   "m_1d259ef5a21bf3": "Ingen matchende livestreams",

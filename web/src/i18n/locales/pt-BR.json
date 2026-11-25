@@ -1274,6 +1274,7 @@
   "m_03a78e28ac4a93": "Adicione uma faixa horária ou bloco de programação para organizar o dia.",
   "m_03a83b35a93323": "Tempos de abertura e créditos do IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Configurações de TV ao vivo",
   "m_03ab9b48aadc12": "Importar catálogos…",
   "m_03abba36eab8f5": "Dispositivos detectados",
   "m_03abee25fafc93": "Mostre uma série em ordem de DVD, absoluta ou de história. A reprodução mantém os números originais.",
@@ -3945,6 +3946,7 @@
   "m_0b6d39c093a15c": "O servidor recusou o próprio token. Edite o servidor e cole um novo token.",
   "m_0b6e0cfd55b64c": "Substituir vídeo",
   "m_0b6e7f08fa07b8": "Adicione, substitua ou remova cabeçalhos além da identidade selecionada. Valores sensíveis são protegidos em repouso e mascarados nas pré-visualizações.",
+  "m_0b6eda483b2023": "Suas alterações no limite de retrocesso não foram salvas.",
   "m_0b7040c707f838": "Populares: Ficção científica",
   "m_0b7138711862cd": "Taxa de bits média",
   "m_0b725108f96a25": "Instalada",
@@ -6458,6 +6460,11 @@
   "m_128f6f3393a985": "Mantendo nome personalizado “{name}”",
   "m_128fa41a415266": "Reconexão necessária",
   "m_129060a2bccbd9": "O Ether tenta novamente sozinho em {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} dia",
+    "many": "Catch-up: {count} dias",
+    "other": "Catch-up: {count} dias"
+  },
   "m_129228a903b15e": "A última varredura não retornou {missing} de {total} itens existentes. Isso acontece com APIs de busca ou rotativas, ou em falhas temporárias. O Ether manteve seus itens por padrão.",
   "m_1293156b01c1d8": "Todas as regiões",
   "m_1293ff9d406225": "Adicionar por link",
@@ -9127,6 +9134,11 @@
   "m_1a38e94dd3c401": "Oculta dos aplicativos",
   "m_1a398cdd93409b": "Números dos canais",
   "m_1a3a3f14648f50": "URL do endpoint",
+  "m_1a3c3bd0b44186": {
+    "one": "Voltar a TV ao vivo em até {count} minuto",
+    "many": "Voltar a TV ao vivo em até {count} minutos",
+    "other": "Voltar a TV ao vivo em até {count} minutos"
+  },
   "m_1a3c710193f62d": "{name} (cópia)",
   "m_1a3c8e2a4a33fe": "Filmes e séries deixados de fora",
   "m_1a3d943e9f94d1": "Permitido",
@@ -10095,6 +10107,7 @@
   "m_1d2163f63c76f8": "Descartá-las",
   "m_1d218ad59632e4": "Minutos",
   "m_1d2244e7ae66fa": "Não foi possível atualizar os canais",
+  "m_1d23714a591982": "Usa cerca de 3 GB de disco por hora de espectador a 6–8 Mbps. Defina 0 para reproduzir apenas ao vivo.",
   "m_1d240c1034bd02": "Próximos passos",
   "m_1d2516f81747b0": "Faz streaming dos torrents que Offcloud já tem.",
   "m_1d259ef5a21bf3": "Nenhuma transmissão ao vivo correspondente",

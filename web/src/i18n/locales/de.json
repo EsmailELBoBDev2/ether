@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Füge einen Tagesabschnitt oder Programmblock hinzu, um den Tag zu gestalten.",
   "m_03a83b35a93323": "Intro- und Abspannzeiten von IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Live-TV-Einstellungen",
   "m_03ab9b48aadc12": "Kataloge importieren…",
   "m_03abba36eab8f5": "Erkannte Geräte",
   "m_03abee25fafc93": "Zeig eine Serie in DVD-, absoluter oder Handlungsreihenfolge. Die Wiedergabe behält die ursprünglichen Folgennummern.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Der Server hat sein Token abgelehnt. Bearbeite den Server und füge ein neues Token ein.",
   "m_0b6e0cfd55b64c": "Video ersetzen",
   "m_0b6e7f08fa07b8": "Header zusätzlich zur gewählten Identität hinzufügen, ersetzen oder entfernen. Sensible Header-Werte werden verschlüsselt gespeichert und in Vorschauen maskiert.",
+  "m_0b6eda483b2023": "Deine Änderungen am Zurückspul-Limit wurden nicht gespeichert.",
   "m_0b7040c707f838": "Beliebt: Science-Fiction",
   "m_0b7138711862cd": "Durchschnittliche Bitrate",
   "m_0b725108f96a25": "Installiert",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Eigener Name „{name}“ bleibt erhalten",
   "m_128fa41a415266": "Erneutes Verbinden erforderlich",
   "m_129060a2bccbd9": "Ether versucht es in {time} von selbst erneut.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} Tag",
+    "other": "Catch-up: {count} Tage"
+  },
   "m_129228a903b15e": "Der letzte Durchlauf enthielt {missing} von {total} vorhandenen Einträgen nicht. Das passiert bei Such- oder rotierenden APIs oder vorübergehenden Fehlern. Ether hat Ihre Einträge standardmäßig behalten.",
   "m_1293156b01c1d8": "Alle Regionen",
   "m_1293ff9d406225": "Über Link hinzufügen",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "In Apps ausgeblendet",
   "m_1a398cdd93409b": "Kanalnummern",
   "m_1a3a3f14648f50": "Endpunkt-URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Live-TV bis zu {count} Minute zurückspulen",
+    "other": "Live-TV bis zu {count} Minuten zurückspulen"
+  },
   "m_1a3c710193f62d": "{name} (Kopie)",
   "m_1a3c8e2a4a33fe": "Ausgelassene Filme und Serien",
   "m_1a3d943e9f94d1": "Erlaubt",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Verwerfen",
   "m_1d218ad59632e4": "Minuten",
   "m_1d2244e7ae66fa": "Kanäle konnten nicht aktualisiert werden",
+  "m_1d23714a591982": "Belegt etwa 3 GB Speicher pro Zuschauerstunde bei 6–8 Mbit/s. Auf 0 setzen, um nur live abzuspielen.",
   "m_1d240c1034bd02": "Nächste Schritte",
   "m_1d2516f81747b0": "Streamt Torrents, die Offcloud schon hat.",
   "m_1d259ef5a21bf3": "Keine passenden Livestreams",

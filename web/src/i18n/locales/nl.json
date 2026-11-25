@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Voeg een dagdeel of programmablok toe om de dag in te delen.",
   "m_03a83b35a93323": "Intro- en aftitelingstijden van IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Instellingen voor live-tv",
   "m_03ab9b48aadc12": "Catalogi importeren…",
   "m_03abba36eab8f5": "Waargenomen apparaten",
   "m_03abee25fafc93": "Toon een serie in dvd-, absolute of verhaalvolgorde. Afspelen houdt de oorspronkelijke afleveringsnummers.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "De server weigerde zijn token. Bewerk de server en plak een nieuw token.",
   "m_0b6e0cfd55b64c": "Video vervangen",
   "m_0b6e7f08fa07b8": "Voeg headers toe, vervang ze of verwijder ze boven op de gekozen identiteit. Gevoelige waarden worden versleuteld opgeslagen en gemaskeerd in voorbeelden.",
+  "m_0b6eda483b2023": "Je wijzigingen aan de terugspoellimiet zijn niet opgeslagen.",
   "m_0b7040c707f838": "Populair: Sciencefiction",
   "m_0b7138711862cd": "Gemiddelde bitrate",
   "m_0b725108f96a25": "Geïnstalleerd",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Aangepaste naam “{name}” blijft behouden",
   "m_128fa41a415266": "Opnieuw verbinden vereist",
   "m_129060a2bccbd9": "Ether probeert het over {time} vanzelf opnieuw.",
+  "m_129192ef5ea47c": {
+    "one": "Terugkijken: {count} dag",
+    "other": "Terugkijken: {count} dagen"
+  },
   "m_129228a903b15e": "De laatste scan gaf {missing} van {total} bestaande items niet terug. Dat gebeurt bij zoek- of wisselende API’s of een tijdelijke fout. Ether heeft je bestaande items standaard bewaard.",
   "m_1293156b01c1d8": "Alle regio’s",
   "m_1293ff9d406225": "Toevoegen via link",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "Verborgen in apps",
   "m_1a398cdd93409b": "Kanaalnummers",
   "m_1a3a3f14648f50": "Endpoint-URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Live-tv tot {count} minuut terugspoelen",
+    "other": "Live-tv tot {count} minuten terugspoelen"
+  },
   "m_1a3c710193f62d": "{name} (kopie)",
   "m_1a3c8e2a4a33fe": "Weggelaten films en series",
   "m_1a3d943e9f94d1": "Toegestaan",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Negeren",
   "m_1d218ad59632e4": "Minuten",
   "m_1d2244e7ae66fa": "Kanalen konden niet worden bijgewerkt",
+  "m_1d23714a591982": "Gebruikt ongeveer 3 GB schijfruimte per kijkuur bij 6–8 Mbps. Zet op 0 voor alleen live afspelen.",
   "m_1d240c1034bd02": "Volgende stappen",
   "m_1d2516f81747b0": "Streamt torrents die Offcloud al heeft.",
   "m_1d259ef5a21bf3": "Geen overeenkomende livestreams",

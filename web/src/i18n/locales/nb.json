@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Legg til en døgnperiode eller programblokk for å forme dagen.",
   "m_03a83b35a93323": "Intro- og rulleteksttider fra IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Innstillinger for direkte-TV",
   "m_03ab9b48aadc12": "Importer kataloger…",
   "m_03abba36eab8f5": "Registrerte enheter",
   "m_03abee25fafc93": "Vis en serie i DVD-, absolutt eller historieorden. Avspilling beholder de opprinnelige episodenumrene.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Serveren avviste tokenet sitt. Rediger serveren og lim inn et nytt token.",
   "m_0b6e0cfd55b64c": "Bytt video",
   "m_0b6e7f08fa07b8": "Legg til, erstatt eller fjern headere oppå valgt identitet. Sensitive verdier krypteres i hvile og maskeres i forhåndsvisninger.",
+  "m_0b6eda483b2023": "Endringene i grensen for tilbakespoling er ikke lagret.",
   "m_0b7040c707f838": "Populære: Science fiction",
   "m_0b7138711862cd": "Gjennomsnittlig bitrate",
   "m_0b725108f96a25": "Installert",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Beholder egendefinert navn «{name}»",
   "m_128fa41a415266": "Må kobles til igjen",
   "m_129060a2bccbd9": "Ether prøver igjen av seg selv om {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} dag",
+    "other": "Catch-up: {count} dager"
+  },
   "m_129228a903b15e": "Siste gjennomgang returnerte ikke {missing} av {total} eksisterende elementer. Det kan skje med søke- eller roterende API-er, eller ved en midlertidig feil. Ether beholdt elementene dine som standard.",
   "m_1293156b01c1d8": "Alle regioner",
   "m_1293ff9d406225": "Legg til fra lenke",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "Skjult i apper",
   "m_1a398cdd93409b": "Kanalnumre",
   "m_1a3a3f14648f50": "Endepunkt-URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Spol direkte-TV tilbake opptil {count} minutt",
+    "other": "Spol direkte-TV tilbake opptil {count} minutter"
+  },
   "m_1a3c710193f62d": "{name} (kopi)",
   "m_1a3c8e2a4a33fe": "Filmer og serier utelatt",
   "m_1a3d943e9f94d1": "Tillatt",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Forkast dem",
   "m_1d218ad59632e4": "Minutter",
   "m_1d2244e7ae66fa": "Kunne ikke oppdatere kanalene",
+  "m_1d23714a591982": "Bruker omtrent 3 GB diskplass per seertime ved 6–8 Mbps. Sett til 0 for bare direkteavspilling.",
   "m_1d240c1034bd02": "Neste steg",
   "m_1d2516f81747b0": "Strømmer torrenter som Offcloud allerede har.",
   "m_1d259ef5a21bf3": "Ingen samsvarende direktestrømmer",

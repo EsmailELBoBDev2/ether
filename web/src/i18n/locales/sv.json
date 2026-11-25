@@ -1245,6 +1245,7 @@
   "m_03a78e28ac4a93": "Lägg till en dygnsperiod eller ett programblock för att forma dagen.",
   "m_03a83b35a93323": "Intro- och eftertexttider från IntroDB.",
   "m_03a8d7dc717b55": "v{version}",
+  "m_03a9d03d902695": "Inställningar för live-tv",
   "m_03ab9b48aadc12": "Importera kataloger…",
   "m_03abba36eab8f5": "Upptäckta enheter",
   "m_03abee25fafc93": "Visa en serie i dvd-, absolut eller berättelseordning. Uppspelning behåller de ursprungliga avsnittsnumren.",
@@ -3850,6 +3851,7 @@
   "m_0b6d39c093a15c": "Servern nekade sin token. Redigera servern och klistra in en ny token.",
   "m_0b6e0cfd55b64c": "Byt video",
   "m_0b6e7f08fa07b8": "Lägg till, ersätt eller ta bort headrar utöver vald identitet. Känsliga värden krypteras i vila och maskeras i förhandsvisningar.",
+  "m_0b6eda483b2023": "Dina ändringar av gränsen för tillbakaspolning har inte sparats.",
   "m_0b7040c707f838": "Populära: Science fiction",
   "m_0b7138711862cd": "Genomsnittlig bithastighet",
   "m_0b725108f96a25": "Installerad",
@@ -6297,6 +6299,10 @@
   "m_128f6f3393a985": "Behåller eget namn ”{name}”",
   "m_128fa41a415266": "Återanslutning krävs",
   "m_129060a2bccbd9": "Ether försöker igen av sig själv om {time}.",
+  "m_129192ef5ea47c": {
+    "one": "Catch-up: {count} dag",
+    "other": "Catch-up: {count} dagar"
+  },
   "m_129228a903b15e": "Den senaste genomgången returnerade inte {missing} av {total} befintliga objekt. Det händer med sök- eller roterande API:er, eller vid tillfälliga fel. Ether behöll dina objekt som standard.",
   "m_1293156b01c1d8": "Alla regioner",
   "m_1293ff9d406225": "Lägg till via länk",
@@ -8900,6 +8906,10 @@
   "m_1a38e94dd3c401": "Dolt i appar",
   "m_1a398cdd93409b": "Kanalnummer",
   "m_1a3a3f14648f50": "Slutpunkts-URL",
+  "m_1a3c3bd0b44186": {
+    "one": "Spola tillbaka live-tv upp till {count} minut",
+    "other": "Spola tillbaka live-tv upp till {count} minuter"
+  },
   "m_1a3c710193f62d": "{name} (kopia)",
   "m_1a3c8e2a4a33fe": "Utelämnade filmer och serier",
   "m_1a3d943e9f94d1": "Tillåtna",
@@ -9853,6 +9863,7 @@
   "m_1d2163f63c76f8": "Förkasta dem",
   "m_1d218ad59632e4": "Minuter",
   "m_1d2244e7ae66fa": "Kunde inte uppdatera kanalerna",
+  "m_1d23714a591982": "Använder cirka 3 GB diskutrymme per tittartimme vid 6–8 Mbit/s. Ställ in 0 för enbart liveuppspelning.",
   "m_1d240c1034bd02": "Nästa steg",
   "m_1d2516f81747b0": "Streamar torrents som Offcloud redan har.",
   "m_1d259ef5a21bf3": "Inga matchande liveströmmar",

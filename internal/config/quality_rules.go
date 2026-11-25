@@ -154,3 +154,125 @@ func slugDatabaseID(raw string) string {
 	}
 	return strings.Trim(b.String(), "-")
 }
+
+// RemoveLibraryFromRules drops libID from every rule's Libraries list, removing
+// any rule whose Libraries list becomes empty because it was only for that
+// library (§3.4 N16). Returns the IDs of removed rules and whether q changed.
+func RemoveLibraryFromRules(q *Quality, libID int64) (removed []string, changed bool) {
+	if q == nil || libID <= 0 || len(q.Rules) == 0 {
+		return nil, false
+	}
+	kept := q.Rules[:0]
+	for _, r := range q.Rules {
+		if len(r.Libraries) == 0 {
+			kept = append(kept, r)
+			continue
+		}
+		var next []int64
+		hit := false
+		for _, id := range r.Libraries {
+			if id == libID {
+				hit = true
+				continue
+			}
+			next = append(next, id)
+		}
+		if !hit {
+			kept = append(kept, r)
+			continue
+		}
+		changed = true
+		if len(next) == 0 {
+			removed = append(removed, r.ID)
+			continue
+		}
+		r.Libraries = next
+		kept = append(kept, r)
+	}
+	if changed {
+		q.Rules = append([]QualityRule{}, kept...)
+	}
+	return removed, changed
+}
+
+// RemoveViewerFromRules drops viewerID from every rule's Viewers list, removing
+// any rule whose Viewers list becomes empty because it was only for that viewer
+// (§3.4 N16). Returns the IDs of removed rules and whether q changed.
+func RemoveViewerFromRules(q *Quality, viewerID int64) (removed []string, changed bool) {
+	if q == nil || viewerID <= 0 || len(q.Rules) == 0 {
+		return nil, false
+	}
+	kept := q.Rules[:0]
+	for _, r := range q.Rules {
+		if len(r.Viewers) == 0 {
+			kept = append(kept, r)
+			continue
+		}
+		var next []int64
+		hit := false
+		for _, id := range r.Viewers {
+			if id == viewerID {
+				hit = true
+				continue
+			}
+			next = append(next, id)
+		}
+		if !hit {
+			kept = append(kept, r)
+			continue
+		}
+		changed = true
+		if len(next) == 0 {
+			removed = append(removed, r.ID)
+			continue
+		}
+		r.Viewers = next
+		kept = append(kept, r)
+	}
+	if changed {
+		q.Rules = append([]QualityRule{}, kept...)
+	}
+	return removed, changed
+}
+
+// ReplaceViewerInRules replaces fromID with toID in every rule's Viewers list
+// (deduplicating if toID is already listed), so merging viewers never leaves a
+// dangling viewer ID in quality rules.
+func ReplaceViewerInRules(q *Quality, fromID, toID int64) bool {
+	if q == nil || fromID <= 0 || toID <= 0 || fromID == toID || len(q.Rules) == 0 {
+		return false
+	}
+	changed := false
+	for i := range q.Rules {
+		vs := q.Rules[i].Viewers
+		if len(vs) == 0 {
+			continue
+		}
+		hasFrom, hasTo := false, false
+		for _, id := range vs {
+			if id == fromID {
+				hasFrom = true
+			}
+			if id == toID {
+				hasTo = true
+			}
+		}
+		if !hasFrom {
+			continue
+		}
+		changed = true
+		next := make([]int64, 0, len(vs))
+		for _, id := range vs {
+			if id == fromID {
+				if !hasTo {
+					next = append(next, toID)
+					hasTo = true
+				}
+				continue
+			}
+			next = append(next, id)
+		}
+		q.Rules[i].Viewers = next
+	}
+	return changed
+}

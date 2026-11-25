@@ -84,6 +84,7 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 	// storing the plan, so Open does not mistake an omitted limit for a
 	// policy violation. Open still rechecks for policy changes.
 	b.stampViewerTranscoding(req.Viewer, &caps)
+	caps = b.applyRuleLimits(ctx, caps, &opts, req.Viewer, nil)
 	limit := b.deps.BitrateLimit(req.Viewer)
 	if caps.Remote && b.deps.RemoteBitrateLimit != nil {
 		if remote := b.deps.RemoteBitrateLimit(); remote > 0 && (limit == 0 || remote < limit) {

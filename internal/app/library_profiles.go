@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -114,6 +115,11 @@ func (l *libraryProfiles) InLibrary(ctx context.Context, t *core.Title, id core.
 	if l == nil || l.app == nil || l.app.libraries == nil || t == nil || id <= 0 {
 		return false
 	}
+	// Plugin titles carry their owning library directly on the projection,
+	// avoiding both a libraries read and a kindCatalog.Item lookup.
+	if t.Key.IsPluginKey() && t.LibraryID > 0 {
+		return t.LibraryID == id
+	}
 	key := libraryProfileKey(t)
 	gen, catalogGen, configGen, pos, lib, haveLib, hit, member := l.lookup(key, id)
 	if hit {
@@ -126,8 +132,8 @@ func (l *libraryProfiles) InLibrary(ctx context.Context, t *core.Title, id core.
 		}
 		lib = loaded
 	}
-	in := l.checkMembership(ctx, lib, t, key)
-	if pos >= 0 {
+	in, known := l.checkMembership(ctx, lib, t, key)
+	if known && pos >= 0 {
 		l.store(gen, catalogGen, configGen, key, id, pos, lib, in)
 	}
 	return in
@@ -207,49 +213,66 @@ func (l *libraryProfiles) store(gen, catalogGen, configGen uint64, key core.Rati
 	l.cache.Add(key, bits)
 }
 
-func (l *libraryProfiles) checkMembership(ctx context.Context, lib core.Library, t *core.Title, key core.RatingKey) bool {
+// checkMembership evaluates whether t belongs to lib. The second return value
+// distinguishes a definitive answer (cacheable) from an error or cancelled
+// lookup (must not be cached so a subsequent call can retry).
+func (l *libraryProfiles) checkMembership(ctx context.Context, lib core.Library, t *core.Title, key core.RatingKey) (in, known bool) {
 	if lib.Source == core.LibraryPlugin {
 		if !t.Key.IsPluginKey() {
-			return false
+			return false, true
 		}
-		if l.app.pluginsRT != nil && l.app.pluginsRT.kindCatalog != nil {
-			if piv, err := l.app.pluginsRT.kindCatalog.Item(ctx, t.Key); err == nil {
-				return piv.Library.ID == lib.ID || (piv.Library.PluginID == lib.PluginID && piv.Library.KindKey == lib.KindKey)
+		if t.LibraryID > 0 {
+			return t.LibraryID == lib.ID, true
+		}
+		if l.app.pluginsRT == nil || l.app.pluginsRT.kindCatalog == nil {
+			return false, false
+		}
+		piv, err := l.app.pluginsRT.kindCatalog.Item(ctx, t.Key)
+		if err != nil {
+			if errors.Is(err, core.ErrNotFound) && ctx.Err() == nil {
+				return false, true
 			}
+			return false, false
 		}
-		return false
+		return piv.Library.ID == lib.ID || (piv.Library.PluginID == lib.PluginID && piv.Library.KindKey == lib.KindKey), true
 	}
 	if t.Key.IsPluginKey() {
-		return false
+		return false, true
 	}
 	media := titleMedia(t)
 	if media == core.MediaAny {
-		return false
+		return false, true
 	}
 	if lib.MediaType != "" && string(lib.MediaType) != media {
-		return false
+		return false, true
 	}
 	if core.IsBuiltinLibrary(lib.ID) {
 		if len(core.BuiltinLibraryExtraRules(lib.Rules)) == 0 && len(lib.Sources) == 0 {
-			return true
+			return true, true
 		}
 		if l.app.catalog == nil {
-			return false
+			return false, false
 		}
 		ok, err := l.app.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
-		return err == nil && ok
+		if err != nil {
+			return false, false
+		}
+		return ok, true
 	}
 	if lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
-		return false
+		return false, true
 	}
 	if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
-		return false
+		return false, true
 	}
 	if l.app.catalog == nil {
-		return false
+		return false, false
 	}
 	ok, err := l.app.catalog.TitleInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), key)
-	return err == nil && ok
+	if err != nil {
+		return false, false
+	}
+	return ok, true
 }
 
 // titleMedia classifies a title as a movie or a show for library matching.

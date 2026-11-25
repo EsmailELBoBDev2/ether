@@ -668,6 +668,7 @@ func (c *librariesConsole) handler() http.Handler {
 			libError(w, libErrStatus(err), "Could not delete the library")
 			return
 		}
+		c.app.cleanupLibraryQualityRules(lib.ID)
 		if lib.Source == core.LibraryPlugin && c.app.pluginsRT != nil && c.app.pluginsRT.pluginitems != nil {
 			c.app.pluginsRT.pluginitems.StopKindSync(lib.PluginID, lib.KindKey)
 		}

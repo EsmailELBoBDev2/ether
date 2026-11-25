@@ -632,6 +632,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 		for n, view := range vv {
 			noteBootstrapDeadline(r, view.ExpiresAt)
+			noteBootstrapRow(r, frontend.RowViewPageRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", ID: view.ID, Limit: rowItemLimit(r)})
 			i.rowMu.Lock()
 			if len(i.rowMeta) >= 2000 {
 				i.rowMeta = map[string]frontend.RowView{}

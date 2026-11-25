@@ -28,15 +28,49 @@ type bootstrapEntry struct {
 	freshness frontend.PageFreshness
 	expires   time.Time
 	payload   json.RawMessage
+	rows      []frontend.RowViewPageRequest
 }
 
 type bootstrapDeadlineKey struct{}
-type bootstrapDeadline struct{ expires time.Time }
+type bootstrapDeadline struct {
+	expires time.Time
+	rows    []frontend.RowViewPageRequest
+}
 
 func noteBootstrapDeadline(r *http.Request, expiry time.Time) {
 	if lease, ok := r.Context().Value(bootstrapDeadlineKey{}).(*bootstrapDeadline); ok && !expiry.IsZero() && expiry.Before(lease.expires) {
 		lease.expires = expiry
 	}
+}
+
+func noteBootstrapRow(r *http.Request, req frontend.RowViewPageRequest) {
+	if lease, ok := r.Context().Value(bootstrapDeadlineKey{}).(*bootstrapDeadline); ok {
+		lease.rows = append(lease.rows, req)
+	}
+}
+
+func (i *instance) validateBootstrapRows(ctx context.Context, rows []frontend.RowViewPageRequest, expires time.Time) error {
+	if len(rows) > 0 {
+		if source, ok := i.host.Experience.(frontend.RowViewValidator); ok {
+			if err := source.ValidateRowViews(ctx, rows); err != nil {
+				if errors.Is(err, frontend.ErrNotFound) {
+					return frontend.ErrRowViewStale
+				}
+				return err
+			}
+		}
+		i.rowMu.Lock()
+		defer i.rowMu.Unlock()
+		for _, row := range rows {
+			if _, ok := i.rowMeta[row.ID]; !ok {
+				return frontend.ErrRowViewStale
+			}
+		}
+	}
+	if !time.Now().Before(expires) {
+		return frontend.ErrRowViewStale
+	}
+	return nil
 }
 
 type homeRevisionSource interface {
@@ -68,6 +102,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(local.NoProviderWait(r.Context()))
 	}
 	source, hasRevision := i.host.Experience.(homeRevisionSource)
+	refresh := false
 	for attempt := 0; attempt < bootstrapAttempts; attempt++ {
 		spoilerFree, err := i.viewerSpoilerFree(r.Context(), v)
 		if err != nil {
@@ -103,11 +138,25 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if entry != nil && time.Now().Before(entry.expires) && entry.revision == before && entry.freshness == freshness {
-				payload := entry.payload
 				i.bootstrapMu.Unlock()
-				varyLanguage(w)
-				cache(w, r, payload)
-				return
+				// The wire cache can outlive a replaced snapshot even when the
+				// viewer revision and grant deadlines still match.
+				err := i.validateBootstrapRows(r.Context(), entry.rows, entry.expires)
+				if err == nil {
+					varyLanguage(w)
+					cache(w, r, entry.payload)
+					return
+				}
+				if !errors.Is(err, frontend.ErrRowViewStale) {
+					fail(w, bootstrapTransientError(err), r)
+					return
+				}
+				i.bootstrapMu.Lock()
+				if i.bootstraps[scope] != entry {
+					i.bootstrapMu.Unlock()
+					continue
+				}
+				delete(i.bootstraps, scope)
 			}
 			if i.bootstraps == nil {
 				i.bootstraps = make(map[string]*bootstrapEntry)
@@ -139,7 +188,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				buildRequest = buildRequest.WithContext(source.BeginBootstrapRead(buildRequest.Context(), v, before))
 			}
 		}
-		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, spoilerFree, attempt > 0)
+		out, buildErr := i.buildBootstrap(buildRequest, v, token, avatar, spoilerFree, refresh)
 		var payload json.RawMessage
 		if buildErr == nil {
 			payload, buildErr = json.Marshal(out)
@@ -155,6 +204,11 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 				buildErr = frontend.ErrRowViewStale
 			}
 		}
+		if buildErr == nil {
+			// Use the original context so the final check reads current
+			// policy rather than the proof memoized during assembly.
+			buildErr = i.validateBootstrapRows(r.Context(), lease.rows, lease.expires)
+		}
 		if pending != nil {
 			i.bootstrapMu.Lock()
 			total := len(payload)
@@ -166,6 +220,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 			if buildErr == nil && total <= bootstrapBytes {
 				pending.payload = payload
 				pending.expires = lease.expires
+				pending.rows = lease.rows
 			} else {
 				delete(i.bootstraps, scope)
 			}
@@ -175,6 +230,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		if buildErr != nil {
 			if errors.Is(buildErr, frontend.ErrRowViewStale) || errors.Is(buildErr, frontend.ErrLiveGuideStale) {
 				if attempt+1 < bootstrapAttempts {
+					refresh = true
 					continue
 				}
 				buildErr = &bootstrapChangedError{}

@@ -13,7 +13,14 @@ import { normalizeRules, StreamRulesFields, type StreamRules } from "../viewers/
  * audio rows and the subtitle rows on their own tabs; the draft is one, so
  * edits on both save together.
  */
-export function HouseholdAudio({ part }: { part: "audio" | "subtitles" }) {
+export function HouseholdAudio({
+  part,
+  hidden = false,
+}: {
+  part: "audio" | "subtitles";
+  /** Keeps the draft and its save bar while another sub-tab is showing. */
+  hidden?: boolean;
+}) {
   const rules = useAsync(
     async (signal) =>
       normalizeRules(await apiFetch<StreamRules>("/stream-preferences/0", { signal })),
@@ -42,7 +49,7 @@ export function HouseholdAudio({ part }: { part: "audio" | "subtitles" }) {
 
   return (
     <>
-      {rules.error ? (
+      {hidden ? null : rules.error ? (
         <ErrorPanel error={rules.error} onRetry={() => void rules.reload()} />
       ) : !draft ? (
         <LoadingRows rows={4} />

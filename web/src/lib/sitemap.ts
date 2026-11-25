@@ -5,6 +5,7 @@
  */
 
 import { localized, msg, searchTerms, t } from "../i18n";
+import { settingHref } from "../components/SettingFocus";
 import { textOf, type Descriptor } from "./extend";
 import { pageRoute, searchTextOf, type PageMeta } from "./console-descriptors";
 
@@ -278,7 +279,7 @@ const PAGES = localized<PageDef[]>(() => [
         key: "subtitles",
         title: t("Subtitles"),
         keywords: searchTerms(
-          msg("subtitles languages appearance timing sync providers opensubtitles subdl subsource"),
+          msg("subtitles languages appearance style timing sync drift fix corrected copy"),
         ),
       },
       {
@@ -399,6 +400,14 @@ const PAGES = localized<PageDef[]>(() => [
         keywords: searchTerms(msg("llm ollama openai recaps search")),
       },
       {
+        key: "subtitle-providers",
+        href: settingHref("/services/overview", "subtitle-providers"),
+        title: t("Subtitle providers"),
+        keywords: searchTerms(
+          msg("subtitles providers opensubtitles subdl subsource stremio add-on plugin"),
+        ),
+      },
+      {
         key: "opensubtitles",
         href: "/services/overview#opensubtitles",
         title: "OpenSubtitles",
@@ -487,6 +496,7 @@ export function pagesFrom(pages: Descriptor<PageMeta>[]): PageDef[] {
       key: s.key,
       title: textOf(s.label),
       keywords: searchTextOf(s.keywords),
+      href: s.href,
     })),
     keywords: searchTextOf(p.meta?.keywords),
   }));

@@ -10,6 +10,8 @@ export interface PageSectionMeta {
   key: string;
   label: ExtendText;
   keywords?: ExtendText;
+  /** Where ⌘K lands when the section is not a tab of its own. */
+  href?: string;
 }
 
 export interface PageMeta {

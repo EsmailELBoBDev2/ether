@@ -1,5 +1,6 @@
 import { Bell, Blocks, FolderOpen, Globe, Library, Network, Plug, Puzzle, Tv } from "lucide-react";
 import { createElement, type ReactNode } from "react";
+import { settingHref } from "../../components/SettingFocus";
 import { getLocale, t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
 import { textOf, type Descriptor } from "../../lib/extend";
@@ -723,6 +724,9 @@ export function buildPlacements(
         href = "/notifications";
         break;
       case "subtitleProvider":
+        area = t("Integrations");
+        href = settingHref("/services/overview", "subtitle-providers");
+        break;
       case "markerSource":
         area = t("Playback");
         href = "/playback";

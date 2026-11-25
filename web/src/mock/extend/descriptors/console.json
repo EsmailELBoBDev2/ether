@@ -1193,6 +1193,16 @@
           }
         },
         {
+          "key": "subtitle-providers",
+          "label": {
+            "source": "Subtitle providers"
+          },
+          "keywords": {
+            "source": "subtitles providers opensubtitles subdl subsource stremio add-on plugin"
+          },
+          "href": "/services/overview#setting=s=subtitle-providers"
+        },
+        {
           "key": "opensubtitles",
           "label": {
             "source": "OpenSubtitles"
@@ -1579,7 +1589,7 @@
             "source": "Subtitles"
           },
           "keywords": {
-            "source": "subtitles languages appearance timing sync providers opensubtitles subdl subsource"
+            "source": "subtitles languages appearance style timing sync drift fix corrected copy"
           }
         },
         {

@@ -26,7 +26,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	if !in.Title.Released.IsZero() && in.Title.Released.After(b.deps.Now()) {
 		return frontend.PlayPlan{}, core.ErrUnreleased
 	}
-	req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, v, in.Title)
+	b.applyTitleRuleLimits(ctx, &req, &clientCap, v, in.Title)
 	if req.Intent.Estimate && (req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil) {
 		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
 	}

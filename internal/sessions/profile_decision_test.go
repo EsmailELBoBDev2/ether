@@ -318,10 +318,9 @@ func TestInfuseConvertSurroundAudioRuleCopiesVideoAndTranscodesAudioToAAC(t *tes
 		Default:  "4K",
 		Profiles: []core.QualityProfile{{Name: "4K", MaxHeight: 2160}},
 		Rules: []config.QualityRule{{
-			Protocol:             "jellyfin",
-			Product:              "Infuse",
-			Profile:              "4K",
-			ConvertSurroundAudio: true,
+			Devices:     []config.DeviceMatch{{Contains: "Infuse"}},
+			Profile:     "4K",
+			StereoAudio: true,
 		}},
 	}
 	capsOn := resolver.ApplyClientRules(qOn, infuseCaps(), nil)

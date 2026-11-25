@@ -583,10 +583,10 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		if limit > 0 && (req.Intent.Options.MaxBitrateKbps == 0 || limit < req.Intent.Options.MaxBitrateKbps) {
 			req.Intent.Options.MaxBitrateKbps = limit
 		}
-		clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, limit)
+		clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, limit)
 	}
 	if req.Caps.Remote && b.deps.RemoteBitrateLimit != nil {
-		clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, b.deps.RemoteBitrateLimit())
+		clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, b.deps.RemoteBitrateLimit())
 	}
 	budgetCapKbps := 0
 	if req.Caps.Remote && !req.Intent.Estimate && b.deps.RemoteUploadCap != nil {
@@ -598,7 +598,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		if capKbps, fromBudget := b.deps.RemoteUploadCap(ctx, req.Intent.ClientSessionID, req.Caps.Remote, allowTC, existing, 0); fromBudget && capKbps > 0 {
 			budgetCapKbps = capKbps
-			clientCap.ownerKbps = minPositiveKbps(clientCap.ownerKbps, capKbps)
+			clientCap.ownerKbps = stricterLimit(clientCap.ownerKbps, capKbps)
 			if req.Caps.MaxBitrateKbps == 0 || capKbps < req.Caps.MaxBitrateKbps {
 				req.Caps.MaxBitrateKbps = capKbps
 			}
@@ -639,7 +639,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		b.emitAdmissionDenied(v, req.Item, title.Title, req.Caps, req.Device, string(req.Protocol), false, core.ErrUnreleased)
 		return frontend.PlayPlan{}, core.ErrUnreleased
 	}
-	req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, v, title)
+	b.applyTitleRuleLimits(ctx, &req, &clientCap, v, title)
 	var detail *detailSourceRecord
 	if req.DetailSource != "" {
 		if req.Version != "" || req.Intent.ExactVersion {
@@ -2179,11 +2179,28 @@ func clientCapLifted(req frontend.PlanRequest, ownerKbps, ownerHeight int) front
 	return req
 }
 
-func minPositiveKbps(a, b int) int {
+func stricterLimit(a, b int) int {
 	if a <= 0 || (b > 0 && b < a) {
 		return b
 	}
 	return a
+}
+
+// Keep the household limits even when the viewer explicitly chooses Original.
+// Evaluate the title rules before intersecting them with the Vela preset, so
+// a stricter client preset cannot hide a household limit on the same axis.
+func (b *Broker) applyTitleRuleLimits(ctx context.Context, req *frontend.PlanRequest, policy *clientCapPolicy, viewer *core.Viewer, title *core.Title) {
+	if policy.clientKbps == 0 || b.deps.ApplyRuleLimits == nil {
+		req.Caps = b.applyRuleLimits(ctx, req.Caps, &req.Intent.Options, viewer, title)
+		return
+	}
+	owner := clientCapLifted(*req, policy.ownerKbps, policy.ownerHeight)
+	caps := b.applyRuleLimits(ctx, owner.Caps, nil, viewer, title)
+	policy.ownerKbps, policy.ownerHeight = caps.MaxBitrateKbps, caps.MaxHeight
+	caps.MaxBitrateKbps = stricterLimit(req.Caps.MaxBitrateKbps, caps.MaxBitrateKbps)
+	caps.MaxHeight = stricterLimit(req.Caps.MaxHeight, caps.MaxHeight)
+	req.Caps = caps
+	req.Intent.Options.MaxBitrateKbps = stricterLimit(req.Intent.Options.MaxBitrateKbps, caps.MaxBitrateKbps)
 }
 
 func (b *Broker) applyRuleLimits(ctx context.Context, caps core.ClientCaps, opts *core.DecideOptions, v *core.Viewer, title *core.Title) core.ClientCaps {

@@ -450,7 +450,7 @@ func (s *Service) serveCatchUp(w http.ResponseWriter, r *http.Request, ss *sessi
 			return
 		}
 		if archive.info.StartOver {
-			archive = s.extendStartOver(r.Context(), ss, archive)
+			s.extendStartOver(ss, archive)
 			s.serveStartOverPlaylist(w, r, archive)
 			return
 		}
@@ -471,17 +471,17 @@ func (s *Service) serveCatchUp(w http.ResponseWriter, r *http.Request, ss *sessi
 
 // Extend only as the player reloads its playlist and the current range has
 // finished producing. A single provider connection works even at boundaries.
-func (s *Service) extendStartOver(ctx context.Context, ss *session, archive *catchUpSession) *catchUpSession {
+func (s *Service) extendStartOver(ss *session, archive *catchUpSession) {
 	if !ss.prepareMu.TryLock() {
-		return archive
+		return
 	}
-	defer ss.prepareMu.Unlock()
 	ss.mu.Lock()
 	current := ss.catchUp
 	closed := ss.closed
 	ss.mu.Unlock()
 	if closed || current != archive {
-		return archive
+		ss.prepareMu.Unlock()
+		return
 	}
 	now := s.clockNow()
 	end := minTime(now.Truncate(10*time.Second), archive.info.ProgrammeEnd)
@@ -490,27 +490,30 @@ func (s *Service) extendStartOver(ctx context.Context, ss *session, archive *cat
 	}
 	complete, ok := archive.hls.(interface{ ArchiveRangeComplete() bool })
 	if !end.After(archive.info.End) || now.Before(archive.retryAt) || !ok || !complete.ArchiveRangeComplete() {
-		return archive
+		ss.prepareMu.Unlock()
+		return
 	}
-	archive.releaseInput(s)
-	info := archive.info
-	info.Origin = info.End.Sub(info.Start)
-	info.End = end
-	next, err := s.openCatchUp(ctx, ss, info)
-	if err != nil {
-		archive.retryAt = now.Add(30 * time.Second)
-		return archive
-	}
-	next.previous = append(append([]*catchUpSession(nil), archive.previous...), archive)
-	ss.mu.Lock()
-	if ss.closed {
+	go func() {
+		defer ss.prepareMu.Unlock()
+		archive.releaseInput(s)
+		info := archive.info
+		info.Origin = info.End.Sub(info.Start)
+		info.End = end
+		next, err := s.openCatchUp(ss.ctx, ss, info)
+		if err != nil {
+			archive.retryAt = now.Add(30 * time.Second)
+			return
+		}
+		next.previous = append(append([]*catchUpSession(nil), archive.previous...), archive)
+		ss.mu.Lock()
+		if ss.closed {
+			ss.mu.Unlock()
+			next.closeRange(s)
+			return
+		}
+		ss.catchUp = next
 		ss.mu.Unlock()
-		next.closeRange(s)
-		return archive
-	}
-	ss.catchUp = next
-	ss.mu.Unlock()
-	return next
+	}()
 }
 
 func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request, archive *catchUpSession) {
@@ -523,9 +526,7 @@ func (s *Service) serveStartOverPlaylist(w http.ResponseWriter, r *http.Request,
 	target := 1
 	chunks := append(append([]*catchUpSession(nil), archive.previous...), archive)
 	for n, chunk := range chunks {
-		if keep, ok := chunk.hls.(interface{ Touch() }); ok {
-			keep.Touch()
-		}
+		chunk.touchOutput()
 		playlist := httptest.NewRecorder()
 		chunk.hls.ServePlaylist(playlist, r)
 		if playlist.Code != http.StatusOK {
@@ -567,11 +568,24 @@ func (s *Service) TouchLiveSession(ctx context.Context, u *core.User, id string)
 		return err
 	}
 	ss.mu.Lock()
+	archive := ss.catchUp
 	if !ss.closed {
 		ss.last = s.clockNow()
 	}
 	ss.mu.Unlock()
+	if archive != nil {
+		archive.touchOutput()
+		for _, prior := range archive.previous {
+			prior.touchOutput()
+		}
+	}
 	return nil
+}
+
+func (c *catchUpSession) touchOutput() {
+	if keep, ok := c.hls.(interface{ Touch() }); ok {
+		keep.Touch()
+	}
 }
 
 // ServeCatchUpTS streams the finite MPEG-TS rendition to Xtream clients.

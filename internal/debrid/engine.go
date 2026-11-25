@@ -1818,7 +1818,7 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 			f.e.svc.analysisTotals.requests.Add(1)
 		}
 		wireStart, wireEnd, wireSize := payload.wireRange(start, end)
-		resp, tm, err := f.e.get(rctx, u, wireStart, wireEnd, urgent, f.conns)
+		resp, tm, err := f.e.get(rctx, u, wireStart, wireEnd, wireSize, urgent, f.conns)
 		if err != nil && isAnalysisRead(ctx) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 			f.analysis.errors.Add(1)
 			if f.e.svc != nil {
@@ -1918,8 +1918,6 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 							f.e.svc.analysisTotals.errors.Add(1)
 						}
 					}
-					// The host counts our connections: open fewer for a while.
-					f.e.reduceHostCap(resp.Request.URL.String())
 					if attempt == 0 && urgent && ra > 0 && ra <= 3*time.Second {
 						jitter := time.Duration(uint64(start)%250) * time.Millisecond
 						if err := sleep(ctx, ra+jitter); err != nil {
@@ -2011,8 +2009,9 @@ func checkContentRange(v string, start, size int64) error {
 
 // get issues one range request. Urgent requests are hedged: when the first
 // byte has not arrived within the hedge delay, a duplicate request goes out
-// on a separate connection pool and the first to deliver a byte wins.
-func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent bool, slots chan struct{}) (*http.Response, timing, error) {
+// on a separate connection pool and the first usable answer wins: a 206 of
+// this range or a 200 of exactly this file (size bytes), with a first byte.
+func (e *Engine) get(ctx context.Context, u string, start, end, size int64, urgent bool, slots chan struct{}) (*http.Response, timing, error) {
 	// Preempt drains before waiting on either per-file or host admission.
 	// Holding this registration through header/first-byte acquisition also
 	// prevents a newly abandoned background range from starting a drain.
@@ -2055,6 +2054,11 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 			stop()
 			release()
 		} else {
+			if resp.StatusCode == http.StatusTooManyRequests {
+				// The host counts our connections: open fewer for a while,
+				// also when this answer loses a hedge race.
+				e.reduceHostCap(resp.Request.URL.String())
+			}
 			resp.Body = newStallBody(resp.Body, e.stall, stop, release)
 		}
 		return resp, tm, err
@@ -2077,6 +2081,7 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		err    error
 		cancel context.CancelFunc
 		hedge  bool
+		usable bool
 	}
 	results := make(chan result, 2)
 	var cancels []context.CancelFunc
@@ -2088,16 +2093,29 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		cancels = append(cancels, cancel)
 		go func() {
 			resp, tm, err := send(rctx, hc, w, host)
-			if err == nil && resp.StatusCode/100 == 2 {
+			usable := false
+			if err == nil {
+				switch resp.StatusCode {
+				case http.StatusPartialContent:
+					usable = checkContentRange(resp.Header.Get("Content-Range"), start, size) == nil
+				case http.StatusOK:
+					usable = start == 0 && resp.ContentLength == size
+				}
+			}
+			if usable {
 				br := newPeekBody(resp.Body)
-				if _, perr := br.peek(); perr != nil && perr != io.EOF {
+				if head, perr := br.peek(); perr != nil && perr != io.EOF {
 					resp.Body.Close()
-					err = perr
+					err, usable = perr, false
+				} else if len(head) == 0 {
+					// An empty answer is a cut connection, not this range.
+					resp.Body.Close()
+					err, usable = io.ErrUnexpectedEOF, false
 				} else {
 					resp.Body = br
 				}
 			}
-			results <- result{resp: resp, tm: tm, err: err, cancel: cancel, hedge: hedge}
+			results <- result{resp: resp, tm: tm, err: err, cancel: cancel, hedge: hedge, usable: usable}
 		}()
 	}
 	// The hedge covers a slow first byte on a live connection. While the
@@ -2111,6 +2129,35 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 	pending, hedged := 1, false
 	var connected <-chan struct{} // set while a hedge waits on the primary's connection
 	var firstErr *result
+	// An HTTP error that lost the race keeps only its headers, so the caller
+	// still sees its status and Retry-After when no leg delivers.
+	var held *result
+	hold := func(r result) {
+		r.resp.Body.Close()
+		r.cancel()
+		r.resp.Body = http.NoBody
+		held = &r
+	}
+	// A cancelled read returns the cancellation, not the kept answer.
+	giveHeld := func() (*http.Response, timing, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, timing{}, err
+		}
+		return held.resp, held.tm, nil
+	}
+	// rank orders HTTP errors for the caller: a throttle answer first, then
+	// the dead-link answers that drive a link refresh (a replayed edge's
+	// redirect among them).
+	rank := func(resp *http.Response) int {
+		switch s := resp.StatusCode; {
+		case s == http.StatusTooManyRequests || s >= 500 && retryAfter(resp.Header.Get("Retry-After")) > 0:
+			return 2
+		case s == http.StatusUnauthorized || s == http.StatusForbidden || s == http.StatusNotFound || s == http.StatusGone || s == http.StatusOK,
+			s/100 == 3 && onReplayEdge(ctx):
+			return 1
+		}
+		return 0
+	}
 	tryHedge := func() {
 		hedged = true
 		if ctx.Err() == nil && e.limit.hedgeAllowed(dialAddr(u)) && acquire(false) {
@@ -2139,6 +2186,18 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		select {
 		case r := <-results:
 			pending--
+			if r.err == nil && !r.usable && hedged {
+				if pending > 0 {
+					// The other leg may still deliver: wait for it.
+					hold(r)
+					continue
+				}
+				if held != nil && (rank(held.resp) > rank(r.resp) || ctx.Err() != nil) {
+					r.resp.Body.Close()
+					r.cancel()
+					return giveHeld()
+				}
+			}
 			if r.err == nil {
 				// Cancel the loser now, not after its stalled body returns.
 				for i, cancel := range cancels {
@@ -2149,7 +2208,7 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 				if pending > 0 {
 					cleanup(pending)
 				}
-				if r.hedge {
+				if r.hedge && r.usable {
 					e.stats.hedgeWins.Add(1)
 				}
 				r.resp.Body = cancelOnClose{ReadCloser: r.resp.Body, cancel: r.cancel}
@@ -2183,6 +2242,9 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 			cleanup(pending)
 			return nil, timing{}, ctx.Err()
 		}
+	}
+	if held != nil {
+		return giveHeld()
 	}
 	return nil, firstErr.tm, firstErr.err
 }

@@ -36,6 +36,8 @@ type hubCtx struct {
 	// renderSec stamps librarySection* for a scoped hub even when section == 0
 	// (e.g. Home per-directory rows that skip SQL shelfSnapshot pinning).
 	renderSec *Section
+	// Search hubs are rendered on demand, with a short GUID verification budget.
+	searchIdentity bool
 }
 
 // hubSpec is a hub plus the PMS presentation details Ether generates for
@@ -186,7 +188,7 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 			sourceItems = sourceItems[:hc.visible]
 			h.More = true
 		}
-		md := s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
+		md := s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec, searchIdentity: hc.searchIdentity})
 		if kindSec && len(md) > 0 {
 			byKey := make(map[string]*frontend.Title, len(sourceItems))
 			for i := range sourceItems {
@@ -2329,7 +2331,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 					relevant[items[i].Key.String()] = items[i].SearchScore > 0
 				}
 			}
-			mh := s.renderHub(ctx, pr, hubSpec{Hub: h, noPromoted: true}, hubCtx{})
+			mh := s.renderHub(ctx, pr, hubSpec{Hub: h, noPromoted: true}, hubCtx{searchIdentity: true})
 			mh.Context, mh.Key, mh.HubKey = "", "", ""
 			for i := range mh.Metadata {
 				score, ok := scores[mh.Metadata[i].RatingKey]
@@ -2474,7 +2476,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mc := libraryContainer()
-	mc.Metadata = s.renderTitles(ctx, pr, res, renderOpts{media: true})
+	mc.Metadata = s.renderTitles(ctx, pr, res, renderOpts{media: true, searchIdentity: true})
 	mc.Size = len(mc.Metadata)
 	s.write(w, r, mc)
 }
@@ -2858,7 +2860,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		rendered := s.renderTitles(ctx, pr, surviving, renderOpts{media: true})
+		rendered := s.renderTitles(ctx, pr, surviving, renderOpts{media: true, searchIdentity: true})
 		for i := range rendered {
 			// PMS names the section here but sends no section id or key.
 			rendered[i].LibrarySectionID, rendered[i].LibrarySectionKey = 0, ""

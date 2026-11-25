@@ -50,7 +50,10 @@ func (s *Server) libraryByGUID(w http.ResponseWriter, r *http.Request, sec *Sect
 	seen := map[frontend.RatingKey]bool{}
 	for _, guid := range guids {
 		keys, err := s.guidKeys(ctx, guid, typ)
-		if err != nil && !errors.Is(err, frontend.ErrNotFound) {
+		if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrAmbiguousLibraryGUID) {
+			continue
+		}
+		if err != nil {
 			s.writeErr(w, r, err)
 			return
 		}
@@ -112,17 +115,11 @@ func (s *Server) guidKeys(ctx context.Context, guid string, typ frontend.MediaTy
 		if guidSrc == nil {
 			return nil, frontend.ErrNotFound
 		}
+		resolve := guidSrc.Lookup
 		if strings.HasPrefix(cleanGUID, "plex://season/") || strings.HasPrefix(cleanGUID, "plex://episode/") {
-			k, err := guidSrc.ExactKey(ctx, cleanGUID)
-			if err != nil {
-				if errors.Is(err, frontend.ErrAmbiguousLibraryGUID) {
-					return nil, frontend.ErrNotFound
-				}
-				return nil, err
-			}
-			return []frontend.RatingKey{k}, nil
+			resolve = guidSrc.ExactKey
 		}
-		k, err := guidSrc.Lookup(ctx, cleanGUID)
+		k, err := resolve(ctx, cleanGUID)
 		if err != nil {
 			return nil, err
 		}

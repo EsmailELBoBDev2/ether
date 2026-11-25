@@ -1,6 +1,6 @@
 import { systemMessageKey, type MessageCatalog } from "@braedonsaunders/appkit-i18n";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { loadLocale } from "../i18n";
 import de from "../i18n/locales/de.json";
 import { calls, renderApp } from "./harness";
@@ -11,6 +11,11 @@ const german = (source: string) => {
   if (typeof entry !== "string") throw new Error(`no German copy for ${source}`);
   return entry;
 };
+
+// Load the lazy route before DOM assertions start their timeout.
+beforeAll(async () => {
+  await import("../pages/settings/pages");
+});
 
 const WAIT = { timeout: 4000 };
 

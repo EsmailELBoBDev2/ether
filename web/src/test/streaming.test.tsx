@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { decisionErrorSummary } from "../lib/quality-fallback";
 import type { EtherConfig, UsenetProvider } from "../lib/types";
 import {
@@ -10,6 +10,12 @@ import {
   TraceDetail,
 } from "../pages/releases/History";
 import { calls, renderApp } from "./harness";
+
+// Load the lazy route before DOM assertions start their timeout.
+beforeAll(async () => {
+  await import("../pages/playback/Playback");
+  await import("../pages/releases/Releases");
+});
 
 const WAIT = { timeout: 4000 };
 async function choose(label: string, option: string) {

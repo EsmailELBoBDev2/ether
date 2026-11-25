@@ -76,10 +76,7 @@ func (r *KindResolver) PeekUsenetCheck(q core.SourceQuery) (core.SourceCandidate
 		return core.SourceCandidate{}, false
 	}
 	cand.UsenetCheck = &verdict
-	if r.pluginNZBs != nil {
-		cand.NZBURL = ""
-	}
-	return cand, true
+	return r.publicReleaseLinks(cand), true
 }
 
 func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.SourceCandidate) (core.UsenetCheckResult, error) {

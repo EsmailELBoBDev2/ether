@@ -1161,9 +1161,9 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  /** @deprecated Use torrentRef for an Ether torrent descriptor reference. */
   torrentUrl?: string;
-  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  /** @deprecated Use nzbRef. Accepts an ether-nzb: reference or legacy download link. */
   nzbUrl?: string;
   nzbRef?: string;
   torrentRef?: string;
@@ -1271,9 +1271,9 @@ export interface DebridServiceRef {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
+  /** @deprecated Opaque ether-torrent: reference. Use torrentRef. */
   torrentUrl?: string;
-  /** @deprecated Indexer search leaves this field empty. Use nzbRef. */
+  /** @deprecated Opaque ether-nzb: reference. Use nzbRef. */
   nzbUrl?: string;
   nzbRef?: string;
   torrentRef?: string;

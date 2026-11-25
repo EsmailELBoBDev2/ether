@@ -2173,9 +2173,17 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			Magnet:     strings.TrimSpace(q.Magnet),
 			TorrentURL: strings.TrimSpace(q.TorrentURL),
 			TorrentRef: strings.TrimSpace(q.TorrentRef),
+			NZBURL:     strings.TrimSpace(q.NZBURL),
+			NZBRef:     strings.TrimSpace(q.NZBRef),
 		}
 		if q.Candidate != nil {
 			cand = *q.Candidate
+			if q.NZBURL != "" {
+				cand.NZBURL = strings.TrimSpace(q.NZBURL)
+			}
+			if q.NZBRef != "" {
+				cand.NZBRef = strings.TrimSpace(q.NZBRef)
+			}
 			cand.InfoHash = strings.ToLower(strings.TrimSpace(cand.InfoHash))
 			cand.Magnet = strings.TrimSpace(cand.Magnet)
 			cand.TorrentURL = strings.TrimSpace(cand.TorrentURL)
@@ -2211,17 +2219,14 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 		}
 		if rel.Protocol == core.ProtocolUsenet {
 			if r.indexer == nil {
-				return []core.SourceCandidate{cand}, nil
+				return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
 			}
 			releaseKey := candidateNZBKey(cand)
 			workKey := "release_files:" + releaseKey
 			if files, ok := r.lookupUsenetReleaseFiles(releaseKey); ok {
 				noteResolveSourceWork(ctx, workKey, true)
 				cand.Files = files
-				if r.pluginNZBs != nil {
-					cand.NZBURL = ""
-				}
-				return []core.SourceCandidate{cand}, nil
+				return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
 			}
 			endWork := beginResolveSourceWork(ctx, workKey)
 			defer endWork()
@@ -2262,13 +2267,10 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			}
 			files, _ := raw.([]core.ReleaseFile)
 			cand.Files = cloneReleaseFiles(files)
-			if r.pluginNZBs != nil {
-				cand.NZBURL = ""
-			}
-			return []core.SourceCandidate{cand}, nil
+			return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
 		}
 		if rel.Protocol != core.ProtocolTorrent {
-			return []core.SourceCandidate{cand}, nil
+			return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
 		}
 		workKey := "release_files:torrent:" + rel.ID
 		if handed, ok := r.takeSourceHandoff(workKey); ok {
@@ -2302,7 +2304,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 					}
 					outCand.Files = files
 					outCand.FileCount = len(files)
-					return []core.SourceCandidate{outCand}, nil
+					return []core.SourceCandidate{r.publicReleaseLinks(outCand)}, nil
 				}
 				if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, debrid.ErrNoProvider) {
 					return nil, err
@@ -2314,7 +2316,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 				outCand.Files = slices.Clone(outRel.TorrentFiles)
 				outCand.FileCount = len(outCand.Files)
 			}
-			return []core.SourceCandidate{outCand}, nil
+			return []core.SourceCandidate{r.publicReleaseLinks(outCand)}, nil
 		}, func(res any) {
 			if cands, ok := res.([]core.SourceCandidate); ok {
 				r.storeSourceHandoff(workKey, cands)
@@ -2347,10 +2349,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 			return nil, err
 		}
 		cand.UsenetCheck = &res
-		if r.pluginNZBs != nil {
-			cand.NZBURL = ""
-		}
-		return []core.SourceCandidate{cand}, nil
+		return []core.SourceCandidate{r.publicReleaseLinks(cand)}, nil
 
 	case "debrid_acquire":
 		if r.debrid == nil {
@@ -2417,14 +2416,14 @@ func (r *KindResolver) ResolveSources(ctx context.Context, pluginID string, q co
 					cachedBy = []core.DebridServiceRef{{ID: p.Provider, Name: p.Provider}}
 				}
 			}
-			return []core.SourceCandidate{{
+			return []core.SourceCandidate{r.publicReleaseLinks(core.SourceCandidate{
 				InfoHash:   outRel.InfoHash,
 				Magnet:     outRel.MagnetURL,
 				TorrentURL: cand.TorrentURL,
 				TorrentRef: cand.TorrentRef,
 				Cached:     true,
 				CachedBy:   cachedBy,
-			}}, nil
+			})}, nil
 		}, func(res any) {
 			if cands, ok := res.([]core.SourceCandidate); ok {
 				r.storeSourceHandoff(workKey, cands)

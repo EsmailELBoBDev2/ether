@@ -834,6 +834,12 @@ type SourceCandidate struct {
 	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
 }
 
+// Deprecated link fields use these non-HTTP schemes for Ether references.
+const (
+	PluginNZBRefPrefix     = "ether-nzb:"
+	PluginTorrentRefPrefix = "ether-torrent:"
+)
+
 // NZBIdentity identifies a native indexer release when no search reference is available.
 type NZBIdentity struct {
 	IndexerID string `json:"indexerId"`

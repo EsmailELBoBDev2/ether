@@ -359,12 +359,11 @@ func (r *KindResolver) scoreIndexerReleases(ctx context.Context, query, profile 
 	for i := range scored {
 		scored[i] = r.stripCandidateAuth(scored[i])
 		if r.pluginNZBs != nil {
-			scored[i].NZBRef = r.pluginNZBs.PluginNZBReference(rels[i])
-			scored[i].NZBURL = ""
+			scored[i].NZBRef = r.pluginNZBs.PluginNZBReference(ctx, rels[i])
 			if scored[i].TorrentURL != "" {
-				scored[i].TorrentRef = r.pluginNZBs.PluginTorrentReference(rels[i])
-				scored[i].TorrentURL = ""
+				scored[i].TorrentRef = r.pluginNZBs.PluginTorrentReference(ctx, rels[i])
 			}
+			scored[i] = r.publicReleaseLinks(scored[i])
 		}
 		if plugin, kind, ref, ok := directStream(rels[i].GUID); ok && kind == "lazy" {
 			// A plugin source's category answer: no link of its own, the

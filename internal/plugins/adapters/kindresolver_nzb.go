@@ -10,9 +10,9 @@ import (
 
 // PluginNZBStore is Ether's shared indexer and vault path.
 type PluginNZBStore interface {
-	PluginNZBReference(core.Release) string
+	PluginNZBReference(context.Context, core.Release) string
 	RequestPluginNZB(context.Context, string, core.Release) ([]byte, string, error)
-	PluginTorrentReference(core.Release) string
+	PluginTorrentReference(context.Context, core.Release) string
 	ResolvePluginTorrent(context.Context, core.Release) (core.Release, error)
 }
 
@@ -24,9 +24,41 @@ func (r *KindResolver) fetchPluginNZB(ctx context.Context, rel core.Release) ([]
 	return data, err
 }
 
-func candidateNZBKey(c core.SourceCandidate) string {
+// publicReleaseLinks mirrors opaque references into the deprecated link fields.
+func (r *KindResolver) publicReleaseLinks(c core.SourceCandidate) core.SourceCandidate {
+	if r.pluginNZBs == nil {
+		return c
+	}
+	c.NZBRef = candidateNZBRef(c)
+	if c.TorrentRef == "" {
+		if ref, ok := strings.CutPrefix(c.TorrentURL, core.PluginTorrentRefPrefix); ok {
+			c.TorrentRef = ref
+		}
+	}
+	c.NZBURL, c.TorrentURL = "", ""
 	if c.NZBRef != "" {
-		return "ref:" + hashNZBBytes([]byte(c.NZBRef))
+		c.NZBURL = core.PluginNZBRefPrefix + c.NZBRef
+	}
+	if c.TorrentRef != "" {
+		c.TorrentURL = core.PluginTorrentRefPrefix + c.TorrentRef
+	}
+	return c
+}
+
+func candidateNZBRef(c core.SourceCandidate) string {
+	if c.NZBRef != "" {
+		return strings.TrimPrefix(c.NZBRef, core.PluginNZBRefPrefix)
+	}
+	locator := strings.TrimPrefix(c.NZBURL, "nzb:")
+	if ref, ok := strings.CutPrefix(locator, core.PluginNZBRefPrefix); ok {
+		return ref
+	}
+	return ""
+}
+
+func candidateNZBKey(c core.SourceCandidate) string {
+	if ref := candidateNZBRef(c); ref != "" {
+		return "ref:" + hashNZBBytes([]byte(ref))
 	}
 	return normalizeNZBKey(c.NZBURL)
 }
@@ -55,5 +87,5 @@ func (r *KindResolver) requestPluginNZB(ctx context.Context, q core.SourceQuery)
 	for i, file := range doc.Files[:cap(files)] {
 		files = append(files, core.ReleaseFile{Index: i, Path: file.StableName(), Size: file.EstimatedDecodedBytes(), SizeApproximate: true})
 	}
-	return []core.SourceCandidate{{NZBRef: storeRef, Files: files, FileCount: len(doc.Files)}}, nil
+	return []core.SourceCandidate{r.publicReleaseLinks(core.SourceCandidate{NZBRef: storeRef, Files: files, FileCount: len(doc.Files)})}, nil
 }

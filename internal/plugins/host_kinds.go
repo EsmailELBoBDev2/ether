@@ -838,10 +838,10 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.NZBURL == "" && q.NZBRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+				Message: "release_files needs a release reference, info hash, magnet or candidate",
 			}}}
 		}
 	case "nzb_request":

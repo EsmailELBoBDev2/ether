@@ -123,12 +123,12 @@
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases.",
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
           "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Legacy input only. Search results leave this field empty.",
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
           "deprecated": true
         },
         "candidate": {
@@ -437,12 +437,12 @@
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases.",
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
           "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Legacy input only. Search results leave this field empty.",
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
           "deprecated": true
         },
         "title": {
@@ -540,7 +540,7 @@
         "nzbUrl": {
           "type": "string",
           "deprecated": true,
-          "description": "Legacy input only. Search results leave this field empty."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input."
         },
         "magnet": {
           "type": "string"
@@ -551,7 +551,7 @@
         "torrentUrl": {
           "type": "string",
           "deprecated": true,
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef."
         },
         "passwordSecret": {
           "type": "string"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,10 +58,45 @@ func TestPluginNZBConformance(t *testing.T) {
 	r := NewKindResolver(KindResolverDeps{Indexer: mgr, PluginNZBs: mgr, Engine: &keylessCheckEngine{}})
 	t.Cleanup(r.Close)
 	search, err := r.ResolveSources(ctx, "plugin.one", core.SourceQuery{Kind: "indexer_search", Query: "Artist Album", Category: "music"})
-	if err != nil || len(search) != 1 || search[0].NZBRef == "" || search[0].NZBURL != "" {
+	if err != nil || len(search) != 1 || search[0].NZBRef == "" || search[0].NZBURL != core.PluginNZBRefPrefix+search[0].NZBRef {
 		t.Fatalf("search must return one opaque reference: count=%d err=%v", len(search), err)
 	}
 	candidate := search[0]
+	t.Run("deprecated nzbUrl only", func(t *testing.T) {
+		link := candidate.NZBURL
+		if !strings.HasPrefix(link, core.PluginNZBRefPrefix) || strings.Contains(link, server.URL) ||
+			strings.Contains(link, "release-guid") || strings.Contains(link, "/api") {
+			t.Fatal("deprecated link field must contain only an opaque Ether reference")
+		}
+		restarted := newznab.NewManager(db, []config.Indexer{{ID: "test-indexer", Name: "Test", URL: server.URL, Enabled: true}},
+			newznab.Options{Vault: library, PluginReferences: sealer})
+		defer restarted.Close()
+		other := NewKindResolver(KindResolverDeps{Indexer: restarted, PluginNZBs: restarted, Engine: &keylessCheckEngine{}})
+		defer other.Close()
+		again, err := other.ResolveSources(ctx, "plugin.one", core.SourceQuery{Kind: "indexer_search", Query: "Artist", Category: "music"})
+		if err != nil || len(again) != 1 || again[0].NZBURL != link || grabs.Load() != 0 {
+			t.Fatalf("fresh search after restart must preserve the reference: candidates=%d grabs=%d err=%v", len(again), grabs.Load(), err)
+		}
+
+		checked, err := r.ResolveSources(ctx, "plugin.one", core.SourceQuery{Kind: "usenet_check", NZBURL: link})
+		if err != nil || len(checked) != 1 || checked[0].NZBURL != link ||
+			checked[0].UsenetCheck == nil || !checked[0].UsenetCheck.Available || grabs.Load() != 1 {
+			t.Fatalf("check through deprecated field: candidates=%d grabs=%d err=%v", len(checked), grabs.Load(), err)
+		}
+		media, err := r.openRelease(ctx, core.ReleaseHint{NZBURL: link})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = media.Close()
+		opened, err := kindstream.Open(ctx, core.PlayableSource{URL: "nzb:" + link}, kindstream.Deps{OpenRelease: r.openRelease})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = opened.Close()
+		if grabs.Load() != 1 {
+			t.Fatalf("deprecated search, check and playback must share one grab, got %d", grabs.Load())
+		}
+	})
 	request := core.SourceQuery{Kind: "nzb_request", NZBRef: candidate.NZBRef}
 	got, err := r.ResolveSources(ctx, "plugin.one", request)
 	if err != nil || len(got) != 1 || got[0].NZBRef == "" || len(got[0].Files) != 1 || grabs.Load() != 1 {

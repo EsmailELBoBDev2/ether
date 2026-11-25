@@ -4151,7 +4151,8 @@ class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
     Search returns opaque ``nzbRef`` and ``torrentRef`` values. The deprecated
-    ``nzbUrl`` field is empty in search results.
+    ``nzbUrl`` and ``torrentUrl`` fields mirror them with an ``ether-nzb:``
+    or ``ether-torrent:`` prefix.
     """
 
     infoHash: str

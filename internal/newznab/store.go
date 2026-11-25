@@ -13,6 +13,9 @@ import (
 )
 
 func init() {
+	store.Register("newznab", 7, `
+CREATE TABLE newznab_plugin_refs (ref TEXT PRIMARY KEY, descriptor TEXT NOT NULL);
+`)
 	store.Register("newznab", 6, `
 CREATE TABLE newznab_nzb_refusals (
   indexer_id TEXT NOT NULL,

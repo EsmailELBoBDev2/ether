@@ -592,7 +592,8 @@ request or exceeding its deadline aborts all in-flight batch fetches promptly
 without consuming extra WASM pool lanes.
 
 Indexer search results give you `nzbRef` for Usenet and `torrentRef` when a
-torrent needs a descriptor lookup. Call
+torrent needs a descriptor lookup. The deprecated link fields mirror these
+references with an `ether-nzb:` or `ether-torrent:` prefix. Call
 `ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
 permanent vault reference. Use that reference in a release source's
 `release.nzbRef`, and use `release_files` for files inside archives.

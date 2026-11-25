@@ -537,8 +537,11 @@ release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
 names are rejected. Usenet candidates carry an opaque `nzbRef`, and torrent
-candidates that need a descriptor download carry a `torrentRef`. Search leaves
-the deprecated `nzbUrl` and `torrentUrl` fields empty.
+candidates that need a descriptor download carry a `torrentRef`. The deprecated
+`nzbUrl` and `torrentUrl` fields mirror those stable references as
+`ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>`. Existing plugins can pass
+those values back in the deprecated fields. New code should use the reference
+fields directly.
 Invalid categories are rejected. Stremio add-ons and
 source plugins are asked by title id only, so they reject scoped searches,
 unless a source plugin declared the category (see "Source plugins that answer

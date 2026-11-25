@@ -228,15 +228,13 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download or details page link when an
-	// indexer did not supply an infoHash or magnet.
+	// Deprecated: use TorrentRef for an Ether torrent descriptor reference.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// Deprecated: use NZBRef. NZBURL also accepts legacy download links.
+	NZBURL      string       `json:"nzbUrl,omitempty"`
 	NZBRef      string       `json:"nzbRef,omitempty"`
 	TorrentRef  string       `json:"torrentRef,omitempty"`
 	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
-	// full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
@@ -431,10 +429,11 @@ type NZBIdentity struct {
 // SourceCandidate is one Ether-found release for a resolver to rank.
 // NZBRef and TorrentRef are opaque references returned by indexer search.
 type SourceCandidate struct {
-	InfoHash   string `json:"infoHash,omitempty"`
-	Magnet     string `json:"magnet,omitempty"`
+	InfoHash string `json:"infoHash,omitempty"`
+	Magnet   string `json:"magnet,omitempty"`
+	// Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// Deprecated: indexer search leaves NZBURL empty. Use NZBRef.
+	// Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef.
 	NZBURL     string `json:"nzbUrl,omitempty"`
 	NZBRef     string `json:"nzbRef,omitempty"`
 	TorrentRef string `json:"torrentRef,omitempty"`

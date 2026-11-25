@@ -474,7 +474,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ### Request an NZB
 
-Use `sources.resolve({kind: "nzb_request", nzbRef})` with an opaque indexer search reference, or supply `nzbIdentity: {indexerId, guid}`. The single candidate contains a parsed `files` list, `fileCount`, and a permanent vault `nzbRef` for a playback source’s `release.nzbRef`. Ether uses the vault before spending any indexer grab. Search leaves deprecated download link fields empty. Direct plugin HTTP calls to configured indexers are refused. Background requests require the `+check` grant and use its daily allowance.
+Use `sources.resolve({kind: "nzb_request", nzbRef})` with an opaque indexer search reference, or supply `nzbIdentity: {indexerId, guid}`. The single candidate contains a parsed `files` list, `fileCount`, and a permanent vault `nzbRef` for a playback source’s `release.nzbRef`. Ether uses the vault before spending any indexer grab. Search mirrors stable references in the deprecated fields as `ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>` for older plugins. Direct plugin HTTP calls to configured indexers are refused. Background requests require the `+check` grant and use its daily allowance.
 
 ## Library blob cache
 
@@ -1331,8 +1331,11 @@ release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
 names are rejected. Usenet candidates carry an opaque `nzbRef`, and torrent
-candidates that need a descriptor download carry a `torrentRef`. Search leaves
-the deprecated `nzbUrl` and `torrentUrl` fields empty.
+candidates that need a descriptor download carry a `torrentRef`. The deprecated
+`nzbUrl` and `torrentUrl` fields mirror those stable references as
+`ether-nzb:<nzbRef>` and `ether-torrent:<torrentRef>`. Existing plugins can pass
+those values back in the deprecated fields. New code should use the reference
+fields directly.
 Invalid categories are rejected. Stremio add-ons and
 source plugins are asked by title id only, so they reject scoped searches,
 unless a source plugin declared the category (see "Source plugins that answer
@@ -3555,6 +3558,16 @@ type SourceCandidate struct {
 	// files and a release source opens it through the plugin's open route.
 	PluginRelease *PluginReleaseRef `json:"pluginRelease,omitempty"`
 }
+``````
+
+## Source: internal/core/kinditem.go#PluginNZBRefPrefix
+
+``````
+// Deprecated link fields use these non-HTTP schemes for Ether references.
+const (
+	PluginNZBRefPrefix     = "ether-nzb:"
+	PluginTorrentRefPrefix = "ether-torrent:"
+)
 ``````
 
 ## Source: internal/core/kinditem.go#NZBIdentity.fields.md
@@ -18698,10 +18711,10 @@ func (h *host) ResolveSourcesWithResult(ctx context.Context, q core.SourceQuery)
 			}}}
 		}
 	case "release_files":
-		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.Candidate == nil {
+		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.TorrentRef == "" && q.NZBURL == "" && q.NZBRef == "" && q.Candidate == nil {
 			return core.SourceResolveResult{}, &ValidationError{Fields: []FieldError{{
 				Field:   "infoHash",
-				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
+				Message: "release_files needs a release reference, info hash, magnet or candidate",
 			}}}
 		}
 	case "nzb_request":
@@ -39821,12 +39834,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases.",
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
           "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Legacy input only. Search results leave this field empty.",
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
           "deprecated": true
         },
         "candidate": {
@@ -40135,12 +40148,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases.",
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef.",
           "deprecated": true
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Legacy input only. Search results leave this field empty.",
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input.",
           "deprecated": true
         },
         "title": {
@@ -40238,7 +40251,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "nzbUrl": {
           "type": "string",
           "deprecated": true,
-          "description": "Legacy input only. Search results leave this field empty."
+          "description": "Deprecated opaque ether-nzb: reference. Use nzbRef. Legacy download links are accepted as input."
         },
         "magnet": {
           "type": "string"
@@ -40249,7 +40262,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         "torrentUrl": {
           "type": "string",
           "deprecated": true,
-          "description": "Legacy descriptor field. Use torrentRef for indexer releases."
+          "description": "Deprecated opaque ether-torrent: reference. Use torrentRef."
         },
         "passwordSecret": {
           "type": "string"
@@ -41082,7 +41095,8 @@ request or exceeding its deadline aborts all in-flight batch fetches promptly
 without consuming extra WASM pool lanes.
 
 Indexer search results give you `nzbRef` for Usenet and `torrentRef` when a
-torrent needs a descriptor lookup. Call
+torrent needs a descriptor lookup. The deprecated link fields mirror these
+references with an `ether-nzb:` or `ether-torrent:` prefix. Call
 `ether.sources.resolve({kind: "nzb_request", nzbRef})` for the file list and
 permanent vault reference. Use that reference in a release source's
 `release.nzbRef`, and use `release_files` for files inside archives.
@@ -57616,11 +57630,11 @@ type KindChangesRequest struct {
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
-| `nzbRef` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when not passing a |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: use TorrentRef for an Ether torrent descriptor reference. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: use NZBRef. NZBURL also accepts legacy download links. |
+| `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `nzbIdentity` | `*NZBIdentity` | may be omitted (see validation for conditions) |  |
-| `nzbUrl` | `string` | may be omitted (see validation for conditions) | full Candidate from indexer_search. |
 | `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files or usenet_check. |
 | `fileCount` | `int` | may be omitted (see validation for conditions) | FileCount optionally hints how many files a torrent contains when passing a magnet or infoHash without a file list (e.g. large collection torrents held as zip-only caches on TorBox). |
 
@@ -57681,15 +57695,13 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download or details page link when an
-	// indexer did not supply an infoHash or magnet.
+	// Deprecated: use TorrentRef for an Ether torrent descriptor reference.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// Deprecated: use NZBRef. NZBURL also accepts legacy download links.
+	NZBURL      string       `json:"nzbUrl,omitempty"`
 	NZBRef      string       `json:"nzbRef,omitempty"`
 	TorrentRef  string       `json:"torrentRef,omitempty"`
 	NZBIdentity *NZBIdentity `json:"nzbIdentity,omitempty"`
-	// full Candidate from indexer_search.
-	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries an indexer_search candidate back for release_files
 	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
@@ -58022,8 +58034,8 @@ type NZBIdentity struct {
 |---|---|---|---|
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `torrentUrl` | `string` | may be omitted (see validation for conditions) |  |
-| `nzbUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: indexer search leaves NZBURL empty. Use NZBRef. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef. |
 | `nzbRef` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentRef` | `string` | may be omitted (see validation for conditions) |  |
 | `fileIndex` | `*int` | may be omitted (see validation for conditions) | FileIndex selects a zero-based entry in the torrent provider file list; nil uses video selection. |
@@ -58050,10 +58062,11 @@ type NZBIdentity struct {
 // SourceCandidate is one Ether-found release for a resolver to rank.
 // NZBRef and TorrentRef are opaque references returned by indexer search.
 type SourceCandidate struct {
-	InfoHash   string `json:"infoHash,omitempty"`
-	Magnet     string `json:"magnet,omitempty"`
+	InfoHash string `json:"infoHash,omitempty"`
+	Magnet   string `json:"magnet,omitempty"`
+	// Deprecated: TorrentURL carries an opaque ether-torrent: reference. Use TorrentRef.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// Deprecated: indexer search leaves NZBURL empty. Use NZBRef.
+	// Deprecated: NZBURL carries an opaque ether-nzb: reference. Use NZBRef.
 	NZBURL     string `json:"nzbUrl,omitempty"`
 	NZBRef     string `json:"nzbRef,omitempty"`
 	TorrentRef string `json:"torrentRef,omitempty"`
@@ -71850,7 +71863,8 @@ class SourceCandidate(TypedDict, total=False):
     """One Ether-found release candidate returned by sources.resolve.
 
     Search returns opaque ``nzbRef`` and ``torrentRef`` values. The deprecated
-    ``nzbUrl`` field is empty in search results.
+    ``nzbUrl`` and ``torrentUrl`` fields mirror them with an ``ether-nzb:``
+    or ``ether-torrent:`` prefix.
     """
 
     infoHash: str
@@ -79011,9 +79025,9 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
+  /** @deprecated Use torrentRef for an Ether torrent descriptor reference. */
   torrentUrl?: string;
-  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  /** @deprecated Use nzbRef. Accepts an ether-nzb: reference or legacy download link. */
   nzbUrl?: string;
   nzbRef?: string;
   torrentRef?: string;
@@ -79121,9 +79135,9 @@ export interface DebridServiceRef {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
+  /** @deprecated Opaque ether-torrent: reference. Use torrentRef. */
   torrentUrl?: string;
-  /** @deprecated Indexer search leaves this field empty. Use nzbRef. */
+  /** @deprecated Opaque ether-nzb: reference. Use nzbRef. */
   nzbUrl?: string;
   nzbRef?: string;
   torrentRef?: string;

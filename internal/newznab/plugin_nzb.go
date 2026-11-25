@@ -56,24 +56,64 @@ type pluginNZBReference struct {
 	ContentID string
 }
 
-func (m *Manager) sealNZBReference(ref pluginNZBReference) string {
-	if m.opts.PluginReferences == nil {
+const pluginRefVersion = "r1:"
+
+func (m *Manager) savePluginRef(ctx context.Context, purpose string, release pluginNZBReference) string {
+	if m.opts.PluginReferences == nil || (release.Key == "" && (release.IndexerID == "" || release.ID == "")) {
 		return ""
 	}
-	data, err := json.Marshal(ref)
+	// Hash the release identity, independent of mutable result metadata and
+	// download links. Only an issued reference can resolve to a descriptor.
+	ref := fmt.Sprintf("%s%x", pluginRefVersion, sha256.Sum256([]byte(
+		purpose+"\x00"+string(release.Key)+"\x00"+release.IndexerID+"\x00"+release.ID)))
+	data, err := json.Marshal(release)
 	if err != nil {
 		return ""
 	}
-	sealed, err := m.opts.PluginReferences.Seal(pluginNZBSeal, data)
+	sealed, err := m.opts.PluginReferences.Seal(purpose+"/"+ref, data)
 	if err != nil {
 		return ""
 	}
-	return sealed
+	if m.db == nil {
+		m.pluginRefs.Store(ref, sealed)
+	} else if _, err := m.db.ExecContext(ctx, `INSERT INTO newznab_plugin_refs(ref,descriptor)
+		VALUES (?,?) ON CONFLICT(ref) DO UPDATE SET descriptor=excluded.descriptor`, ref, sealed); err != nil {
+		return ""
+	}
+	return ref
+}
+
+func (m *Manager) openPluginRef(ctx context.Context, purpose, ref string) (pluginNZBReference, error) {
+	var release pluginNZBReference
+	if m.opts.PluginReferences == nil || ref == "" || len(ref) > 32768 {
+		return release, errPluginNZB
+	}
+	sealed := ref
+	if strings.HasPrefix(ref, pluginRefVersion) {
+		if len(ref) != len(pluginRefVersion)+sha256.Size*2 {
+			return release, errPluginNZB
+		}
+		if m.db == nil {
+			value, ok := m.pluginRefs.Load(ref)
+			if !ok {
+				return release, errPluginNZB
+			}
+			sealed = value.(string)
+		} else if err := m.db.QueryRowContext(ctx, `SELECT descriptor FROM newznab_plugin_refs WHERE ref=?`, ref).Scan(&sealed); err != nil {
+			return release, errPluginNZB
+		}
+		purpose += "/" + ref
+	}
+	data, err := m.opts.PluginReferences.Unseal(purpose, sealed)
+	if err != nil || json.Unmarshal(data, &release) != nil {
+		return pluginNZBReference{}, errPluginNZB
+	}
+	return release, nil
 }
 
 // PluginNZBReference issues a portable, authenticated reference from a real
-// search result. Credential-bearing links stay inside the sealed envelope.
-func (m *Manager) PluginNZBReference(r core.Release) string {
+// search result. Credential-bearing links stay in the server-side descriptor.
+func (m *Manager) PluginNZBReference(ctx context.Context, r core.Release) string {
 	if (r.Protocol != "" && r.Protocol != core.ProtocolUsenet) || r.InfoHash != "" || r.MagnetURL != "" {
 		return ""
 	}
@@ -81,8 +121,11 @@ func (m *Manager) PluginNZBReference(r core.Release) string {
 	if key == "" && (r.IndexerID == "" || (r.NZBURL == "" && r.GUID == "")) {
 		return ""
 	}
-	return m.sealNZBReference(pluginNZBReference{
-		Key: key, ID: r.ID, GUID: r.GUID, IndexerID: r.IndexerID,
+	if key != "" {
+		return m.savePluginRef(ctx, pluginNZBSeal, pluginNZBReference{Key: key})
+	}
+	return m.savePluginRef(ctx, pluginNZBSeal, pluginNZBReference{
+		ID: r.ID, GUID: r.GUID, IndexerID: r.IndexerID,
 		Link: m.StripLinkAuth(r).NZBURL, Name: r.Name, Size: r.Size,
 		Category: r.Category, ContentID: r.ContentID,
 	})
@@ -94,6 +137,13 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	if m.opts.Vault == nil || m.opts.PluginReferences == nil {
 		return nil, "", errPluginNZB
 	}
+	if ref == "" {
+		locator := strings.TrimPrefix(strings.TrimSpace(hint.NZBURL), "nzb:")
+		if value, ok := strings.CutPrefix(locator, core.PluginNZBRefPrefix); ok {
+			ref = value
+		}
+	}
+	ref = strings.TrimPrefix(ref, core.PluginNZBRefPrefix)
 	var key vault.Key
 	var data []byte
 	var storedAlready bool
@@ -101,13 +151,9 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	var err error
 	switch {
 	case ref != "":
-		if len(ref) > 32768 {
-			return nil, "", errPluginNZB
-		}
-		decoded, decodeErr := m.opts.PluginReferences.Unseal(pluginNZBSeal, ref)
-		var stored pluginNZBReference
-		if decodeErr != nil || json.Unmarshal(decoded, &stored) != nil {
-			return nil, "", errPluginNZB
+		stored, openErr := m.openPluginRef(ctx, pluginNZBSeal, ref)
+		if openErr != nil {
+			return nil, "", openErr
 		}
 		key = stored.Key
 		storedAlready = key != ""
@@ -170,7 +216,7 @@ func (m *Manager) RequestPluginNZB(ctx context.Context, ref string, hint core.Re
 	}
 	storeRef := ref
 	if !storedAlready {
-		storeRef = m.sealNZBReference(pluginNZBReference{Key: key})
+		storeRef = m.savePluginRef(ctx, pluginNZBSeal, pluginNZBReference{Key: key})
 	}
 	if storeRef == "" {
 		return nil, "", errPluginNZB
@@ -365,27 +411,26 @@ func (c *Client) lockNZBGrab(ctx context.Context, id string) (func(), error) {
 const pluginTorrentSeal = "plugin-indexer-torrent/v1"
 
 // PluginTorrentReference replaces a torrent descriptor URL in plugin results.
-func (m *Manager) PluginTorrentReference(r core.Release) string {
-	if m.opts.PluginReferences == nil || r.IndexerID == "" || r.NZBURL == "" {
+func (m *Manager) PluginTorrentReference(ctx context.Context, r core.Release) string {
+	if r.IndexerID == "" || r.NZBURL == "" {
 		return ""
 	}
-	data, err := json.Marshal(pluginNZBReference{ID: r.ID, IndexerID: r.IndexerID,
+	return m.savePluginRef(ctx, pluginTorrentSeal, pluginNZBReference{ID: r.ID, IndexerID: r.IndexerID,
 		GUID: r.GUID, Link: m.StripLinkAuth(r).NZBURL, Name: r.Name, Size: r.Size})
-	if err != nil {
-		return ""
-	}
-	ref, _ := m.opts.PluginReferences.Seal(pluginTorrentSeal, data)
-	return ref
 }
 
 // ResolvePluginTorrent only fetches descriptor URLs issued by Ether itself.
 func (m *Manager) ResolvePluginTorrent(ctx context.Context, rel core.Release) (core.Release, error) {
-	if m.opts.PluginReferences == nil || len(rel.TorrentRef) == 0 || len(rel.TorrentRef) > 32768 {
-		return rel, core.ErrReleaseRejected
+	ref := rel.TorrentRef
+	if ref == "" {
+		var ok bool
+		ref, ok = strings.CutPrefix(rel.NZBURL, core.PluginTorrentRefPrefix)
+		if !ok {
+			return rel, core.ErrReleaseRejected
+		}
 	}
-	payload, err := m.opts.PluginReferences.Unseal(pluginTorrentSeal, rel.TorrentRef)
-	var stored pluginNZBReference
-	if err != nil || json.Unmarshal(payload, &stored) != nil {
+	stored, err := m.openPluginRef(ctx, pluginTorrentSeal, strings.TrimPrefix(ref, core.PluginTorrentRefPrefix))
+	if err != nil {
 		return rel, core.ErrReleaseRejected
 	}
 	rel.ID, rel.GUID, rel.IndexerID = stored.ID, stored.GUID, stored.IndexerID

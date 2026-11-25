@@ -269,6 +269,14 @@ func ImageURL(path string, w int) string {
 	return "/ether/api/image?path=" + url.QueryEscape(path) + "&w=" + strconv.Itoa(w)
 }
 
+func pluginImageURL(path string) string {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	return ""
+}
+
 // CardFor converts a catalogue title to a TitleCard.
 func CardFor(t core.Title) TitleCard {
 	c := TitleCard{
@@ -279,6 +287,13 @@ func CardFor(t core.Title) TitleCard {
 	poster := t.PosterPath
 	if t.Type == core.TypeEpisode && t.StillPath != "" {
 		poster = t.StillPath
+	}
+	if t.Key.IsPluginKey() {
+		// Plugin items never live in the TMDB image proxy or generated movie/show
+		// poster endpoint; only pass through browser-loadable HTTP(S) artwork URLs.
+		c.Poster = pluginImageURL(poster)
+		c.Backdrop = pluginImageURL(t.BackdropPath)
+		return c
 	}
 	c.Poster = ImageURL(poster, 342)
 	if c.Poster == "" {
@@ -292,6 +307,9 @@ func CardFor(t core.Title) TitleCard {
 // show with no artwork, or "" for any other title. The URL describes the
 // whole image, so it is stable and caches like a TMDB path.
 func GeneratedPosterURL(t *core.Title, w int) string {
+	if t == nil || (t.Key.Kind() != core.KindMovie && t.Key.Kind() != core.KindShow) {
+		return ""
+	}
 	p, ok := artwork.ForTitle(t)
 	if !ok {
 		return ""
@@ -493,18 +511,33 @@ func (h *Handler) handleCatalogTitle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such title")
 		return
 	}
-	t, err := h.deps.CatalogHelper.TitleDetail(r.Context(), key)
+	var t *core.Title
+	if key.IsPluginKey() {
+		if h.deps.PluginTitleDetail == nil {
+			writeError(w, http.StatusNotFound, "not_found", "no such title")
+			return
+		}
+		t, err = h.deps.PluginTitleDetail(r.Context(), key)
+	} else {
+		t, err = h.deps.CatalogHelper.TitleDetail(r.Context(), key)
+	}
 	if err != nil {
 		h.writeServiceError(w, err)
+		return
+	}
+	if t == nil {
+		writeError(w, http.StatusNotFound, "not_found", "no such title")
 		return
 	}
 	d := titleDetail{TMDBID: t.IDs.TMDB, IMDBID: t.IDs.IMDB, TitleCard: CardFor(*t), Cast: people(t.Cast, 20), Directors: people(t.Directors, 5), Keywords: t.Keywords,
 		Tagline: t.Tagline, Language: t.Language, Status: t.Status, Studios: t.Studios, Countries: t.Countries,
 		ReleaseDate: airDate(t.Released), HomeRelease: airDate(t.HomeReleased), LastAirDate: airDate(t.LastAirDate),
 		Seasons: t.ChildCount, Episodes: t.LeafCount}
-	av := h.deps.Config.Get().Availability
-	now := time.Now()
-	d.HomeReleaseAgeAdmitted = av.ModeFor(string(t.Type)) == config.ModeDigital && catalog.HomeReleaseAgeAdmitted(t, now) && (!t.HomeReleaseChecked || t.HomeReleased.IsZero() || catalog.HomeReleaseAdmission(t.HomeReleased, av.HomeReleaseOffsetDays).After(now))
+	if !key.IsPluginKey() {
+		av := h.deps.Config.Get().Availability
+		now := time.Now()
+		d.HomeReleaseAgeAdmitted = av.ModeFor(string(t.Type)) == config.ModeDigital && catalog.HomeReleaseAgeAdmitted(t, now) && (!t.HomeReleaseChecked || t.HomeReleased.IsZero() || catalog.HomeReleaseAdmission(t.HomeReleased, av.HomeReleaseOffsetDays).After(now))
+	}
 	if t.OriginalTitle != t.Title {
 		d.OriginalTitle = t.OriginalTitle
 	}

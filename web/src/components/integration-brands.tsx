@@ -3,7 +3,8 @@ import xrdb from "../assets/brands/xrdb.png?no-inline";
 import betterposters from "../assets/brands/betterposters.png?no-inline";
 import rpdb from "../assets/brands/rpdb.jpg?no-inline";
 import { Plug } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { apiBlob, imageNeedsFetch } from "../lib/api";
 import dlna from "../assets/brands/dlna.svg?no-inline";
 import emby from "../assets/brands/emby.svg?no-inline";
 import m3u from "../assets/brands/m3u.svg?no-inline";
@@ -66,18 +67,54 @@ export function VelaMark() {
  * A plugin adapter's mark, served by Ether from the plugin package (its
  * declared adapter icon, else the plugin's icon). Drawn like Silo and Vela;
  * the plug stands in when there is none or it fails to load.
+ *
+ * Served icons under `/ether/api/...` require owner authentication, so when an
+ * owner token (or fetch-routed mock mode) is active we read them through
+ * `apiBlob` into a short-lived object URL instead of mounting an unauthenticated
+ * `<img>`.
  */
 export function PluginAdapterMark({ src, fallback }: { src?: string; fallback?: ReactNode }) {
+  const validSrc = src && /^(https?:|\/)/.test(src) ? src : undefined;
+  const needsFetch = imageNeedsFetch(validSrc);
   const [failed, setFailed] = useState<string>();
-  if (!src || !/^(https?:|\/)/.test(src) || failed === src)
-    return fallback ?? <Plug size={22} aria-hidden />;
+  const [loaded, setLoaded] = useState<{ src: string; url: string }>();
+
+  useEffect(() => {
+    if (!validSrc || !needsFetch) return;
+    const controller = new AbortController();
+    let created: string | undefined;
+    void apiBlob(validSrc, controller.signal)
+      .then((blob) => {
+        if (!controller.signal.aborted) {
+          created = URL.createObjectURL(blob);
+          setLoaded({ src: validSrc, url: created });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setFailed(validSrc);
+      });
+    return () => {
+      controller.abort();
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [needsFetch, validSrc]);
+
+  const resolved = !validSrc
+    ? undefined
+    : needsFetch
+      ? loaded?.src === validSrc
+        ? loaded.url
+        : undefined
+      : validSrc;
+
+  if (!resolved || failed === validSrc) return fallback ?? <Plug size={22} aria-hidden />;
   return (
     <img
-      src={src}
+      src={resolved}
       alt=""
       aria-hidden
       className="block size-7 rounded-md object-contain"
-      onError={() => setFailed(src)}
+      onError={() => setFailed(validSrc)}
     />
   );
 }

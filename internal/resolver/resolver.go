@@ -778,39 +778,23 @@ func (s *Service) ProfileFor(caps core.ClientCaps, user *core.User) core.Quality
 }
 
 func searchRequestFor(t *core.Title) core.SearchRequest {
-	season, episode := t.Season, t.Episode
-	if t.Key.Kind() == core.KindEpisode {
-		if season == 0 {
-			season = t.Key.Season()
-		}
-		if episode == 0 {
-			episode = t.Key.Episode()
-		}
-	}
 	if t.Type == core.TypeEpisode || t.Key.Kind() == core.KindEpisode {
-		ids := t.ShowIDs
-		// Episode external IDs describe the episode, not its series.
-		// The rating key provides a canonical series TMDB ID even when
-		// the cached ShowIDs only contain an IMDb or TVDB identifier.
-		if ids.TMDB == 0 && t.Key.Kind() == core.KindEpisode {
-			ids.TMDB = t.Key.TMDB()
-		}
 		title := t.ShowTitle
 		if title == "" {
 			title = t.Title
 		}
-		return core.SearchRequest{Type: core.TypeEpisode, IDs: ids, Title: title, OriginalTitle: t.ShowOriginalTitle, EnglishTitle: t.ShowEnglishTitle, Year: t.ShowYear, Season: season, Episode: episode, EpisodeTitle: t.Title,
-			AbsoluteEpisode: t.AbsoluteEpisode, Anime: isAnime(t), AlternativeTitles: t.ShowAlternativeTitles, Released: t.Released}
+		return core.SearchRequest{Type: core.TypeEpisode, IDs: t.ShowIDs, EpisodeSource: t.EpisodeOrder.Source, Title: title, OriginalTitle: t.ShowOriginalTitle, EnglishTitle: t.ShowEnglishTitle, Year: t.ShowYear, Season: t.Season, Episode: t.Episode, EpisodeTitle: t.Title,
+			AbsoluteEpisode: t.AbsoluteEpisode, Anime: isAnime(t), AlternativeTitles: t.ShowAlternativeTitles, Released: cmp.Or(t.EpisodeAirDate, t.Released)}
 	}
 	return core.SearchRequest{Type: core.TypeMovie, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, EnglishTitle: t.EnglishTitle, Year: t.Year, Anime: isAnime(t), AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 }
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
 	req := searchRequestFor(t)
-	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 {
+	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 && req.EpisodeSource != core.MetadataTVDB && req.IDs.TMDB > 0 {
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
-	if s != nil && s.animeCour != nil && req.Anime && req.Type == core.TypeEpisode && req.Season > 0 && req.Episode > 1 && req.IDs.TMDB > 0 {
+	if s != nil && s.animeCour != nil && req.EpisodeSource != core.MetadataTVDB && req.Anime && req.Type == core.TypeEpisode && req.Season > 0 && req.Episode > 1 && req.IDs.TMDB > 0 {
 		if m, ok, err := s.animeCour.LookupCour(ctx, req); err == nil && ok {
 			req.Cour, req.CourEpisode = m.Cour, m.Episode
 			req.CourTVDBSeason, req.CourTVDBEpisode = m.TVDBSeason, m.TVDBEpisode
@@ -1729,7 +1713,11 @@ func titleOriginalLanguage(t *core.Title) string {
 // (searchCacheEntry.req) so an enriched caller can tell whether it
 // matches (searchCacheEntry.serves). The alias-only numbering search is a different search.
 func searchCacheKey(req core.SearchRequest) string {
-	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.ReleaseAliasesOnly)
+	key := fmt.Sprintf("%s|%v|%s|%d|%d|%d|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.ReleaseAliasesOnly)
+	if req.EpisodeSource == core.MetadataTVDB {
+		key += "|tvdb:" + req.Released.UTC().Format(time.DateOnly)
+	}
+	return key
 }
 
 // numberingEnrichment and courEnrichment are what a request adds to its

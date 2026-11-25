@@ -634,8 +634,9 @@ type SearchRequest struct {
 	// Lookup is an optional typed lookup on a category search; only plugin
 	// sources that declared its type read it (additive).
 	Lookup        *SourceLookup
-	Type          MediaType // movie or episode
-	IDs           IDs       // movie ids, or the show's ids for episodes
+	Type          MediaType        // movie or episode
+	IDs           IDs              // movie ids, or the show's ids for episodes
+	EpisodeSource MetadataSourceID // provider whose coordinates this episode search uses
 	Title         string
 	OriginalTitle string // optional original-language or canonical title (additive)
 	// EnglishTitle is TMDB's primary en-US title when the catalogue language

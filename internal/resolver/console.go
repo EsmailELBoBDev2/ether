@@ -196,11 +196,7 @@ func consoleTitleName(t *core.Title) string {
 		if show == "" {
 			show = t.Title
 		}
-		season, episode := t.Season, t.Episode
-		if season == 0 && episode == 0 {
-			season, episode = t.Key.Season(), t.Key.Episode()
-		}
-		return fmt.Sprintf("%s S%02dE%02d", show, season, episode)
+		return fmt.Sprintf("%s S%02dE%02d", show, t.Season, t.Episode)
 	}
 	if t.Year > 0 {
 		return fmt.Sprintf("%s (%d)", t.Title, t.Year)
@@ -491,9 +487,6 @@ func consoleSeasonTitleName(season *core.Title, episodes []core.Title) string {
 			show = season.Title
 		}
 		num = season.Season
-		if num == 0 && season.Key.Kind() == core.KindSeason {
-			num = season.Key.Season()
-		}
 		if season.Type == core.TypeSeason {
 			label = season.Title
 		}
@@ -534,12 +527,6 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 		seasonKey = season.Key
 		showKey = season.ShowKey
 		seasonNum = season.Season
-		if seasonNum == 0 && seasonKey.Kind() == core.KindSeason {
-			seasonNum = seasonKey.Season()
-		}
-		if showKey == 0 && seasonKey.Kind() == core.KindSeason {
-			showKey = seasonKey.Parent()
-		}
 	}
 	start := time.Now()
 	cutoff := s.now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
@@ -550,9 +537,6 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 		}
 		if !ep.Released.IsZero() && ep.Released.After(cutoff) {
 			continue
-		}
-		if ep.Season == 0 && ep.Episode == 0 {
-			ep.Season, ep.Episode = ep.Key.Season(), ep.Key.Episode()
 		}
 		eps = append(eps, ep)
 	}

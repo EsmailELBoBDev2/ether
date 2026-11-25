@@ -1,17 +1,24 @@
 /**
- * Quality mock routes: GET /quality/devices, GET /quality/clients, and
- * POST /quality/explain against the ordered rules model. Development and tests
- * only; the real answer comes from the server's playback code path.
+ * Quality mock routes: GET /quality/devices, GET /quality/clients,
+ * GET /quality/summary, and POST /quality/explain against the ordered rules
+ * model (contract v1.3).
  */
 import type {
   DeviceMatch,
   EtherConfig,
   QualityAnswer,
   QualityClient,
+  QualityDecisionSource,
   QualityDevices,
   QualityLayer,
+  QualityProfile,
   QualityQuestion,
   QualityRule,
+  QualitySummary,
+  QualitySummaryCell,
+  QualitySummaryCellPair,
+  QualitySummaryException,
+  QualitySummaryRow,
 } from "../lib/types";
 
 type Reply = { status: number; body: unknown };
@@ -22,16 +29,32 @@ const fail = (status: number, code: string, message: string): Reply => ({
   body: { error: { code, message } },
 });
 
-type Device = {
+export interface MockLibrarySummaryInput {
+  id: number;
+  name: string;
+  source: string;
+  mediaType?: string;
+  pluginId?: string;
+  pluginName?: string;
+  sort: number;
+  hidden?: boolean;
+}
+
+export interface MockTitleQualityInput {
+  kind: "movie" | "episode";
+  libraryIds: number[];
+  chosenByPlugin?: boolean;
+}
+
+type ClientCapsShape = {
   maxHeight: number;
   hdr: boolean;
   dolbyVision: boolean;
-  group: "tv" | "mobile" | "computer";
-  type: string;
-  app: string;
+  androidMobile?: boolean;
 };
 
-const CLIENTS: (QualityClient & Device)[] = [
+const CLIENTS: (QualityClient &
+  ClientCapsShape & { group: "tv" | "mobile" | "computer"; type: string; app: string })[] = [
   {
     id: "plex-apple-tv",
     name: "Plex for Apple TV",
@@ -70,6 +93,7 @@ const CLIENTS: (QualityClient & Device)[] = [
     maxHeight: 1080,
     hdr: false,
     dolbyVision: false,
+    androidMobile: true,
   },
   {
     id: "plex-roku",
@@ -153,145 +177,596 @@ export const MOCK_QUALITY_DEVICES: QualityDevices = {
       viewer: "Sam Rivera",
       lastSeen: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
     },
+    {
+      id: "client-pixel-8",
+      name: "Pixel 8",
+      group: "mobile",
+      type: "Android Phone",
+      app: "plex:Plex for Android",
+      viewer: "Sam Rivera",
+      lastSeen: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    },
   ],
 };
 
-function matchesDevice(m: DeviceMatch, client: QualityClient & Device): boolean {
-  if (m.group) return client.group === m.group;
-  if (m.type) return client.type === m.type;
-  if (m.app) return client.app === m.app;
-  if (m.client) return client.id === m.client;
+interface DeviceContext {
+  field: "" | "group" | "type" | "app" | "client" | "contains";
+  id: string;
+  group?: string;
+  typeId?: string;
+  appId?: string;
+  clientId?: string;
+  product?: string;
+  platform?: string;
+  device?: string;
+  caps: ClientCapsShape;
+}
+
+const GENERIC_CAPS: ClientCapsShape = { maxHeight: 2160, hdr: true, dolbyVision: true };
+
+function capsForSeen(
+  seen: NonNullable<QualityDevices["clients"]>[number] | undefined,
+): ClientCapsShape {
+  if (!seen) return GENERIC_CAPS;
+  if (seen.type === "Android Phone") {
+    return { maxHeight: 1080, hdr: false, dolbyVision: false, androidMobile: true };
+  }
+  if (seen.group === "computer") {
+    return { maxHeight: 2160, hdr: false, dolbyVision: false };
+  }
+  if (seen.type === "Roku") {
+    return { maxHeight: 2160, hdr: true, dolbyVision: false };
+  }
+  return GENERIC_CAPS;
+}
+
+function parseDeviceParam(param: string, catalog: QualityDevices): DeviceContext {
+  if (!param) return { field: "", id: "", caps: GENERIC_CAPS };
+  const idx = param.indexOf(":");
+  if (idx <= 0) return { field: "", id: "", caps: GENERIC_CAPS };
+  const field = param.slice(0, idx) as DeviceContext["field"];
+  const id = param.slice(idx + 1);
+  const clients = catalog.clients ?? [];
+  const apps = catalog.apps ?? [];
+  const types = catalog.types ?? [];
+
+  if (field === "client") {
+    const seen = clients.find((c) => c.id === id);
+    const app = seen ? apps.find((a) => a.id === seen.app) : undefined;
+    return {
+      field: "client",
+      id,
+      clientId: id,
+      group: seen?.group,
+      typeId: seen?.type,
+      appId: seen?.app,
+      product: app?.name ?? seen?.name,
+      device: seen?.type,
+      caps: capsForSeen(seen),
+    };
+  }
+  if (field === "group") {
+    return { field: "group", id, group: id, caps: GENERIC_CAPS };
+  }
+  if (field === "type") {
+    const dt = types.find((t) => t.id === id);
+    return {
+      field: "type",
+      id,
+      typeId: id,
+      group: dt?.group,
+      device: id,
+      caps:
+        id === "Android Phone"
+          ? { maxHeight: 1080, hdr: false, dolbyVision: false, androidMobile: true }
+          : GENERIC_CAPS,
+    };
+  }
+  if (field === "app") {
+    const ap = apps.find((a) => a.id === id);
+    const preset = CLIENTS.find((c) => c.app === id);
+    return {
+      field: "app",
+      id,
+      appId: id,
+      group: preset?.group,
+      typeId: preset?.type,
+      product: ap?.name ?? id,
+      platform: preset?.platform,
+      device: preset?.device,
+      caps: preset ?? GENERIC_CAPS,
+    };
+  }
+  return { field: "contains", id, product: id, caps: GENERIC_CAPS };
+}
+
+function resolveExplainDevice(
+  q: QualityQuestion,
+  catalog: QualityDevices,
+): { dev: DeviceContext } | { error: Reply } {
+  if (q.clientId === "any") {
+    return { dev: { field: "", id: "any", caps: GENERIC_CAPS } };
+  }
+  if (q.clientId) {
+    const seen = (catalog.clients ?? []).find((c) => c.id === q.clientId);
+    if (seen) return { dev: parseDeviceParam(`client:${seen.id}`, catalog) };
+    const preset = CLIENTS.find((c) => c.id === q.clientId);
+    if (preset) {
+      return {
+        dev: {
+          field: "app",
+          id: preset.app,
+          appId: preset.app,
+          group: preset.group,
+          typeId: preset.type,
+          product: preset.product,
+          platform: preset.platform,
+          device: preset.device,
+          caps: preset,
+        },
+      };
+    }
+    if (q.clientId.includes(":")) {
+      return { dev: parseDeviceParam(q.clientId, catalog) };
+    }
+    return { error: fail(400, "unknown_client", "no such device or app") };
+  }
+  if (q.client?.product?.trim()) {
+    const prod = q.client.product.trim();
+    const plat = q.client.platform?.trim();
+    const dev = q.client.device?.trim();
+    const preset = CLIENTS.find(
+      (c) =>
+        c.product.toLowerCase() === prod.toLowerCase() ||
+        c.name.toLowerCase() === prod.toLowerCase(),
+    );
+    const app = (catalog.apps ?? []).find((a) => a.name.toLowerCase() === prod.toLowerCase());
+    const dt = dev
+      ? (catalog.types ?? []).find((t) => t.id.toLowerCase() === dev.toLowerCase())
+      : undefined;
+    return {
+      dev: {
+        field: preset ? "app" : "contains",
+        id: preset?.app ?? app?.id ?? prod,
+        appId: preset?.app ?? app?.id,
+        typeId: dt?.id ?? preset?.type,
+        group: dt?.group ?? preset?.group,
+        product: prod,
+        platform: plat ?? preset?.platform,
+        device: dev ?? preset?.device,
+        caps: preset ?? GENERIC_CAPS,
+      },
+    };
+  }
+  return { error: fail(400, "missing_client", "choose a device or app") };
+}
+
+function matchesSingleDevice(m: DeviceMatch, dev: DeviceContext): boolean {
+  if (!dev.field) return false;
+  if (m.group) return dev.group === m.group;
+  if (m.type) return dev.typeId === m.type;
+  if (m.app) return dev.appId === m.app;
+  if (m.client) return dev.clientId === m.client;
   if (m.contains) {
-    const q = m.contains.toLowerCase();
-    return (
-      client.product.toLowerCase().includes(q) ||
-      client.platform.toLowerCase().includes(q) ||
-      (client.device ?? "").toLowerCase().includes(q)
+    const needle = m.contains.toLowerCase();
+    return [dev.product, dev.platform, dev.device, dev.id].some((v) =>
+      Boolean(v && v.toLowerCase().includes(needle)),
     );
   }
   return false;
 }
 
-function ruleMatches(r: QualityRule, q: QualityQuestion, client: QualityClient & Device): boolean {
-  if (r.where === "home" && q.remote) return false;
-  if (r.where === "away" && !q.remote) return false;
-  const kind = q.mediaType === "tv" ? "episode" : q.mediaType;
-  if (r.kind && kind && r.kind !== kind) return false;
-  if (r.viewers?.length) {
-    const has = r.viewers.includes(q.userId);
-    if (r.exceptViewers ? has : !has) return false;
+function matchesRuleViewer(r: QualityRule, viewerId: number): boolean {
+  if (!r.viewers?.length) return true;
+  if (!viewerId) return false;
+  const hit = r.viewers.includes(viewerId);
+  return r.exceptViewers ? !hit : hit;
+}
+
+function matchesRuleDevice(r: QualityRule, dev: DeviceContext): boolean {
+  if (!r.devices?.length) return true;
+  if (!dev.field) return false;
+  const hit = r.devices.some((m) => matchesSingleDevice(m, dev));
+  return r.exceptDevices ? !hit : hit;
+}
+
+function libraryKinds(lib: MockLibrarySummaryInput): ("movie" | "episode")[] {
+  if (lib.source === "plugin") return [];
+  if (lib.mediaType === "movie") return ["movie"];
+  if (lib.mediaType === "show") return ["episode"];
+  return ["movie", "episode"];
+}
+
+function libraryRelation(
+  r: QualityRule,
+  lib: MockLibrarySummaryInput,
+  allLibs: MockLibrarySummaryInput[],
+): "direct" | "partial" | "none" {
+  if (!r.libraries?.length) return "direct";
+  const inList = r.libraries.includes(lib.id);
+  if (r.exceptLibraries) {
+    return inList ? "none" : "direct";
   }
-  if (r.devices?.length) {
-    const has = r.devices.some((m) => matchesDevice(m, client));
-    if (r.exceptDevices ? has : !has) return false;
+  if (inList) return "direct";
+  if (lib.source === "plugin") return "none";
+  const myKinds = libraryKinds(lib);
+  const overlaps = r.libraries.some((otherId) => {
+    const other = allLibs.find((l) => l.id === otherId);
+    if (!other || other.source === "plugin") return false;
+    const otherKinds = libraryKinds(other);
+    return myKinds.some((k) => otherKinds.includes(k));
+  });
+  return overlaps ? "partial" : "none";
+}
+
+function effectiveRules(
+  config: EtherConfig,
+  getPolicy: (id: number) => Record<string, unknown> | undefined,
+  viewerHint?: number,
+): QualityRule[] {
+  const base = (config.quality.rules ?? []).map((r, i) => ({
+    ...r,
+    id: r.id || `r_${i + 1}`,
+  }));
+  const out = [...base];
+  const viewerIds = new Set<number>([1, 2, 3, 4, 5, 6, 7]);
+  if (viewerHint) viewerIds.add(viewerHint);
+  for (const uid of viewerIds) {
+    const cap = Number(getPolicy(uid)?.maxBitrateKbps) || 0;
+    if (cap > 0 && !out.some((r) => r.viewers?.includes(uid) && r.maxBitrateKbps === cap)) {
+      out.push({
+        id: `r_viewer_${uid}`,
+        viewers: [uid],
+        maxBitrateKbps: cap,
+      });
+    }
   }
-  return true;
+  return out;
 }
 
 export function createQualityMock() {
-  function explain(
-    q: QualityQuestion,
+  function summarize(
+    q: URLSearchParams,
     config: EtherConfig,
-    policy: Record<string, unknown> | undefined,
+    libs: MockLibrarySummaryInput[],
+    getPolicy: (id: number) => Record<string, unknown> | undefined,
   ): Reply {
-    const client = CLIENTS.find((c) => c.id === q.clientId);
-    if (!client) return fail(400, "unknown_client", "no such app");
-    const quality = config.quality;
-    const profiles = quality.profiles ?? [];
-    const pick = (name: string | undefined) =>
-      name ? profiles.find((p) => p.name === name) : undefined;
-    const rules = quality.rules ?? [];
+    const viewerId = Number(q.get("viewer") || 0);
+    const deviceParam = q.get("device") || "";
+    const dev = parseDeviceParam(deviceParam, MOCK_QUALITY_DEVICES);
+    const unfiltered = !viewerId && !deviceParam;
+    const rules = effectiveRules(config, getPolicy, viewerId || undefined);
+    const profiles = config.quality.profiles ?? [];
+    const defaultHome = config.quality.default || profiles[0]?.name || "4K";
+    const defaultAway = config.quality.defaultAway ?? "";
 
-    let profileIndex = -1;
-    let maxHeightLimit = 0;
-    let maxBitrateKbps = 0;
-    let heightRuleIndex = -1;
+    const sortedLibs = [...libs].sort((a, b) => a.sort - b.sort || a.id - b.id);
+    const rows: QualitySummaryRow[] = sortedLibs.map((lib) => {
+      const chosenByPlugin = lib.source === "plugin";
+      const plugin = chosenByPlugin ? lib.pluginName || lib.pluginId || "" : "";
+      const kinds = libraryKinds(lib);
+
+      const evalCell = (
+        cellKind: "" | "movie" | "episode",
+        where: "home" | "away",
+      ): QualitySummaryCell => {
+        let profile = "";
+        let source: QualityDecisionSource = chosenByPlugin ? "plugin" : "default";
+        let profileRuleId: string | undefined;
+        let maxHeight = 0;
+        let maxBitrateKbps = 0;
+        let stereo = false;
+        const limitRuleIds: string[] = [];
+        const partialRuleIds: string[] = [];
+
+        for (const r of rules) {
+          if (unfiltered && (Boolean(r.viewers?.length) || Boolean(r.devices?.length))) continue;
+          if (!unfiltered) {
+            if (!matchesRuleViewer(r, viewerId)) continue;
+            if (!matchesRuleDevice(r, dev)) continue;
+          }
+          if (r.where && r.where !== where) continue;
+          if (r.kind) {
+            if (chosenByPlugin) continue;
+            if (cellKind && r.kind !== cellKind) continue;
+          }
+          const rel = libraryRelation(r, lib, sortedLibs);
+          if (rel === "none") continue;
+          const hasLimits = Boolean(r.maxHeight || r.maxBitrateKbps || r.stereoAudio);
+          const picksProfile = !chosenByPlugin && !profile && Boolean(r.profile);
+          if (rel === "partial") {
+            if ((picksProfile || hasLimits) && !partialRuleIds.includes(r.id)) {
+              partialRuleIds.push(r.id);
+            }
+            continue;
+          }
+          if (picksProfile && r.profile) {
+            profile = r.profile;
+            source = "rule";
+            profileRuleId = r.id;
+          }
+          if (hasLimits) {
+            if (r.maxHeight && (!maxHeight || r.maxHeight < maxHeight)) maxHeight = r.maxHeight;
+            if (r.maxBitrateKbps && (!maxBitrateKbps || r.maxBitrateKbps < maxBitrateKbps)) {
+              maxBitrateKbps = r.maxBitrateKbps;
+            }
+            if (r.stereoAudio) stereo = true;
+            limitRuleIds.push(r.id);
+          }
+        }
+
+        if (chosenByPlugin) {
+          profile = "";
+          source = "plugin";
+        } else if (!profile) {
+          if (where === "away" && defaultAway) {
+            profile = defaultAway;
+            source = "defaultAway";
+          } else {
+            profile = defaultHome;
+            source = "default";
+          }
+        }
+
+        return {
+          profile,
+          source,
+          ...(profileRuleId ? { profileRuleId } : {}),
+          maxHeight,
+          maxBitrateKbps,
+          stereo,
+          limitRuleIds,
+          partialRuleIds,
+        };
+      };
+
+      const splitsByKind =
+        !chosenByPlugin &&
+        kinds.length === 2 &&
+        rules.some((r) => {
+          if (!r.kind) return false;
+          if (!unfiltered && (!matchesRuleViewer(r, viewerId) || !matchesRuleDevice(r, dev))) {
+            return false;
+          }
+          return libraryRelation(r, lib, sortedLibs) !== "none";
+        });
+
+      const cellKinds: ("" | "movie" | "episode")[] = chosenByPlugin
+        ? [""]
+        : splitsByKind
+          ? ["movie", "episode"]
+          : kinds.length === 1
+            ? [kinds[0]!]
+            : [""];
+
+      const cells: QualitySummaryCellPair[] = cellKinds.map((k) => ({
+        kind: k,
+        home: evalCell(k, "home"),
+        away: evalCell(k, "away"),
+      }));
+
+      const exceptions: QualitySummaryException[] = [];
+      if (unfiltered) {
+        for (const r of rules) {
+          if (!r.viewers?.length && !r.devices?.length) continue;
+          if (r.kind && chosenByPlugin) continue;
+          if (r.kind && kinds.length === 1 && r.kind !== kinds[0]) continue;
+          if (libraryRelation(r, lib, sortedLibs) === "none") continue;
+          const hasEffect =
+            (!chosenByPlugin && Boolean(r.profile)) ||
+            Boolean(r.maxHeight || r.maxBitrateKbps || r.stereoAudio);
+          if (!hasEffect) continue;
+          exceptions.push({
+            ruleId: r.id,
+            profile: chosenByPlugin ? "" : (r.profile ?? ""),
+            maxHeight: r.maxHeight ?? 0,
+            maxBitrateKbps: r.maxBitrateKbps ?? 0,
+            stereo: Boolean(r.stereoAudio),
+          });
+        }
+      }
+
+      return {
+        libraryId: lib.id,
+        library: lib.name,
+        plugin,
+        chosenByPlugin,
+        cells,
+        exceptions,
+      };
+    });
+
+    const summary: QualitySummary = { rows };
+    return ok(summary);
+  }
+
+  function explain(
+    q: QualityQuestion & { mediaType?: string },
+    config: EtherConfig,
+    libs: MockLibrarySummaryInput[],
+    policy: Record<string, unknown> | undefined,
+    getPolicy: (id: number) => Record<string, unknown> | undefined,
+    resolveTitle?: (key: string) => MockTitleQualityInput | null,
+  ): Reply {
+    const resolved = resolveExplainDevice(q, MOCK_QUALITY_DEVICES);
+    if ("error" in resolved) return resolved.error;
+    const { dev } = resolved;
+    const profiles = config.quality.profiles ?? [];
+    const pick = (name: string | undefined): QualityProfile | undefined =>
+      name ? profiles.find((p) => p.name === name) : undefined;
+
+    const titleInfo = q.titleKey && resolveTitle ? resolveTitle(q.titleKey) : null;
+    if (q.titleKey && resolveTitle && !titleInfo) {
+      return fail(404, "unknown_title", "no such movie or episode");
+    }
+    const targetLib = q.libraryId ? libs.find((l) => l.id === q.libraryId) : undefined;
+    const memberLibs = titleInfo
+      ? new Set<number>(titleInfo.libraryIds)
+      : targetLib
+        ? new Set<number>([targetLib.id])
+        : null;
+    const rawKind =
+      titleInfo?.kind ||
+      q.kind ||
+      (q.mediaType === "tv" ? "episode" : q.mediaType === "movie" ? "movie" : "");
+    const kind: "" | "movie" | "episode" =
+      rawKind === "movie" || rawKind === "episode"
+        ? rawKind
+        : targetLib?.mediaType === "show"
+          ? "episode"
+          : targetLib?.mediaType === "movie"
+            ? "movie"
+            : "";
+
+    const where: "home" | "away" = q.remote ? "away" : "home";
+    const rules = effectiveRules(config, getPolicy, q.userId);
+    const chosenByPlugin = Boolean(titleInfo?.chosenByPlugin || targetLib?.source === "plugin");
+
+    let profileName = "";
+    let profileSource: QualityDecisionSource = chosenByPlugin ? "plugin" : "default";
+    let profileRuleId: string | undefined;
+    let profileRuleNum: number | undefined;
+    let pickedRuleWithDevice = false;
+
+    const limitRuleIds: string[] = [];
+    const matchingLimitLayers: { rule: QualityRule; ruleNum: number }[] = [];
+    let ruleMaxHeight = 0;
+    let ruleMaxBitrate = 0;
+    let stereo = false;
+
     for (let i = 0; i < rules.length; i++) {
       const r = rules[i]!;
-      if (!ruleMatches(r, q, client)) continue;
-      if (r.maxHeight && (!maxHeightLimit || r.maxHeight < maxHeightLimit)) {
-        maxHeightLimit = r.maxHeight;
-        heightRuleIndex = i;
+      if (r.where && r.where !== where) continue;
+      if (r.kind && kind && r.kind !== kind) continue;
+      if (!matchesRuleViewer(r, q.userId)) continue;
+      if (!matchesRuleDevice(r, dev)) continue;
+      if (r.libraries?.length) {
+        if (!memberLibs) continue;
+        const hit = r.libraries.some((id) => memberLibs.has(id));
+        if (r.exceptLibraries ? hit : !hit) continue;
       }
-      if (r.maxBitrateKbps && (!maxBitrateKbps || r.maxBitrateKbps < maxBitrateKbps)) {
-        maxBitrateKbps = r.maxBitrateKbps;
+
+      const inConfigIdx = (config.quality.rules ?? []).findIndex((cr) => cr.id === r.id);
+      const ruleNum = inConfigIdx >= 0 ? inConfigIdx + 1 : 0;
+
+      if (!chosenByPlugin && !profileName && r.profile) {
+        const found = pick(r.profile);
+        if (found) {
+          profileName = found.name;
+          profileSource = "rule";
+          profileRuleId = r.id;
+          profileRuleNum = ruleNum || i + 1;
+          pickedRuleWithDevice = Boolean(r.devices?.length) && !r.exceptDevices;
+        }
       }
-      if (profileIndex < 0 && r.profile && pick(r.profile)) {
-        profileIndex = i;
+      if (r.maxHeight || r.maxBitrateKbps || r.stereoAudio) {
+        if (r.maxHeight && (!ruleMaxHeight || r.maxHeight < ruleMaxHeight)) {
+          ruleMaxHeight = r.maxHeight;
+        }
+        if (r.maxBitrateKbps && (!ruleMaxBitrate || r.maxBitrateKbps < ruleMaxBitrate)) {
+          ruleMaxBitrate = r.maxBitrateKbps;
+        }
+        if (r.stereoAudio) stereo = true;
+        limitRuleIds.push(r.id);
+        matchingLimitLayers.push({ rule: r, ruleNum });
       }
     }
 
-    const rule = profileIndex >= 0 ? rules[profileIndex] : undefined;
-    let source: NonNullable<QualityLayer["source"]> = "first";
-    let profile = profiles[0];
-    if (rule) {
-      const found = pick(rule.profile);
-      if (found) {
-        source = "rule";
-        profile = found;
-      }
-    } else if (q.remote && quality.defaultAway) {
-      const found = pick(quality.defaultAway);
-      if (found) {
-        source = "remote";
-        profile = found;
-      }
-    } else {
-      const found = pick(quality.default);
-      if (found) {
-        source = "default";
-        profile = found;
+    if (!chosenByPlugin && !profileName) {
+      if (where === "away" && config.quality.defaultAway) {
+        profileName = config.quality.defaultAway;
+        profileSource = "defaultAway";
+      } else {
+        profileName = config.quality.default || profiles[0]?.name || "4K";
+        profileSource = "default";
       }
     }
 
-    const name = profile?.name ?? "default";
-    const configured = profile?.maxHeight ?? 1080;
-    const ceiling =
-      maxHeightLimit && maxHeightLimit < client.maxHeight ? maxHeightLimit : client.maxHeight;
-    const maxHeight = configured && (!ceiling || configured <= ceiling) ? configured : ceiling;
+    const prof = pick(profileName);
+    const configured = prof?.maxHeight ?? (chosenByPlugin ? 0 : 2160);
+    const androidLifted = Boolean(
+      dev.caps.androidMobile && pickedRuleWithDevice && configured > 1080,
+    );
+    const deviceMax = androidLifted ? configured : dev.caps.maxHeight;
+    const ceilings = [configured, deviceMax, ruleMaxHeight].filter((n) => n > 0);
+    const maxHeight = ceilings.length ? Math.min(...ceilings) : 0;
 
-    const layers: QualityLayer[] = [
-      {
+    const layers: QualityLayer[] = [];
+    if (!chosenByPlugin) {
+      layers.push({
         kind: "profile",
         reason: "",
-        profile: name,
-        source,
-        rule: rule ? profileIndex + 1 : undefined,
-        beatsRemote: Boolean(
-          rule && q.remote && quality.defaultAway && quality.defaultAway !== name,
-        ),
+        profile: prof?.name ?? profileName,
+        source: profileSource,
+        ...(profileRuleNum ? { rule: profileRuleNum } : {}),
+        ...(profileRuleId ? { ruleId: profileRuleId } : {}),
         maxHeight: configured,
-        hdr: Boolean(profile?.allowHdr),
-        dolbyVision: Boolean(profile?.allowDolbyVision),
+        hdr: Boolean(prof?.allowHdr ?? true),
+        dolbyVision: Boolean(prof?.allowDolbyVision ?? true),
         decisive: Boolean(maxHeight && configured === maxHeight),
-      },
-      {
-        kind: "device",
-        reason: "",
-        maxHeight: client.maxHeight,
-        hdr: client.hdr,
-        dolbyVision: client.dolbyVision,
-        decisive: Boolean(maxHeight && configured !== maxHeight && !maxHeightLimit),
-      },
-    ];
-    if (maxHeightLimit) {
-      layers.push({
-        kind: "rule-height",
-        reason: "",
-        rule: heightRuleIndex + 1,
-        maxHeight: maxHeightLimit,
-        decisive: configured !== maxHeight,
       });
     }
+
+    layers.push({
+      kind: "device",
+      reason: "",
+      maxHeight: dev.caps.maxHeight,
+      hdr: dev.caps.hdr,
+      dolbyVision: dev.caps.dolbyVision,
+      decisive: Boolean(
+        maxHeight &&
+        dev.caps.maxHeight === maxHeight &&
+        configured !== maxHeight &&
+        ruleMaxHeight !== maxHeight &&
+        !androidLifted,
+      ),
+    });
+
+    if (androidLifted && profileRuleId) {
+      layers.push({
+        kind: "android-lift",
+        reason: "",
+        ...(profileRuleNum ? { rule: profileRuleNum } : {}),
+        ruleId: profileRuleId,
+        maxHeight: configured,
+        decisive: false,
+      });
+    }
+
+    for (const { rule, ruleNum } of matchingLimitLayers) {
+      const decisive = Boolean(
+        (rule.maxHeight && rule.maxHeight === maxHeight && configured !== maxHeight) ||
+        (rule.maxBitrateKbps && rule.maxBitrateKbps === ruleMaxBitrate) ||
+        rule.stereoAudio,
+      );
+      layers.push({
+        kind: "rule-limit",
+        reason: "",
+        ...(ruleNum ? { rule: ruleNum } : {}),
+        ruleId: rule.id,
+        ...(rule.maxHeight ? { maxHeight: rule.maxHeight } : {}),
+        ...(rule.maxBitrateKbps ? { bitrateKbps: rule.maxBitrateKbps } : {}),
+        ...(rule.stereoAudio ? { stereo: true } : {}),
+        decisive,
+      });
+    }
+
     const blocked = q.remote && Boolean(policy?.remoteDisabled);
-    if (blocked) layers.push({ kind: "remote-blocked", reason: "", decisive: true });
+    if (blocked) {
+      layers.push({ kind: "remote-blocked", reason: "", decisive: true });
+    }
+
     const answer: QualityAnswer = {
-      profile: name,
-      ...(q.mediaType ? { mediaType: q.mediaType } : {}),
+      profile: chosenByPlugin ? "" : (prof?.name ?? profileName),
+      ...(kind ? { kind } : {}),
+      profileSource,
+      ...(profileRuleId ? { profileRuleId } : {}),
+      limitRuleIds,
       maxHeight,
-      hdr: Boolean(profile?.allowHdr) && client.hdr,
-      dolbyVision: Boolean(profile?.allowDolbyVision) && client.dolbyVision,
-      bitrateKbps: maxBitrateKbps,
+      hdr: Boolean(prof?.allowHdr ?? true) && (dev.caps.hdr || androidLifted),
+      dolbyVision: Boolean(prof?.allowDolbyVision ?? true) && dev.caps.dolbyVision,
+      bitrateKbps: ruleMaxBitrate,
+      ...(stereo ? { stereo: true } : {}),
       blocked,
       layers,
     };
@@ -301,14 +776,17 @@ export function createQualityMock() {
   function handle(
     method: string,
     seg: string[],
+    q: URLSearchParams,
     body: unknown,
     config: EtherConfig,
-    policy: (id: number) => Record<string, unknown> | undefined,
+    libs: MockLibrarySummaryInput[],
+    getPolicy: (id: number) => Record<string, unknown> | undefined,
+    resolveTitle?: (key: string) => MockTitleQualityInput | null,
   ): Reply | null {
     if (seg[0] !== "quality") return null;
     const route = `${method} /${seg.join("/")}`;
     if (route === "GET /quality/devices") return ok(MOCK_QUALITY_DEVICES);
-    if (route === "GET /quality/clients")
+    if (route === "GET /quality/clients") {
       return ok({
         clients: CLIENTS.map(({ id, name, product, platform, device }) => ({
           id,
@@ -318,10 +796,14 @@ export function createQualityMock() {
           device,
         })),
       });
+    }
+    if (route === "GET /quality/summary") {
+      return summarize(q, config, libs, getPolicy);
+    }
     if (route === "POST /quality/explain") {
-      const q = (body ?? {}) as QualityQuestion;
-      if (!q.userId) return fail(404, "unknown_viewer", "no such viewer");
-      return explain(q, config, policy(q.userId));
+      const req = (body ?? {}) as QualityQuestion & { mediaType?: string };
+      if (!req.userId) return fail(404, "unknown_viewer", "no such viewer");
+      return explain(req, config, libs, getPolicy(req.userId), getPolicy, resolveTitle);
     }
     return null;
   }

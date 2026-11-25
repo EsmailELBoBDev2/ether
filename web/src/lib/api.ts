@@ -69,6 +69,7 @@ import type {
   QualityClient,
   QualityDevices,
   QualityQuestion,
+  QualitySummary,
   RequestPreview,
   SiteDefinition,
   SiteTestResult,
@@ -404,6 +405,10 @@ export const api = {
   /** Device kinds, device types, apps and seen devices a rule can match. */
   qualityDevices: (signal?: AbortSignal) =>
     apiFetch<QualityDevices>("/quality/devices", { signal }),
+  qualitySummary: (
+    params: { viewer?: number | string; device?: string } = {},
+    signal?: AbortSignal,
+  ) => apiFetch<QualitySummary>(`/quality/summary${qs(params)}`, { signal }),
   explainQuality: (question: QualityQuestion, signal?: AbortSignal) =>
     post<QualityAnswer>("/quality/explain", question, signal),
 

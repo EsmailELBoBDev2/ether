@@ -935,7 +935,8 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	for _, mod := range models {
 		a := &assembly{visit: int64(day), plan: pl, model: mod, user: user, hc: hc, section: section, limit: limit,
 			owner:   append(append([]*candRow{}, owner...), e.pageRows(ctx, pl, mod, owner, &user, section)...),
-			allowed: allowed, day: day, intent: intent, tune: &tune}
+			allowed: allowed, day: day, intent: intent, tune: &tune,
+			metadataRows: func(kind string) bool { return e.metadataRowAvailable(kind, section) }}
 		cands := append(append([]*candRow{}, mod.rows...), a.owner...)
 		for _, c := range cands {
 			if a.hubID(c) != id {

@@ -324,6 +324,7 @@ export interface Library {
   sources?: string[];
   source: "builtin" | "plugin" | "catalogue" | "collection";
   mediaType?: string;
+  metadataSource?: string;
   pluginId?: string;
   kindKey?: string;
   /** Collection-source libraries: the collection whose titles it shows. */
@@ -474,6 +475,7 @@ export const librariesApi = {
     visibilityDefault: string,
     present?: Presentations,
     sources?: string[],
+    metadataSource?: string,
   ) =>
     apiFetch<Library>("/libraries", {
       method: "POST",
@@ -483,6 +485,7 @@ export const librariesApi = {
         rules,
         visibilityDefault,
         sources,
+        metadataSource,
         ...(present ? { present } : {}),
       }),
     }),
@@ -492,6 +495,7 @@ export const librariesApi = {
     mediaType: string,
     present?: Presentations,
     sources?: string[],
+    metadataSource?: string,
   ) =>
     apiFetch<Library>("/libraries", {
       method: "POST",
@@ -500,6 +504,7 @@ export const librariesApi = {
         collectionId,
         mediaType,
         sources,
+        metadataSource,
         ...(present ? { present } : {}),
       }),
     }),

@@ -683,10 +683,8 @@ func (s *Service) Observe(ctx context.Context, t *core.Title, r core.Release) {
 	if t == nil || t.Adult || (!t.IsReleased(s.now()) && t.Type != core.TypeEpisode) {
 		return
 	}
-	if t.Type == core.TypeEpisode {
-		if season := cmp.Or(t.Season, t.Key.Season()); season > 0 && t.Key.TMDB() > 0 {
-			s.RevealSeason(ctx, core.SeasonKey(t.Key.TMDB(), season))
-		}
+	if season := releaseSeasonKey(t); season != 0 {
+		s.RevealSeason(ctx, season)
 	}
 	if r.Info.Title == "" && r.Name != "" {
 		r.Info = releaseparse.Parse(r.Name)

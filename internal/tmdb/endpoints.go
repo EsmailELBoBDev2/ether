@@ -293,7 +293,15 @@ func (c *Client) SearchMovies(ctx context.Context, query string, page int) (*Pag
 }
 
 func (c *Client) SearchMoviesByYear(ctx context.Context, query string, page, year int) (*Paged[Movie], error) {
+	return c.SearchMoviesInLanguage(ctx, query, page, year, "")
+}
+
+func (c *Client) SearchMoviesInLanguage(ctx context.Context, query string, page, year int, lang string) (*Paged[Movie], error) {
+
 	q := pageQ(values("query", query, "include_adult", "false"), page)
+	if lang != "" {
+		q.Set("language", lang)
+	}
 	if year > 0 {
 		q.Set("primary_release_year", strconv.Itoa(year))
 	}
@@ -307,7 +315,15 @@ func (c *Client) SearchTV(ctx context.Context, query string, page int) (*Paged[T
 }
 
 func (c *Client) SearchTVByYear(ctx context.Context, query string, page, year int) (*Paged[TVShow], error) {
+	return c.SearchTVInLanguage(ctx, query, page, year, "")
+}
+
+func (c *Client) SearchTVInLanguage(ctx context.Context, query string, page, year int, lang string) (*Paged[TVShow], error) {
+
 	q := pageQ(values("query", query, "include_adult", "false"), page)
+	if lang != "" {
+		q.Set("language", lang)
+	}
 	if year > 0 {
 		q.Set("first_air_date_year", strconv.Itoa(year))
 	}

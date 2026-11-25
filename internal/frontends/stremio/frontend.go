@@ -205,7 +205,7 @@ func (i *instance) manifest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"id": "org.ether.viewer", "version": "1.0.0", "name": "Ether",
 		"types": []string{"movie", "series", "channel", "tv"}, "resources": []string{"catalog", "meta", "stream"},
-		"idPrefixes": []string{"tmdb:", "tt", "pk:"},
+		"idPrefixes": []string{"tmdb:", "tt", "pk:", catalogKeyPrefix},
 		"catalogs":   catalogs,
 	})
 }

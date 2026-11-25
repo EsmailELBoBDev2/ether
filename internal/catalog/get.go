@@ -8,7 +8,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
-	"slices"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,6 +94,9 @@ func (c *Catalog) fresh(st *storedTitle) bool {
 // Get returns a title from the mirror, fetching on demand when missing/stale.
 func (c *Catalog) Get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	t, err := c.get(ctx, key)
+	if err == nil {
+		err = c.projectSingle(ctx, t)
+	}
 	if err == nil && !c.visibleTitle(t) {
 		return nil, core.ErrNotFound
 	}
@@ -111,15 +114,22 @@ func (c *Catalog) upcomingMovie(t *core.Title) bool {
 }
 
 func (c *Catalog) visibleTitle(t *core.Title) bool {
-	return t != nil && !t.Adult && (c.upcomingMovie(t) || (t.IsReleased(c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
+	return t != nil && !t.Adult && (c.upcomingMovie(t) || (selectedEpisodeReleased(t, c.now()) && (!(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t)))) && (t.Type != core.TypeSeason || listableSeason(t, c.now()))
 }
 
 // CachedGet applies the same catalogue visibility gates as Get without a
 // network refresh. Missing or hidden records fail closed; callers may use
 // the normal catalogue path separately to populate the local mirror.
 func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	key, err := c.canonicalSourceKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	stored, err := c.loadByKey(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.projectSingle(ctx, &stored.t); err != nil {
 		return nil, err
 	}
 	if !c.visibleTitle(&stored.t) {
@@ -130,6 +140,21 @@ func (c *Catalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Titl
 }
 
 func (c *Catalog) StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	t, err := c.storedTitle(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.projectSingle(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (c *Catalog) storedTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	key, err := c.canonicalSourceKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	st, err := c.loadByKey(ctx, key)
 	if err != nil {
 		if errors.Is(err, core.ErrNotFound) {
@@ -152,6 +177,55 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 }
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if key.IsTitleKey() && (key.Allocated() || c.metadataSourceDefault.Load() != nil || !c.MetadataSources().Get(core.MetadataTMDB).Configured()) {
+		t, err := c.storedTitle(ctx, key)
+		if err == nil {
+			if len(c.metadataSources.Configured()) == 0 || (noReadWait(ctx) && !core.ColdDetail(ctx, t.Key)) {
+				return t, nil
+			}
+			source, err := c.titleDetailsSource(ctx, t)
+			if err != nil {
+				return nil, err
+			}
+			if t.Key.Allocated() || source != "" && source != core.MetadataTMDB {
+				return c.sourceTitleDetails(ctx, t, source, false)
+			}
+			key = t.Key
+		} else if !errors.Is(err, core.ErrNotFound) {
+			return nil, err
+		} else if key.Allocated() || !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
+			typ := core.TypeShow
+			if key.Kind() == core.KindMovie {
+				typ = core.TypeMovie
+			}
+			return c.openSourceTitle(ctx, key, typ)
+		}
+	}
+	if (key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode) && (key.Allocated() || c.canProjectAlternateOrders()) {
+		parent, show, order, err := c.orderForParent(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if parent != nil && show != nil && providerLayout(show, order) {
+			if key.Kind() == core.KindSeason && !noReadWait(ctx) {
+				if season, err := c.orderSeasonByKey(ctx, show.Key, order, key); err == nil {
+					if err := c.ensureOrderSeason(ctx, show, order, season); err != nil {
+						return nil, err
+					}
+				} else if !errors.Is(err, core.ErrNotFound) {
+					return nil, err
+				}
+			}
+			return parent, nil
+		}
+		if key.Allocated() {
+			if parent != nil {
+				return parent, nil
+			}
+			return nil, core.ErrNotFound
+		}
+	}
+
 	if noReadWait(ctx) && (key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode) {
 		defer c.reportDetailPending(ctx, key)
 		if core.ColdDetail(ctx, key) {
@@ -187,7 +261,7 @@ func (c *Catalog) getMovie(ctx context.Context, id int64) (*core.Title, error) {
 		st = &storedTitle{t: summary}
 		err = nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if err != nil {
 			return nil, err
 		}
@@ -343,7 +417,7 @@ func (c *Catalog) getShow(ctx context.Context, id int64) (*core.Title, error) {
 		st = &storedTitle{t: summary}
 		err = nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +520,7 @@ func (c *Catalog) fetchSeasonOpts(ctx context.Context, showID int64, season int,
 	if !force && lerr == nil && mirrored && c.seasonFresh(stored, show) {
 		return &stored.t, nil
 	}
-	if c.tmdb() == nil {
+	if !c.TMDBConfigured() {
 		if lerr != nil {
 			return nil, lerr
 		}
@@ -489,7 +563,7 @@ func (c *Catalog) fetchSeasonOpts(ctx context.Context, showID int64, season int,
 
 // storeSeasonDetails mirrors episode metadata from the season payload.
 func (c *Catalog) storeSeasonDetails(ctx context.Context, show *core.Title, sd *tmdb.SeasonDetails, explicit bool) error {
-	showID, season := show.Key.TMDB(), sd.SeasonNumber
+	showID, season := show.IDs.TMDB, sd.SeasonNumber
 	opts := upsertOpts{airDates: true, replaceMetadata: explicit}
 	seasonName := sd.Name
 	if seasonName == "" {
@@ -578,7 +652,7 @@ func (c *Catalog) getEpisode(ctx context.Context, key core.RatingKey) (*core.Tit
 	// A season refresh that just failed will fail these too; do not fan that
 	// wait out across every episode in a list.
 	refreshKey := "episode-ids:" + strconv.FormatUint(uint64(key), 10)
-	if c.tmdb() != nil && st.t.IDs.IMDB == "" && !c.refreshMissed(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshing(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshMissed(refreshKey) {
+	if c.TMDBConfigured() && st.t.IDs.IMDB == "" && !c.refreshMissed(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshing(seasonRefreshKey(key.TMDB(), key.Season())) && !c.refreshMissed(refreshKey) {
 		stored := st.t
 		fetch := func(ctx context.Context) error {
 			ext, err := c.tmdb().EpisodeExternalIDs(ctx, key.TMDB(), key.Season(), key.Episode())
@@ -644,12 +718,12 @@ func (c *Catalog) readSeasonsOfShow(ctx context.Context, showID int64) ([]core.T
 // episodesOfSeason lists a season's aired episodes; queryTitles drops those
 // with unknown or future air dates.
 func (c *Catalog) episodesOfSeason(ctx context.Context, showID int64, season int) ([]core.Title, error) {
-	return c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND season=? ORDER BY episode ASC`, int64(core.ShowKey(showID)), season)
+	return c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND key<5000000000000000 AND show_key=? AND season=? ORDER BY episode ASC`, int64(core.ShowKey(showID)), season)
 }
 
 // airedSeasonEpisodeWhere matches the rows queryTitles keeps for a season:
 // not adult, and an air date that is already known and not in the future.
-const airedSeasonEpisodeWhere = `type='episode' AND show_key=? AND season=? AND adult=0 AND ` + knownReleaseSQL + ` AND released_ts<=?`
+const airedSeasonEpisodeWhere = `type='episode' AND key<5000000000000000 AND show_key=? AND season=? AND adult=0 AND ` + knownReleaseSQL + ` AND released_ts<=?`
 
 // SeasonEpisodePage returns one window of a single catalogue season. The
 // count and the page both use catalog_titles_show (show_key, season, episode),
@@ -657,9 +731,31 @@ const airedSeasonEpisodeWhere = `type='episode' AND show_key=? AND season=? AND 
 // limit is 1..1000. The first page checks season freshness, serving stored
 // episodes while stale metadata refreshes. Later pages do not fetch.
 func (c *Catalog) SeasonEpisodePage(ctx context.Context, show core.RatingKey, season, offset, limit int) (core.Page, error) {
-	if show.Kind() != core.KindShow || season < 0 || season >= 1000 || offset < 0 || limit < 1 || limit > 1000 {
+	if show.Kind() != core.KindShow || season < 0 || offset < 0 || limit < 1 || limit > 1000 {
 		return core.Page{}, fmt.Errorf("catalog: season page out of range")
 	}
+	_, parent, order, err := c.orderForParent(ctx, show)
+	if err != nil {
+		return core.Page{}, err
+	}
+	if parent != nil && providerLayout(parent, order) {
+		if offset == 0 {
+			seasons, err := c.ensureOrderManifest(ctx, parent, order)
+			if err != nil {
+				return core.Page{}, err
+			}
+			if selected, ok := orderedSeason(seasons, season); ok {
+				if err := c.ensureOrderSeason(ctx, parent, order, selected); err != nil {
+					return core.Page{}, err
+				}
+			}
+		}
+		return c.orderedEpisodePage(ctx, parent, order, season, offset, limit, false)
+	}
+	if season >= 1000 {
+		return core.Page{}, core.ErrNotFound
+	}
+
 	if noReadWait(ctx) {
 		key := core.SeasonKey(show.TMDB(), season)
 		defer c.reportDetailPending(ctx, key)
@@ -715,7 +811,7 @@ func (c *Catalog) seasonEpisodeQuery(ctx context.Context, showID int64, season, 
 // episodes, including episodes which have yet to air.
 func (c *Catalog) seasonMirrored(ctx context.Context, showID int64, season, count int) (bool, error) {
 	var exists bool
-	err := c.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND season=? LIMIT 1 OFFSET ?)`, int64(core.ShowKey(showID)), season, count-1).Scan(&exists)
+	err := c.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND key<5000000000000000 AND show_key=? AND season=? LIMIT 1 OFFSET ?)`, int64(core.ShowKey(showID)), season, count-1).Scan(&exists)
 	return exists, err
 }
 
@@ -724,6 +820,59 @@ func (c *Catalog) Children(ctx context.Context, key core.RatingKey) ([]core.Titl
 	if _, err := c.Get(ctx, key); err != nil {
 		return nil, err
 	}
+	parent, show, order, err := c.orderForParent(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if show != nil && providerLayout(show, order) {
+		switch key.Kind() {
+		case core.KindShow:
+			seasons, err := c.ensureOrderManifest(ctx, show, order)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]core.Title, 0, len(seasons))
+			for _, season := range seasons {
+				t := orderedSeasonTitle(show, order, season)
+				if (t.Released.IsZero() || t.IsReleased(c.now())) && season.EpisodeCount != 0 {
+					out = append(out, t)
+				}
+			}
+			if _, found := orderedSeason(seasons, 0); !found && order.Source != core.MetadataTMDB && show.IDs.TMDB > 0 && !show.Key.Allocated() {
+				if special, err := c.loadByKey(ctx, core.SeasonKey(show.IDs.TMDB, 0)); err == nil && c.visibleTitle(&special.t) {
+					t := special.t
+					t.ParentKey, t.EpisodeOrder = show.Key, order
+					out = append([]core.Title{t}, out...)
+				} else if err != nil && !errors.Is(err, core.ErrNotFound) {
+					return nil, err
+				}
+			}
+			if err := c.hydrateShows(ctx, out); err != nil {
+				return nil, err
+			}
+			return out, nil
+		case core.KindSeason:
+			seasons, err := c.ensureOrderManifest(ctx, show, order)
+			if err != nil {
+				return nil, err
+			}
+			for _, selected := range seasons {
+				if selected.key == key {
+					if err := c.ensureOrderSeason(ctx, show, order, selected); err != nil {
+						return nil, err
+					}
+					page, err := c.orderedEpisodePage(ctx, show, order, selected.Season, 0, max(selected.EpisodeCount+256, 1024), false)
+					return page.Items, err
+				}
+			}
+			if parent != nil && parent.Season == 0 && order.Source != core.MetadataTMDB && !key.Allocated() {
+				page, err := c.orderedEpisodePage(ctx, show, order, 0, 0, math.MaxInt32, false)
+				return page.Items, err
+			}
+			return []core.Title{}, nil
+		}
+	}
+
 	switch key.Kind() {
 	case core.KindShow:
 		if !noReadWait(ctx) {
@@ -762,6 +911,27 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		}
 		return nil, fmt.Errorf("%w: key %s", core.ErrNotFound, key)
 	}
+	_, show, order, err := c.orderForParent(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if show != nil && providerLayout(show, order) {
+		seasons, err := c.ensureOrderManifest(ctx, show, order)
+		if err != nil {
+			return nil, err
+		}
+		for _, season := range seasons {
+			if d := metadataDate(season.AirDate); !d.IsZero() && d.After(c.now()) {
+				continue
+			}
+			if err := c.ensureOrderSeason(ctx, show, order, season); err != nil {
+				return nil, err
+			}
+		}
+		page, err := c.orderedEpisodePage(ctx, show, order, -1, 0, math.MaxInt32, false)
+		return page.Items, err
+	}
+
 	gen := c.writeGen.Load()
 	minute := c.minuteBucket()
 	c.cacheMu.RLock()
@@ -779,7 +949,7 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 		return nil, err
 	}
 	if len(seasons) == 0 {
-		if c.tmdb() == nil {
+		if !c.TMDBConfigured() {
 			var seasonRows int
 			if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key=?`, int64(key)).Scan(&seasonRows); err == nil && seasonRows == 0 {
 				out, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? ORDER BY season ASC, episode ASC`, int64(key))
@@ -802,7 +972,7 @@ func (c *Catalog) Grandchildren(ctx context.Context, key core.RatingKey) ([]core
 	}
 	membership, args := c.keyMembership("season", false, numbers)
 	args = append([]any{int64(key)}, args...)
-	out, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND `+membership+` ORDER BY season ASC, episode ASC`, args...)
+	out, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND key<5000000000000000 AND show_key=? AND `+membership+` ORDER BY season ASC, episode ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,34 +1171,90 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 	const showsPerStatement = 50
 	for start := 0; start < len(order); start += showsPerStatement {
 		part := order[start:min(start+showsPerStatement, len(order))]
+		var byKey map[core.RatingKey]core.Title
+		var choices map[core.RatingKey]showOrder
+		if c.canProjectAlternateOrders() {
+			keys := make([]core.RatingKey, len(part))
+			for i, w := range part {
+				keys[i] = w.from
+			}
+			filter, bind := c.keyMembership("key", false, keys)
+			anchors, err := c.scanTitleKeys(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE `+filter, bind...)
+			if err != nil {
+				return nil, err
+			}
+			showKeys := make([]core.RatingKey, 0, len(anchors))
+			byKey = make(map[core.RatingKey]core.Title, len(anchors))
+			for _, t := range anchors {
+				showKeys = append(showKeys, t.ShowKey)
+				byKey[t.Key] = t
+			}
+			choices, err = c.readShowOrders(ctx, showKeys)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		branches := make([]string, 0, len(part))
 		var args []any
 		for i, w := range part {
-			show := int64(core.ShowKey(w.from.TMDB()))
-			cond := `season>0 AND (season>? OR (season=? AND episode>?))`
-			wargs := []any{show, w.from.Season(), w.from.Season(), w.from.Episode()}
-			if w.from.Season() <= 0 {
-				cond, wargs = `season>0`, []any{show}
+			anchor := byKey[w.from]
+			choice, known := choices[anchor.ShowKey]
+			index := ` AS n` + strconv.Itoa(i)
+			tag := `,` + strconv.Itoa(start+i) + ` AS w`
+			if known && providerLayout(&choice.title, choice.order) {
+				cond := ` WHERE e.show_key=? AND e.provider=? AND e.order_kind=? AND e.season>0 AND e.air_date<>'' AND e.air_date<=? AND t.adult=0
+ AND (a.episode_key IS NOT NULL AND (e.season>a.season OR (e.season=a.season AND e.episode>a.episode))
+ OR (a.episode_key IS NULL AND (?=0 OR e.air_date>?)))`
+				bind := []any{w.from, anchor.ShowKey, choice.order.Source, choice.order.Kind, now.UTC().Format(time.DateOnly), anchor.Season, anchor.Released.UTC().Format(time.DateOnly)}
+				if uid != nil {
+					cond += ` AND NOT EXISTS(SELECT 1 FROM state_watch w WHERE w.user_id=? AND w.rating_key=t.key AND w.view_count>0 AND w.view_offset_ns<=0)`
+					bind = append(bind, *uid)
+				}
+				branches = append(branches, `SELECT * FROM (SELECT `+prefixedCols("t")+tag+`,1 AS projected
+ FROM catalog_order_episodes e JOIN catalog_titles t ON t.key=e.episode_key
+ LEFT JOIN catalog_order_episodes a ON a.show_key=e.show_key AND a.provider=e.provider AND a.order_kind=e.order_kind AND a.episode_key=?`+
+					cond+` ORDER BY e.season,e.episode LIMIT 8)`+index)
+				args = append(args, bind...)
+				continue
+			}
+			show := anchor.ShowKey
+			season, episode := anchor.Season, anchor.Episode
+			if show == 0 && !w.from.Allocated() {
+				show, season, episode = core.ShowKey(w.from.TMDB()), w.from.Season(), w.from.Episode()
+			}
+			if show == 0 {
+				continue
+			}
+			cond := `season>0 AND key<5000000000000000 AND (season>? OR (season=? AND episode>?))`
+			wargs := []any{show, season, season, episode}
+			if season <= 0 {
+				cond, wargs = `season>0 AND key<5000000000000000`, []any{show}
 			}
 			if uid != nil {
 				cond += ` AND NOT EXISTS(SELECT 1 FROM state_watch watched WHERE watched.user_id=? AND watched.rating_key=catalog_titles.key AND watched.view_count>0 AND watched.view_offset_ns<=0 LIMIT 1 OFFSET 0)`
 				wargs = append(wargs, *uid)
 			}
-			branches = append(branches, `SELECT * FROM (SELECT `+titleCols+`,`+strconv.Itoa(start+i)+` AS w FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND `+cond+` ORDER BY season ASC, episode ASC LIMIT 8) AS n`+strconv.Itoa(i))
+			branches = append(branches, `SELECT * FROM (SELECT `+titleCols+tag+`,0 AS projected FROM catalog_titles`+
+				c.indexedBy("catalog_titles_show")+` WHERE type='episode' AND show_key=? AND `+cond+` ORDER BY season,episode LIMIT 8)`+index)
 			args = append(args, wargs...)
 		}
+		if len(branches) == 0 {
+			continue
+		}
+
 		rows, err := c.db.QueryContext(ctx, strings.Join(branches, ` UNION ALL `), args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var at int
-			st, err := scanTitle(extraScan{rows, []any{&at}})
+			var at, projected int
+			st, err := scanTitle(extraScan{rows, []any{&at, &projected}})
 			if err != nil {
 				rows.Close()
 				return nil, err
 			}
-			if at >= 0 && at < len(order) && !st.t.Adult && st.t.IsReleased(now) {
+			if at >= 0 && at < len(order) && !st.t.Adult && (projected != 0 || st.t.IsReleased(now)) {
 				order[at].cands = append(order[at].cands, st.t)
 			}
 		}
@@ -1040,12 +1266,7 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 	}
 	var open []*window
 	for _, w := range order {
-		slices.SortFunc(w.cands, func(a, b core.Title) int {
-			if a.Season != b.Season {
-				return a.Season - b.Season
-			}
-			return a.Episode - b.Episode
-		})
+
 		if len(w.cands) > 0 {
 			open = append(open, w)
 		}
@@ -1061,7 +1282,7 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 		const batch = 200
 		for chunk := range store.Chunks(keys, batch) {
 			part := chunk
-			rows, err := c.queryTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, part...)
+			rows, err := c.queryPagedTitles(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, part...)
 			if err != nil {
 				return nil, err
 			}
@@ -1071,7 +1292,7 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 		}
 		var retry []*window
 		for _, w := range open {
-			if t, ok := got[w.cands[0].Key]; ok {
+			if t, ok := got[w.cands[0].Key]; ok && c.visibleTitle(&t) {
 				t := t
 				out[w.from] = &t
 				continue
@@ -1085,52 +1306,9 @@ func (c *Catalog) nextStoredEpisodes(ctx context.Context, episodes []core.Rating
 	return out, nil
 }
 
-// ContinueEpisodes returns locally available next episodes and schedules recovery
-// for missing metadata. A Home read must never wait for a provider: hydration
-// is bounded, deduplicated and detached by the ordinary catalogue read path.
-// Keep NextStoredEpisodes strictly local for other snapshot consumers.
+// ContinueEpisodes returns the next episode in the stored effective order.
 func (c *Catalog) ContinueEpisodes(ctx context.Context, episodes []core.RatingKey) (map[core.RatingKey]*core.Title, error) {
-	next, err := c.NextStoredEpisodes(ctx, episodes)
-	if err != nil || c == nil || c.db == nil || c.tmdb() == nil {
-		return next, err
-	}
-	ctx = WithReadWaitBudget(ctx, 0)
-	for _, key := range episodes {
-		if ctx.Err() != nil {
-			break
-		}
-		if key.Kind() != core.KindEpisode {
-			continue
-		}
-		t := next[key]
-		// A contiguous stored successor needs no provider work. A gap or season
-		// boundary can conceal an unmirrored earlier episode in the current season.
-		if t != nil && t.Season == key.Season() && t.Episode == key.Episode()+1 {
-			continue
-		}
-		show, _ := c.ensureShow(ctx, key.TMDB())
-		if key.Season() > 0 {
-			force := false
-			if show != nil && strings.EqualFold(show.Status, "Returning Series") {
-				if st, err := c.loadByKey(ctx, core.SeasonKey(key.TMDB(), key.Season())); err == nil {
-					force = c.now().Sub(st.detailAt) >= min(c.staleAfter, caughtUpRefreshTTL)
-				}
-			}
-			_, _ = c.fetchSeasonOpts(ctx, key.TMDB(), key.Season(), force, false)
-		}
-		// Do not use seasonsOfShow: its aired-episode counts hide exactly
-		// the unmirrored seasons we need to hydrate. Read dated summaries.
-		seasons, err := c.scanTitleKeys(ctx, `SELECT `+titleCols+` FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE type='season' AND show_key=? AND season>? AND season>0 ORDER BY season LIMIT 8`, int64(core.ShowKey(key.TMDB())), key.Season())
-		if err != nil {
-			return next, err
-		}
-		for _, season := range seasons {
-			if !season.Adult && season.IsReleased(c.now()) {
-				_, _ = c.fetchSeason(ctx, key.TMDB(), season.Season)
-			}
-		}
-	}
-	return next, nil
+	return c.NextStoredEpisodes(ctx, episodes)
 }
 
 // scanTitleKeys reads title rows without hydrating them.
@@ -1157,6 +1335,45 @@ func (c *Catalog) NextEpisode(ctx context.Context, episode core.RatingKey) (*cor
 	if episode.Kind() != core.KindEpisode {
 		return nil, core.ErrNotFound
 	}
+	anchor, parent, order, err := c.orderForParent(ctx, episode)
+	if err != nil {
+		return nil, err
+	}
+	if anchor != nil && parent != nil && providerLayout(parent, order) {
+		if err := c.projectSingle(ctx, anchor); err != nil {
+			return nil, err
+		}
+		seasons, err := c.ensureOrderManifest(ctx, parent, order)
+		if err != nil {
+			return nil, err
+		}
+		if current, ok := orderedSeason(seasons, anchor.Season); ok {
+			if err := c.ensureOrderSeason(ctx, parent, order, current); err != nil {
+				return nil, err
+			}
+		}
+		if next, err := c.NextStoredEpisode(ctx, episode); err == nil || !errors.Is(err, core.ErrNotFound) {
+			return next, err
+		}
+		for _, season := range seasons {
+			if season.Season <= anchor.Season || season.Season <= 0 {
+				continue
+			}
+			date := metadataDate(season.AirDate)
+			if !date.IsZero() && date.After(c.now()) {
+				break
+			}
+			if err := c.ensureOrderSeason(ctx, parent, order, season); err != nil {
+				return nil, err
+			}
+			break
+		}
+		return c.NextStoredEpisode(ctx, episode)
+	}
+	if episode.Allocated() {
+		return c.NextStoredEpisode(ctx, episode)
+	}
+
 	showID, curSeason, curEp := episode.TMDB(), episode.Season(), episode.Episode()
 	show, err := c.ensureShow(ctx, showID)
 	if err != nil {
@@ -1234,9 +1451,36 @@ func (c *Catalog) RefreshTitleTree(ctx context.Context, key core.RatingKey) (*co
 }
 
 func (c *Catalog) refreshTitle(ctx context.Context, key core.RatingKey, persist, tree bool) (*core.Title, error) {
+	id := key.TMDB()
+	if tree {
+		t, err := c.storedTitle(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		source, err := c.titleDetailsSource(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		alternate := false
+		if t.Type == core.TypeShow {
+			order, err := c.effectiveEpisodeOrder(ctx, t)
+			if err != nil {
+				return nil, err
+			}
+			alternate = providerLayout(t, order.Order)
+		}
+		if t.Key.Allocated() || alternate || source != "" && source != core.MetadataTMDB {
+			return c.refreshSourceTree(ctx, t, source)
+		}
+		key = t.Key
+		if t.IDs.TMDB > 0 {
+			id = t.IDs.TMDB
+		}
+	}
+
 	client := c.tmdb()
-	if client == nil {
-		return nil, fmt.Errorf("catalog: TMDB unavailable")
+	if client == nil || !c.TMDBConfigured() {
+		return nil, core.ErrUnsupported
 	}
 	var t core.Title
 	switch key.Kind() {
@@ -1246,14 +1490,14 @@ func (c *Catalog) refreshTitle(ctx context.Context, key core.RatingKey, persist,
 		if fresh, ok := client.(interface {
 			MovieDetailsFresh(context.Context, int64) (*tmdb.MovieDetails, error)
 		}); ok {
-			d, err = fresh.MovieDetailsFresh(ctx, key.TMDB())
+			d, err = fresh.MovieDetailsFresh(ctx, id)
 		} else {
 			return nil, fmt.Errorf("catalog: fresh movie details unavailable")
 		}
 		if err != nil {
 			return nil, err
 		}
-		if d == nil || d.ID != key.TMDB() {
+		if d == nil || d.ID != id {
 			return nil, fmt.Errorf("catalog: invalid movie details for %s", key)
 		}
 		t = c.movieDetailsToTitle(ctx, d)
@@ -1268,14 +1512,14 @@ func (c *Catalog) refreshTitle(ctx context.Context, key core.RatingKey, persist,
 		if fresh, ok := client.(interface {
 			TVDetailsFresh(context.Context, int64) (*tmdb.TVDetails, error)
 		}); ok {
-			d, err = fresh.TVDetailsFresh(ctx, key.TMDB())
+			d, err = fresh.TVDetailsFresh(ctx, id)
 		} else {
 			return nil, fmt.Errorf("catalog: fresh show details unavailable")
 		}
 		if err != nil {
 			return nil, err
 		}
-		if d == nil || d.ID != key.TMDB() {
+		if d == nil || d.ID != id {
 			return nil, fmt.Errorf("catalog: invalid show details for %s", key)
 		}
 		t = c.tvDetailsToTitle(ctx, d)
@@ -1293,9 +1537,9 @@ func (c *Catalog) refreshTitle(ctx context.Context, key core.RatingKey, persist,
 	}
 	if tree {
 		if key.Kind() == core.KindMovie {
-			c.clearRefreshMiss(movieRefreshKey(key.TMDB()))
+			c.clearRefreshMiss(movieRefreshKey(id))
 		} else {
-			c.clearRefreshMiss(showRefreshKey(key.TMDB()))
+			c.clearRefreshMiss(showRefreshKey(id))
 		}
 	}
 	if !persist {

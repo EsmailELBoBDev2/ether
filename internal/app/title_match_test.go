@@ -9,8 +9,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// A series match moves the same episode coordinate across independently
-// keyed tables. Existing destination state must survive and a movie with
+// A series match moves a proven episode binding across independently
+// keyed tables, including an allocated destination. A movie with
 // the same TMDB number must retain its separate vault entry.
 func TestTitleMatchMovesCanonicalBindings(t *testing.T) {
 	ctx := context.Background()
@@ -18,7 +18,11 @@ func TestTitleMatchMovesCanonicalBindings(t *testing.T) {
 	a := &App{db: db}
 	from := &core.Title{Key: core.ShowKey(81), IDs: core.IDs{TMDB: 81}, Type: core.TypeShow, Title: "Old"}
 	to := &core.Title{Key: core.ShowKey(92), IDs: core.IDs{TMDB: 92}, Type: core.TypeShow, Title: "New", Year: 2024}
-	ep, dest := core.EpisodeKey(81, 2, 3), core.EpisodeKey(92, 2, 3)
+	ep, unmatched := core.EpisodeKey(81, 2, 3), core.EpisodeKey(81, 2, 4)
+	dest, ok := core.AllocatedKey(core.KindEpisode, 17)
+	if !ok {
+		t.Fatal("allocate episode key")
+	}
 	exec := func(query string, args ...any) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, query, args...); err != nil {
@@ -37,7 +41,13 @@ func TestTitleMatchMovesCanonicalBindings(t *testing.T) {
 	exec(`INSERT INTO vault_releases(key,kind,name,title_key,tmdb,year,season,episode,size,segments,pack,off,len,crc,holders,source,added,last_used,private,profile_fp,info)
 		VALUES ('show','torrent','show','old',81,0,2,3,0,0,'',0,0,0,'','',0,0,0,'','{}'),
 		       ('movie','torrent','movie','old',81,0,0,0,0,0,'',0,0,0,'','',0,0,0,'','{}')`)
-	if err := a.moveTitleBindings(ctx, from, to); err != nil {
+	exec(`INSERT INTO watchlist_episodes(user_id,item_key,episode_key,at) VALUES(1,?,?,1),(1,?,?,1)`,
+		from.Key, ep, from.Key, unmatched)
+	ranges := []core.TitleKeyRange{
+		{First: int64(from.Key), Last: int64(from.Key), Delta: int64(to.Key - from.Key)},
+		{First: int64(ep), Last: int64(ep), Delta: int64(dest - ep)},
+	}
+	if err := a.moveTitleBindings(ctx, from, to, ranges); err != nil {
 		t.Fatal(err)
 	}
 	assertInt := func(want int64, query string, args ...any) {
@@ -48,6 +58,9 @@ func TestTitleMatchMovesCanonicalBindings(t *testing.T) {
 		}
 	}
 	assertInt(0, `SELECT COUNT(*) FROM state_watch WHERE rating_key=?`, ep)
+	assertInt(0, `SELECT COUNT(*) FROM watchlist_episodes WHERE item_key=? AND episode_key=?`, from.Key, ep)
+	assertInt(1, `SELECT COUNT(*) FROM watchlist_episodes WHERE item_key=? AND episode_key=?`, to.Key, dest)
+	assertInt(1, `SELECT COUNT(*) FROM watchlist_episodes WHERE item_key=? AND episode_key=?`, from.Key, unmatched)
 	assertInt(2, `SELECT view_count FROM state_watch WHERE user_id=1 AND rating_key=?`, dest)
 	assertInt(200, `SELECT view_offset_ns FROM state_watch WHERE user_id=1 AND rating_key=?`, dest)
 	assertInt(300, `SELECT view_offset_ns FROM state_watch WHERE user_id=2 AND rating_key=?`, dest)

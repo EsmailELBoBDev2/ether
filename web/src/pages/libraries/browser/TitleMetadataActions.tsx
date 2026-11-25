@@ -1,19 +1,25 @@
-import { Badge, Button, Input, Popover, toast } from "@braedonsaunders/appkit-ui";
-import { ArrowUpRight, Ellipsis, RefreshCw, Search } from "lucide-react";
+import { Badge, Button, Input, Popover, Select, toast } from "@braedonsaunders/appkit-ui";
+import { ArrowUpRight, Ellipsis, ListOrdered, RefreshCw, Search } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { Artwork } from "../../../components/Artwork";
 import { Drawer } from "../../../components/Drawer";
 import { t } from "../../../i18n";
 import { apiFetch } from "../../../lib/api";
+import { useAsync } from "../../../lib/hooks";
+import { metadataSources, supportsMetadata } from "../../../lib/metadataSources";
 import type { TitleCard, TitleDetail } from "../../../lib/contract";
+
+type MatchCandidate = TitleCard & { source: string; providerId: string };
 
 export function TitleMetadataActions({
   title,
   onRefresh,
+  onEpisodeOrder,
   onMatch,
 }: {
   title: TitleDetail;
   onRefresh: () => Promise<unknown>;
+  onEpisodeOrder?: () => void;
   onMatch: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -75,6 +81,20 @@ export function TitleMetadataActions({
             <Search size={15} />
             {t("Fix match")}
           </Button>
+          {onEpisodeOrder ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="justify-start"
+              onClick={() => {
+                setMenuOpen(false);
+                onEpisodeOrder();
+              }}
+            >
+              <ListOrdered size={15} />
+              {t("Episode order")}
+            </Button>
+          ) : null}
         </div>
       </Popover>
       {open ? (
@@ -102,22 +122,27 @@ function FixMatchDrawer({
 }) {
   const [query, setQuery] = useState(title.title);
   const [year, setYear] = useState(title.year ? String(title.year) : "");
-  const [results, setResults] = useState<(TitleCard & { tmdbId: number })[] | null>(null);
-  const [selected, setSelected] = useState<TitleCard & { tmdbId: number }>();
+  const [results, setResults] = useState<MatchCandidate[] | null>(null);
+  const [selected, setSelected] = useState<MatchCandidate>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<"search" | "apply" | null>(null);
   const radioGroup = useId();
+  const registry = useAsync(metadataSources, []);
+  const [source, setSource] = useState("");
+  const available =
+    registry.data?.filter((entry) => entry.configured && supportsMetadata(entry, title.type)) ?? [];
+  const activeSource = available.find((entry) => entry.id === source)?.id ?? available[0]?.id ?? "";
   const candidates = results?.filter((item) => item.key !== title.key) ?? [];
 
   async function search(event: FormEvent) {
     event.preventDefault();
-    if (busy || !query.trim()) return;
+    if (busy || !query.trim() || !activeSource) return;
     setBusy(true);
     setError(null);
     setSelected(undefined);
     setResults(null);
     try {
-      const params = new URLSearchParams({ q: query.trim(), year });
+      const params = new URLSearchParams({ q: query.trim(), year, source: activeSource });
       setResults(await apiFetch(`${path}/matches?${params}`));
     } catch {
       setError("search");
@@ -133,7 +158,7 @@ function FixMatchDrawer({
     try {
       const next = await apiFetch<{ key: string }>(path + "/match", {
         method: "PUT",
-        body: JSON.stringify({ tmdbId: selected.tmdbId }),
+        body: JSON.stringify({ source: selected.source, providerId: selected.providerId }),
       });
       onClose();
       onMatch(next.key);
@@ -173,6 +198,7 @@ function FixMatchDrawer({
               <Input
                 className="min-w-0"
                 value={query}
+                disabled={busy}
                 maxLength={300}
                 onChange={(event) => setQuery(event.target.value)}
                 required
@@ -183,6 +209,7 @@ function FixMatchDrawer({
               <Input
                 className="min-w-0"
                 value={year}
+                disabled={busy}
                 type="number"
                 min={1800}
                 max={2200}
@@ -190,7 +217,38 @@ function FixMatchDrawer({
               />
             </label>
           </div>
-          <Button type="submit" variant="outline" disabled={busy || !query.trim()}>
+          <label className="grid gap-1 text-sm">
+            {t("Metadata source")}
+            <Select
+              aria-label={t("Metadata source")}
+              sheetTitle={t("Metadata source")}
+              searchable={false}
+              value={activeSource}
+              disabled={busy || available.length === 0}
+              onChange={(event) => {
+                setSource(event.currentTarget.value);
+                setResults(null);
+                setSelected(undefined);
+                setError(null);
+              }}
+            >
+              {available.length === 0 ? (
+                <option value="">
+                  {registry.error
+                    ? t("Could not load metadata sources")
+                    : registry.loading
+                      ? t("Loading…")
+                      : t("No source configured")}
+                </option>
+              ) : null}
+              {available.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <Button type="submit" variant="outline" disabled={busy || !query.trim() || !activeSource}>
             <Search size={15} />
             {t("Search")}
           </Button>
@@ -200,10 +258,12 @@ function FixMatchDrawer({
             {error === "search" ? t("Could not find matches") : t("Could not apply match")}
           </p>
         ) : null}
-        {results?.length === 0 ? <p role="status">{t("No matches found")}</p> : null}
+        {results && candidates.length === 0 ? <p role="status">{t("No matches found")}</p> : null}
         <fieldset aria-label={t("Fix match")} className="space-y-2" disabled={busy}>
           <MatchCard
-            title={title}
+            title={
+              title.tmdbId ? { ...title, source: "tmdb", providerId: String(title.tmdbId) } : title
+            }
             group={radioGroup}
             checked={!selected}
             current
@@ -211,10 +271,10 @@ function FixMatchDrawer({
           />
           {candidates.map((match) => (
             <MatchCard
-              key={match.key}
+              key={match.providerId}
               title={match}
               group={radioGroup}
-              checked={selected?.key === match.key}
+              checked={selected?.providerId === match.providerId}
               onSelect={() => setSelected(match)}
             />
           ))}
@@ -231,7 +291,7 @@ function MatchCard({
   current,
   onSelect,
 }: {
-  title: TitleCard & { tmdbId?: number };
+  title: TitleCard & Partial<Pick<MatchCandidate, "source" | "providerId">>;
   group: string;
   checked: boolean;
   current?: boolean;
@@ -266,9 +326,9 @@ function MatchCard({
           </span>
         </span>
       </label>
-      {title.tmdbId ? (
+      {title.source === "tmdb" && title.providerId ? (
         <a
-          href={`https://www.themoviedb.org/${isShow ? "tv" : "movie"}/${title.tmdbId}`}
+          href={`https://www.themoviedb.org/${isShow ? "tv" : "movie"}/${encodeURIComponent(title.providerId)}`}
           target="_blank"
           rel="noreferrer"
           className="absolute right-3 top-3 inline-flex items-center gap-0.5 rounded text-xs text-fg-muted hover:text-fg hover:underline focus-visible:ring-2 focus-visible:ring-ring"

@@ -857,7 +857,7 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 			return true
 		}
 	}
-	if req.Season > 0 && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
+	if (req.Season > 0 || req.EpisodeSource == core.MetadataTVDB) && !info.FullSeason && EpisodeMatchesAirDate(info, req.Released) {
 		if len(info.Episodes) == 0 && len(info.AbsoluteEpisodes) == 0 {
 			return true
 		}

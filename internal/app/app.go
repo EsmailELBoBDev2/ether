@@ -210,10 +210,11 @@ type App struct {
 	// (heartbeated; see rolling.go).
 	draining atomic.Bool
 
-	tmdb        *tmdb.Client
-	libraries   *libraries.Service
-	libProfiles *libraryProfiles
-	catalog     *catalog.Catalog
+	tmdb            *tmdb.Client
+	libraries       *libraries.Service
+	libProfiles     *libraryProfiles
+	catalog         *catalog.Catalog
+	metadataSources *core.MetadataSources
 	// titleRefresh serves app "Refresh metadata" requests (title_refresh.go).
 	titleRefresh     *titleRefresher
 	titleRefreshOnce sync.Once
@@ -921,7 +922,6 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.catalog.RunTail(ctx) })
 	if parityRunCatalogueWorkers() {
 		background.start(func() { a.cluster.RunAsLeader(ctx, "catalogue sync", a.catalog.Run) })
-		background.start(func() { a.cluster.RunAsLeader(ctx, "trending charts", a.catalog.RunTrends) })
 	}
 	background.start(func() { a.cluster.RunAsLeader(ctx, "release availability", a.availability.Run) })
 	background.start(func() { a.cluster.RunAsLeader(ctx, "collection refresh", a.collections.Run) })
@@ -1195,14 +1195,10 @@ func appendUnique(xs []string, more ...string) []string {
 }
 
 // startupNextStep returns a single actionable startup message for the next
-// missing configuration step, or "" when setup, TMDB, and a playback source
-// are all ready.
+// missing configuration step, or "" when setup and a playback source are ready.
 func startupNextStep(cfg config.Config, uiURL string) string {
 	if !cfg.SetupComplete {
 		return fmt.Sprintf("Open %s to finish setup", uiURL)
-	}
-	if tmdb.ResolveKey(cfg.Catalog) == "" {
-		return "Add a TMDB API key in Integrations"
 	}
 	if !hasPlaybackSource(cfg) {
 		return "Add a debrid or Usenet account in Sources"

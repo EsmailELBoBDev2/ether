@@ -16,6 +16,7 @@ import { useAsync } from "../../../lib/hooks";
 import { localToday } from "../../calendar/model";
 import { CatalogTags } from "./CatalogTags";
 import { TitleAvailability } from "./TitleAvailability";
+import { TitleEpisodeOrder } from "./TitleEpisodeOrder";
 import { TitleMetadataActions } from "./TitleMetadataActions";
 import { TitleCalendar } from "./TitleCalendar";
 import { NextEpisodeCard, TitleEpisodes } from "./TitleEpisodes";
@@ -45,6 +46,8 @@ export function TitleInspector({
   watchlistViewers,
   onLibraryChange,
   onMatch,
+  openEpisodeOrder = false,
+  onEpisodeOrderSaved,
 }: {
   titleKey: string;
   onClose: () => void;
@@ -52,6 +55,8 @@ export function TitleInspector({
   watchlistViewers?: ReactNode;
   onLibraryChange?: () => void;
   onMatch?: (key: string) => void;
+  openEpisodeOrder?: boolean;
+  onEpisodeOrderSaved?: () => void;
 }) {
   const state = useAsync(() => api.title(titleKey), [titleKey]);
   const title = state.data;
@@ -75,6 +80,7 @@ export function TitleInspector({
     [titleKey, isMovie],
   );
   const [artworkRevision, setArtworkRevision] = useState(0);
+  const [orderOpen, setOrderOpen] = useState(openEpisodeOrder);
   const [tab, setTab] = useState<InspectorTab>("overview");
   const [focus, setFocus] = useState<EpisodeFocus | null>(null);
   const [availabilityKey, setAvailabilityKey] = useState<string | null>(null);
@@ -117,6 +123,7 @@ export function TitleInspector({
           <TitleMetadataActions
             key={title.key}
             title={title}
+            onEpisodeOrder={title.episodeOrder ? () => setOrderOpen(true) : undefined}
             onRefresh={async () => {
               await Promise.all([
                 state.reload(),
@@ -149,6 +156,21 @@ export function TitleInspector({
         ) : undefined
       }
     >
+      {title?.episodeOrder && !state.error ? (
+        <TitleEpisodeOrder
+          key={titleKey}
+          details={title.episodeOrder}
+          titleKey={titleKey}
+          open={orderOpen}
+          onOpenChange={setOrderOpen}
+          onSaved={async () => {
+            setFocus(null);
+            setAvailabilityKey(null);
+            await Promise.all([state.reload(), schedule.reload()]);
+            if (onEpisodeOrderSaved) onEpisodeOrderSaved();
+          }}
+        />
+      ) : null}
       {state.error ? (
         <ErrorPanel className="m-5" error={state.error} onRetry={() => void state.reload()} />
       ) : !title ? (

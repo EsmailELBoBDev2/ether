@@ -84,6 +84,7 @@ func (h *Handler) collectionRoutes(mux *http.ServeMux, api func(string, http.Han
 	api("POST /api/catalog/title/{key}/refresh", h.handleCatalogTitleManagement)
 	api("GET /api/catalog/title/{key}/matches", h.handleCatalogTitleManagement)
 	api("PUT /api/catalog/title/{key}/match", h.handleCatalogTitleManagement)
+	api("PUT /api/catalog/title/{key}/episode-order", h.handleTitleEpisodeOrder)
 	api("GET /api/catalog/title/{key}/tags", h.handleCatalogTags)
 	api("PUT /api/catalog/title/{key}/tags", h.handleCatalogTags)
 	api("GET /api/catalog/title/{key}/library", h.handleCatalogTitleLibrary)

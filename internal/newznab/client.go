@@ -917,6 +917,9 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
+	if req.EpisodeSource == core.MetadataTVDB {
+		fmt.Fprintf(h, "|tvdb:%s", req.Released.UTC().Format(time.DateOnly))
+	}
 	if orig := strings.ToLower(strings.TrimSpace(req.OriginalTitle)); orig != "" && orig != strings.ToLower(strings.TrimSpace(req.Title)) {
 		fmt.Fprintf(h, "|%s", orig)
 	}
@@ -1166,13 +1169,14 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 	titles := queryTitles(req)
 	var attempts []url.Values
 	if isTV {
+		tvdbOrder := req.EpisodeSource == core.MetadataTVDB
 		mkWith := func(idKey, idVal string, season, episode int) url.Values {
 			v := base()
 			v.Set("t", "tvsearch")
 			if idKey != "" {
 				v.Set(idKey, idVal)
 			}
-			if season > 0 {
+			if season > 0 || (tvdbOrder && episode > 0 && idKey == "tvdbid") {
 				v.Set("season", strconv.Itoa(season))
 			}
 			if episode > 0 {
@@ -1192,16 +1196,25 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 			}
 			attempts = append(attempts, mkWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason, tvdbEp))
 		}
-		if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
+		if !tvdbOrder && req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 			attempts = append(attempts, mk("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 		}
-		if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
+		if !tvdbOrder && imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
 			attempts = append(attempts, mk("imdbid", imdb))
+		}
+		if tvdbOrder && req.Episode > 0 && !req.Released.IsZero() {
+			date := req.Released.UTC().Format("2006.01.02")
+			for _, title := range titles {
+				v := base()
+				v.Set("t", "search")
+				v.Set("q", title+" "+date)
+				attempts = append(attempts, v)
+			}
 		}
 		for _, title := range titles {
 			q := title
 			switch {
-			case req.Season > 0 && req.Episode > 0:
+			case (req.Season > 0 || tvdbOrder) && req.Episode > 0:
 				q = fmt.Sprintf("%s S%02dE%02d", title, req.Season, req.Episode)
 			case req.Season > 0:
 				q = fmt.Sprintf("%s S%02d", title, req.Season)
@@ -1287,10 +1300,10 @@ func (c *Client) numberedSearchAttemptsSplit(req core.SearchRequest, caps *Caps)
 					}
 					packs = append(packs, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
 				}
-				if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
+				if !tvdbOrder && req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 					packs = append(packs, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 				}
-				if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
+				if !tvdbOrder && imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
 					packs = append(packs, mkSeason("imdbid", imdb))
 				}
 				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
@@ -1798,7 +1811,7 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values
 					}
 				}
 			}
-			if !req.Released.IsZero() && (nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
+			if !req.Released.IsZero() && (req.EpisodeSource == core.MetadataTVDB || nonLatinOriginal || (req.Season == 1 && req.Episode > 20)) {
 				// Every title's broadcast-style YYMMDD date before any
 				// YYYY.MM.DD form, so the capped rescue reaches the date
 				// form Korean releases use for each title.

@@ -1,4 +1,4 @@
-import { sourceName, sourceLabel } from "./CatalogueSources";
+import { sourceName, sourceLabel, tvdbSourceError } from "./CatalogueSources";
 import {
   Badge,
   Button,
@@ -36,22 +36,13 @@ export function TitlesComeFrom({
   const cappedAttached = attached.filter(
     (source) => !source.lastError && Boolean(catalogueCapNote(source)),
   );
-  const manageHref =
-    ids.length === 1
-      ? library.source === "builtin" || attached[0]?.group === "builtin"
-        ? "/services/tmdb"
-        : attached[0]?.pluginId
-          ? `/plugins/installed?plugin=${encodeURIComponent(attached[0].pluginId)}&tab=setup`
-          : "/services"
-      : "/services";
-  const manageLabel =
-    ids.length === 1
-      ? library.source === "builtin" || attached[0]?.group === "builtin"
-        ? t("Manage TMDB")
-        : attached[0]
-          ? t("Manage {app}", { app: attached[0].owner })
-          : t("Manage in Integrations")
-      : t("Manage in Integrations");
+  const plugin = ids.length === 1 ? attached[0] : undefined;
+  const manageHref = plugin?.pluginId
+    ? `/plugins/installed?plugin=${encodeURIComponent(plugin.pluginId)}&tab=setup`
+    : "/services/overview";
+  const manageLabel = plugin?.pluginId
+    ? t("Manage {app}", { app: plugin.owner })
+    : t("Manage in Integrations");
   const mediaType = String(library.mediaType ?? "movie");
   const save = () => {
     if (draft) {
@@ -68,7 +59,9 @@ export function TitlesComeFrom({
           title={t("Catalogue sources")}
           description={
             library.source === "builtin"
-              ? t("Always {source}.", { source: attached[0] ? sourceLabel(attached[0]) : "TMDB" })
+              ? attached[0]
+                ? t("Always {source}.", { source: sourceLabel(attached[0]) })
+                : undefined
               : library.source === "plugin"
                 ? t("Comes from the {plugin} plugin.", {
                     plugin: attached[0]?.owner ?? library.pluginName ?? t("Plugin"),
@@ -100,7 +93,8 @@ export function TitlesComeFrom({
           <div className="space-y-1 px-5 pb-4 text-sm text-danger">
             {failedAttached.map((source) => (
               <p key={source.id}>
-                {sourceLabel(source)}: {source.lastError}
+                {sourceLabel(source)}:{" "}
+                {source.id === "tvdb" ? tvdbSourceError(source.lastError) : source.lastError}
               </p>
             ))}
           </div>
@@ -172,7 +166,11 @@ export function TitlesComeFrom({
                     <span className="block font-medium">{sourceName(source)}</span>
                     <span className="block text-sm text-fg-muted">{sourceOwner(source)}</span>
                     {source.lastError ? (
-                      <span className="block text-sm text-danger">{source.lastError}</span>
+                      <span className="block text-sm text-danger">
+                        {source.id === "tvdb"
+                          ? tvdbSourceError(source.lastError)
+                          : source.lastError}
+                      </span>
                     ) : null}
                   </span>
                 </label>

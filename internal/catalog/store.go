@@ -230,6 +230,9 @@ func scanTitle(s scanner) (*storedTitle, error) {
 	}
 	if releasedTS != 0 {
 		t.Released = time.Unix(releasedTS, 0).UTC()
+		if t.Type == core.TypeEpisode {
+			t.EpisodeAirDate = t.Released
+		}
 	}
 	if lastAirTS != 0 {
 		t.LastAirDate = time.Unix(lastAirTS, 0).UTC()
@@ -438,6 +441,13 @@ func (c *Catalog) hydrateFactBatch(ctx context.Context, items []core.Title, idx 
 		}
 		parts = append(parts, `SELECT `+key+`, `+tag+`, `+a+`, `+b+`, `+c+`, `+d+`, `+e+`, `+f+`, `+g+`, `+extra+` FROM `+from)
 	}
+	for _, t := range items {
+		if t.Type == core.TypeEpisode {
+			part("t.key", "'episode_air'", "CAST(COALESCE(p.air_ts,CASE WHEN e.earliest_ts=t.released_ts THEN 0 ELSE t.released_ts END) AS TEXT)", "''", "''", "''", "''", "''", "''", "''",
+				`catalog_titles t LEFT JOIN catalog_episode_provider_air p ON p.key=t.key LEFT JOIN catalog_episode_release e ON e.key=t.key WHERE t.type='episode' AND t.key IN (`+ph+`)`)
+			break
+		}
+	}
 	if set&factTrailers != 0 {
 		part("key", "'trailer'", "name", "url", "''", "''", "''", "''", "''", "''", `catalog_remote_trailers WHERE key IN (`+ph+`)`)
 	}
@@ -500,6 +510,15 @@ func (c *Catalog) hydrateFactBatch(ctx context.Context, items []core.Title, idx 
 		k := core.RatingKey(key)
 		touched[k] = true
 		switch tag {
+		case "episode_air":
+			stamp, _ := strconv.ParseInt(a, 10, 64)
+			var date time.Time
+			if stamp != 0 {
+				date = time.Unix(stamp, 0).UTC()
+			}
+			for _, i := range idx[k] {
+				items[i].EpisodeAirDate = date
+			}
 		case "trailer":
 			for _, i := range idx[k] {
 				items[i].RemoteTrailerName, items[i].RemoteTrailerURL = a, b
@@ -1709,6 +1728,10 @@ func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, 
 	if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); !deferred {
 		c.rememberTitles(gen, minute, full)
 	}
+	if err := c.ProjectEpisodeTitles(ctx, visible); err != nil {
+		return nil, err
+	}
+
 	return visible, nil
 }
 

@@ -420,7 +420,7 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 			shows := make([]frontend.RatingKey, 0, len(items))
 			for _, item := range items {
 				if state[item.Key].ViewOffset <= 0 {
-					shows = append(shows, frontend.ShowKey(item.Key.TMDB()))
+					shows = append(shows, titleShow(&item))
 				}
 			}
 			completed, err := gate.PlaybackCompletedShows(ctx, pr.User.ID, shows)
@@ -429,7 +429,7 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 			} else {
 				out := items[:0]
 				for _, item := range items {
-					if state[item.Key].ViewOffset > 0 || completed[frontend.ShowKey(item.Key.TMDB())] {
+					if state[item.Key].ViewOffset > 0 || completed[titleShow(&item)] {
 						out = append(out, item)
 					}
 				}
@@ -1245,7 +1245,11 @@ func (s *Server) upNextHub(ctx context.Context, pr *Request, k frontend.RatingKe
 	if k.Kind() != frontend.KindEpisode {
 		return hubSpec{}, false
 	}
-	ep, state := s.showOnDeck(ctx, pr, frontend.ShowKey(k.TMDB()), nil)
+	title, err := s.metadataTitle(ctx, pr, k)
+	if err != nil || title == nil || titleShow(title) == 0 {
+		return hubSpec{}, false
+	}
+	ep, state := s.showOnDeck(ctx, pr, titleShow(title), nil)
 	if ep == nil || ep.Key == k || !s.visibleTitle(ctx, pr.User, ep) {
 		return hubSpec{}, false
 	}

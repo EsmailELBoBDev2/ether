@@ -43,6 +43,7 @@ import {
   type ResolvedAppPresentation,
   type ResolvedPresentations,
 } from "./api";
+import { LibraryMetadataSource } from "./LibraryMetadataSource";
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
@@ -607,6 +608,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       presentApps: initialAppSwitches(resolvedPresentations),
       sources: library.sources ?? [],
       collectionId: library.collectionId,
+      metadataSource: library.metadataSource ?? "",
       cacheMaxBytes: cache.data?.maxBytes ?? 0,
       cacheTTL: cache.data?.ttlSeconds ?? 0,
     }),
@@ -649,6 +651,8 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       if (JSON.stringify(draft.sources) !== JSON.stringify(stored.sources))
         body.sources = draft.sources;
       if (draft.collectionId !== stored.collectionId) body.collectionId = draft.collectionId;
+      if (draft.metadataSource !== stored.metadataSource)
+        body.metadataSource = draft.metadataSource;
       await librariesApi.patch(library.id, body);
       if (
         cache.data &&
@@ -689,6 +693,20 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                   <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                     {t("Change")}
                   </Button>
+                }
+              />
+            ) : null}
+            {library.source !== "plugin" ? (
+              <SettingsRow
+                title={t("Details from")}
+                description={t("Sets the source for artwork, credits and episode lists.")}
+                control={
+                  <LibraryMetadataSource
+                    mediaType={library.mediaType}
+                    value={draft.metadataSource}
+                    onChange={(metadataSource) => setDraft({ ...draft, metadataSource })}
+                    disabled={saving}
+                  />
                 }
               />
             ) : null}

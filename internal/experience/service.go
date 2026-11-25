@@ -50,6 +50,7 @@ type ServiceDeps struct {
 	BeginPeopleRead     func(context.Context, *core.User) (PeopleRead, error)
 	NotInterestedSource func(context.Context, *core.User) ([]frontend.NotInterestedEntry, error)
 	ByExternalID        func(context.Context, string, string) (*core.Title, error)
+	ResolveEpisode      func(context.Context, core.RatingKey, int, int) (core.RatingKey, error)
 	// KeysByProviderID resolves one external provider id ("tmdb", "imdb",
 	// "tvdb", case-insensitive) to candidate rating keys via indexed lookup,
 	// never scanning the catalogue.
@@ -1838,7 +1839,8 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		}
 		return core.Page{Items: items[start:end], Total: total}, nil
 	}
-	if _, err = s.item(ctx, v, key); err != nil {
+	parent, err := s.item(ctx, v, key)
+	if err != nil {
 		return core.Page{}, err
 	}
 	if q.FilterByProviderIDs {
@@ -1887,7 +1889,7 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 			}
 		}
 	}
-	out, err = s.appendScheduled(ctx, v, key, out, q)
+	out, err = s.appendScheduled(ctx, v, parent, out, q)
 	if err != nil {
 		return core.Page{}, err
 	}
@@ -3041,8 +3043,14 @@ func (s *Service) Ancestors(ctx context.Context, viewer *core.Viewer, device cor
 	var keys []core.RatingKey
 	if t.ShowKey != 0 {
 		keys = append(keys, t.ShowKey)
-		if t.Type == core.TypeEpisode && t.Season > 0 {
-			keys = append(keys, core.SeasonKey(t.Key.TMDB(), t.Season))
+		if t.Type == core.TypeEpisode {
+			parent := t.ParentKey
+			if parent == 0 {
+				parent = t.Key.Parent()
+			}
+			if parent != 0 {
+				keys = append(keys, parent)
+			}
 		}
 	}
 	out := make([]core.Title, 0, len(keys))

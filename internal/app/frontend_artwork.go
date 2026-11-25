@@ -92,7 +92,12 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		return a.cachedPlexAvatar(ctx, token, viewer.Thumb)
 	}
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
-	source.Variants = variants.Get
+	source.Variants = func(title *core.Title, language string) (*frontend.ArtworkImages, bool) {
+		if !a.catalog.TMDBConfigured() || !hasTMDBArtwork(title) {
+			return nil, false
+		}
+		return variants.Get(title, language)
+	}
 	source.Generated = a.titlePosters()
 	source.Collages = &artworkservice.LibraryCollageCache{Dir: filepath.Join(a.opts.DataDir, "cache", "library-collages")}
 	// source.Read binds a copy of source: everything Read uses is set above.

@@ -182,7 +182,19 @@ func (c *Catalog) upsertSeasonRows(ctx context.Context, titles []core.Title, o u
 		if len(titles) == 1 {
 			budget = 0
 		}
-		held, err := c.upsertTx(ctx, items, budget)
+		held, err := c.upsertTx(ctx, items, budget, func(ctx context.Context, tx *sql.Tx) error {
+			for _, t := range titles {
+				var ts int64
+				if !t.Released.IsZero() {
+					ts = t.Released.Unix()
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_episode_provider_air(key,air_ts) VALUES (?,?)
+ ON CONFLICT(key) DO UPDATE SET air_ts=excluded.air_ts`, t.Key, ts); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 		c.holds.seasonRows.observe(seasonRowHold, len(titles), held)
 		if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || len(titles) <= 1 {
 			return err

@@ -299,6 +299,7 @@ type Deps struct {
 	// CatalogHelper backs /api/catalog/*.
 	CatalogHelper   CatalogHelper
 	TitleManagement CatalogTitleManagement
+	MetadataSources *core.MetadataSources
 	// PluginTitleDetail resolves plugin-library rating keys for
 	// GET /api/catalog/title/{key}. Optional; nil answers plugin keys 404.
 	PluginTitleDetail func(context.Context, core.RatingKey) (*core.Title, error)
@@ -531,6 +532,8 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/indexer/preview", h.handleIndexerPreview)
 	api("POST /api/test/debrid", h.handleTestDebrid)
 	api("POST /api/test/tmdb", h.handleTestTMDB)
+	api("POST /api/test/tvdb", h.handleTestTVDB)
+	api("GET /api/metadata/sources", h.handleMetadataSources)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/subdl", h.handleTestSubDL)
 	api("POST /api/test/subsource", h.handleTestSubSource)

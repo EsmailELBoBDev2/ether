@@ -62,6 +62,7 @@ func (a *App) buildServerRole(ctx context.Context, _ config.Config) error {
 	}
 	a.buildDiscovery()
 	a.episodeorder = episodeorder.New(a.db, a.tmdb, a.catalog)
+	a.catalog.SetMetadataEpisodeGroup(a.episodeorder.MetadataGroup)
 	a.buildExtras()
 	a.frontendClients = newFrontendClients(a.db, a.log.With("component", "frontend-clients"), nil)
 	a.closers = append(a.closers, a.frontendClients.Close)

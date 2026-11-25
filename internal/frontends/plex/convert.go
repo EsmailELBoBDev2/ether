@@ -1,6 +1,7 @@
 package plex
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -94,24 +96,64 @@ func guidFor(t *frontend.Title) string {
 		return fmt.Sprintf("com.plexapp.agents.none://%016x?lang=xn", h.Sum64())
 	}
 	switch t.Type {
-	case frontend.TypeMovie:
+	case frontend.TypeMovie, frontend.TypeShow:
 		if t.IDs.TMDB > 0 {
-			return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", t.IDs.TMDB)
-		}
-	case frontend.TypeShow:
-		if t.IDs.TMDB > 0 {
-			return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", t.IDs.TMDB)
+			return tmdbAgentGUID(strconv.FormatInt(t.IDs.TMDB, 10))
 		}
 	case frontend.TypeSeason:
-		return fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", t.Key.TMDB(), t.Season)
+		if t.ShowIDs.TMDB > 0 && !t.Key.Allocated() {
+			return tmdbAgentGUID(fmt.Sprintf("%d/%d", t.ShowIDs.TMDB, t.Key.Season()))
+		}
 	case frontend.TypeEpisode:
-		return fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d/%d?lang=en", t.Key.TMDB(), t.Season, t.Episode)
+		if t.ShowIDs.TMDB > 0 && !t.Key.Allocated() {
+			return tmdbAgentGUID(fmt.Sprintf("%d/%d/%d", t.ShowIDs.TMDB, t.Key.Season(), t.Key.Episode()))
+		}
 	}
-	return "com.plexapp.agents.none://" + t.Key.String() + "?lang=xn"
+	if t.IDs.TVDB > 0 {
+		return "tvdb://" + strconv.FormatInt(t.IDs.TVDB, 10)
+	}
+	if t.IDs.IMDB != "" {
+		return "imdb://" + t.IDs.IMDB
+	}
+	return localAgentGUID(t.Key)
 }
 
-func showGUID(show frontend.RatingKey) string {
-	return fmt.Sprintf("com.plexapp.agents.themoviedb://%d?lang=en", show.TMDB())
+func tmdbAgentGUID(id string) string { return "com.plexapp.agents.themoviedb://" + id + "?lang=en" }
+func localAgentGUID(key frontend.RatingKey) string {
+	return "com.plexapp.agents.none://" + key.String() + "?lang=xn"
+}
+
+func showGUID(show frontend.RatingKey, ids core.IDs) string {
+	return guidFor(&frontend.Title{Key: show, Type: frontend.TypeShow, IDs: ids})
+}
+
+// titleParent and titleShow prefer projected relations. Canonical packed keys
+// still encode their catalogue hierarchy on rows without a projected parent.
+func titleParent(t *frontend.Title) frontend.RatingKey {
+	if t.ParentKey != 0 {
+		return t.ParentKey
+	}
+	if t.Type == frontend.TypeSeason && t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	return t.Key.Parent()
+}
+
+func titleShow(t *frontend.Title) frontend.RatingKey {
+	if t.Type == frontend.TypeShow {
+		return t.Key
+	}
+	if t.ShowKey != 0 {
+		return t.ShowKey
+	}
+	parent := titleParent(t)
+	if t.Type == frontend.TypeEpisode {
+		return parent.Parent()
+	}
+	if t.Type == frontend.TypeSeason {
+		return parent
+	}
+	return 0
 }
 
 // externalGuids are the <Guid id="..."/> children.
@@ -294,7 +336,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.OriginalTitle = t.OriginalTitle
 	}
 	if !t.Released.IsZero() {
-		m.OriginallyAvailableAt = t.Released.Format("2006-01-02")
+		m.OriginallyAvailableAt = cmp.Or(t.EpisodeAirDate, t.Released).Format("2006-01-02")
 		if m.Year == 0 {
 			m.Year = t.Released.Year()
 		}
@@ -353,20 +395,10 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		if t.Title == "" {
 			m.Title = seasonTitle(t)
 		}
-		showKey := t.ShowKey
-		if showKey == 0 {
-			showKey = t.ParentKey
-		}
-		if showKey == 0 {
-			showKey = t.Key.Parent()
-		}
+		showKey := titleShow(t)
 		if showKey != 0 {
 			m.ParentRatingKey = showKey.String()
-			if t.Key.IsPluginKey() {
-				m.ParentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
-			} else {
-				m.ParentGUID = showGUID(showKey)
-			}
+			m.ParentGUID = showGUID(showKey, t.ShowIDs)
 			m.ParentKey = "/library/metadata/" + showKey.String()
 			m.ParentThumb = "/library/metadata/" + showKey.String() + "/thumb/" + s.posterStamp(imageStamp(t))
 			if m.Art == "" {
@@ -416,20 +448,13 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			parentIdx = t.Disc
 		}
 		m.ParentIndex = model.Ptr(parentIdx)
-		season := t.ParentKey
-		if season == 0 {
-			season = t.Key.Parent()
-		}
-		showKey := t.ShowKey
-		if showKey == 0 {
-			showKey = season.Parent()
-		}
+		season := titleParent(t)
+		showKey := titleShow(t)
 		if season != 0 {
 			m.ParentRatingKey = season.String()
-			if t.Key.IsPluginKey() {
-				m.ParentGUID = "com.plexapp.agents.none://" + season.String() + "?lang=xn"
-			} else {
-				m.ParentGUID = fmt.Sprintf("com.plexapp.agents.themoviedb://%d/%d?lang=en", showKey.TMDB(), t.Season)
+			m.ParentGUID = localAgentGUID(season)
+			if t.ShowIDs.TMDB > 0 && !season.Allocated() && !season.IsPluginKey() {
+				m.ParentGUID = tmdbAgentGUID(fmt.Sprintf("%d/%d", t.ShowIDs.TMDB, season.Season()))
 			}
 			m.ParentKey = "/library/metadata/" + season.String()
 			m.ParentThumb = "/library/metadata/" + season.String() + "/thumb/" + imageStamp(t)
@@ -450,7 +475,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			if t.Key.IsPluginKey() {
 				m.GrandparentGUID = "com.plexapp.agents.none://" + showKey.String() + "?lang=xn"
 			} else {
-				m.GrandparentGUID = showGUID(showKey)
+				m.GrandparentGUID = showGUID(showKey, t.ShowIDs)
 			}
 			m.GrandparentKey = "/library/metadata/" + showKey.String()
 			m.GrandparentTitle = t.ShowTitle
@@ -1799,16 +1824,14 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	var missingGUIDs []frontend.RatingKey
 	lookup := make([]frontend.RatingKey, 0, len(ts)*2)
 	for i := range ts {
-		k := ts[i].Key
-		lookup = append(lookup, k)
-		switch ts[i].Type {
-		case frontend.TypeSeason:
-			if k.TMDB() > 0 {
-				lookup = append(lookup, frontend.ShowKey(k.TMDB()))
-			}
-		case frontend.TypeEpisode:
-			if k.TMDB() > 0 {
-				lookup = append(lookup, frontend.ShowKey(k.TMDB()), frontend.SeasonKey(k.TMDB(), ts[i].Season))
+		t := &ts[i]
+		lookup = append(lookup, t.Key)
+		if show := titleShow(t); show != 0 && show != t.Key {
+			lookup = append(lookup, show)
+		}
+		if t.Type == frontend.TypeEpisode {
+			if parent := titleParent(t); parent != 0 {
+				lookup = append(lookup, parent)
 			}
 		}
 	}
@@ -1834,7 +1857,7 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 		if guidSrc != nil {
 			k := ts[i].Key
 			if guid := guids[k]; guid != "" {
-				if !(ts[i].Type == frontend.TypeSeason && ts[i].Season >= 9000) {
+				if !virtualPlexSeason(&ts[i]) {
 					m.GUID = guid
 				}
 			} else {
@@ -1842,17 +1865,17 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 			}
 			switch ts[i].Type {
 			case frontend.TypeSeason:
-				if ts[i].Season < 9000 {
-					if sg := guids[frontend.ShowKey(k.TMDB())]; sg != "" {
+				if !virtualPlexSeason(&ts[i]) {
+					if sg := guids[titleShow(&ts[i])]; sg != "" {
 						m.ParentGUID = sg
 					}
 				}
 			case frontend.TypeEpisode:
-				if sg := guids[frontend.ShowKey(k.TMDB())]; sg != "" {
+				if sg := guids[titleShow(&ts[i])]; sg != "" {
 					m.GrandparentGUID = sg
 				}
 				if !strings.HasPrefix(m.ParentGUID, "local://episode-order/") {
-					if seag := guids[frontend.SeasonKey(k.TMDB(), ts[i].Season)]; seag != "" {
+					if seag := guids[titleParent(&ts[i])]; seag != "" {
 						m.ParentGUID = seag
 					}
 				}
@@ -1882,16 +1905,24 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 	if s.state() == nil || pr.User == nil || len(items) == 0 {
 		return
 	}
-	hasShowOrSeason := false
-	for i := range ts {
-		if ts[i].Type == frontend.TypeShow || ts[i].Type == frontend.TypeSeason {
-			hasShowOrSeason = true
-			break
+	var canonical, projected []frontend.Title
+	for _, t := range ts {
+		if t.Type != frontend.TypeShow && t.Type != frontend.TypeSeason {
+			continue
+		}
+		if t.Key.Allocated() || !viewerEpisodeOrder(&t) {
+			if !t.Key.IsPluginKey() {
+				projected = append(projected, t)
+			}
+		} else {
+			canonical = append(canonical, t)
 		}
 	}
-	if !hasShowOrSeason {
+	s.applyProjectedListLeafCounts(ctx, pr, items, projected)
+	if len(canonical) == 0 {
 		return
 	}
+	ts = canonical
 	var watched []frontend.RatingKey
 	var err error
 	if reader, ok := s.state().(watchedEpisodesOfReader); ok {
@@ -1899,7 +1930,11 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		seen := map[int64]bool{}
 		var shows []int64
 		for i := range ts {
-			if tmdb := ts[i].Key.TMDB(); (ts[i].Type == frontend.TypeShow || ts[i].Type == frontend.TypeSeason) && tmdb > 0 && !seen[tmdb] {
+			tmdb := ts[i].IDs.TMDB
+			if ts[i].Type == frontend.TypeSeason {
+				tmdb = ts[i].ShowIDs.TMDB
+			}
+			if tmdb > 0 && !seen[tmdb] {
 				seen[tmdb] = true
 				shows = append(shows, tmdb)
 			}
@@ -1913,10 +1948,10 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 	if err != nil || len(watched) == 0 {
 		return
 	}
-	watchedByShow := make(map[int64][]frontend.RatingKey)
+	watchedByShow := make(map[frontend.RatingKey][]frontend.RatingKey)
 	for _, k := range watched {
-		if tmdb := k.TMDB(); tmdb > 0 {
-			watchedByShow[tmdb] = append(watchedByShow[tmdb], k)
+		if show := k.Parent().Parent(); show != 0 {
+			watchedByShow[show] = append(watchedByShow[show], k)
 		}
 	}
 	subset := make([]frontend.Title, 0)
@@ -1924,7 +1959,7 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		if ts[i].Type != frontend.TypeShow && ts[i].Type != frontend.TypeSeason {
 			continue
 		}
-		if len(watchedByShow[ts[i].Key.TMDB()]) > 0 {
+		if len(watchedByShow[titleShow(&ts[i])]) > 0 {
 			subset = append(subset, ts[i])
 		}
 	}
@@ -1945,14 +1980,14 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 			continue
 		}
 		viewed := 0
-		for _, k := range watchedByShow[title.Key.TMDB()] {
+		for _, k := range watchedByShow[titleShow(&title)] {
 			switch title.Type {
 			case frontend.TypeShow:
 				if k.Season() > 0 {
 					viewed++
 				}
 			case frontend.TypeSeason:
-				if k.Season() == title.Key.Season() {
+				if k.Season() == title.Season {
 					viewed++
 				}
 			}
@@ -1960,6 +1995,80 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 		if viewed > 0 {
 			items[i].ViewedLeafCount = model.Ptr(viewed)
 		}
+	}
+}
+
+// applyProjectedListLeafCounts uses stored counts for the page's alternate
+// orders. It does not load the shows' layouts or visit metadata providers.
+func (s *Server) applyProjectedListLeafCounts(ctx context.Context, pr *Request, items []model.Metadata, titles []frontend.Title) {
+	catalogue, ok := s.catalog().(interface {
+		AiredEpisodeTallies(context.Context, int64, []frontend.RatingKey, time.Time, []frontend.RatingKey) (map[frontend.RatingKey]core.AiredEpisodeTally, error)
+	})
+	if !ok || len(titles) == 0 {
+		return
+	}
+	seen := make(map[frontend.RatingKey]bool, len(titles))
+	var shows []frontend.RatingKey
+	for _, t := range titles {
+		if show := titleShow(&t); show != 0 && !seen[show] {
+			shows, seen[show] = append(shows, show), true
+		}
+	}
+	var pending []frontend.RatingKey
+	if reader, ok := s.state().(interface {
+		PendingKeys(int64) []frontend.RatingKey
+	}); ok {
+		pending = reader.PendingKeys(pr.User.ID)
+	}
+	tallies, err := catalogue.AiredEpisodeTallies(ctx, pr.User.ID, shows, s.now(), pending)
+	if err != nil {
+		return
+	}
+	var judged []frontend.RatingKey
+	for _, tally := range tallies {
+		judged = append(judged, tally.Judge...)
+	}
+	if reader, ok := s.catalog().(frontend.CachedTitleBatchReader); ok && len(judged) > 0 {
+		rows, err := reader.CachedGetMany(ctx, judged)
+		if err == nil {
+			states, err := s.state().GetMany(ctx, pr.User.ID, judged)
+			if err == nil {
+				for key, t := range rows {
+					tally := tallies[titleShow(&t)]
+					if tally.Seasons == nil {
+						continue
+					}
+					n := tally.Seasons[t.Season]
+					n.Aired++
+					if states[key].ViewCount > 0 {
+						n.Played++
+					}
+					tally.Seasons[t.Season] = n
+				}
+			}
+		}
+	}
+	byKey := make(map[string]*model.Metadata, len(items))
+	for i := range items {
+		byKey[items[i].RatingKey] = &items[i]
+	}
+	for _, t := range titles {
+		m := byKey[t.Key.String()]
+		tally, ok := tallies[titleShow(&t)]
+		if !ok || m == nil {
+			continue
+		}
+		watched := 0
+		if t.Type == frontend.TypeSeason {
+			watched = tally.Seasons[t.Season].Played
+		} else {
+			for season, counts := range tally.Seasons {
+				if season > 0 {
+					watched += counts.Played
+				}
+			}
+		}
+		m.ViewedLeafCount = model.Ptr(watched)
 	}
 }
 
@@ -2053,7 +2162,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 			if title.Key.IsPluginKey() || (title.Type != frontend.TypeShow && title.Type != frontend.TypeSeason) {
 				continue
 			}
-			show := frontend.ShowKey(title.Key.TMDB())
+			show := titleShow(&title)
 			if seen[show] {
 				continue
 			}
@@ -2087,7 +2196,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 	together := map[frontend.RatingKey]int{}
 	for i := range ts {
 		if !ts[i].Key.IsPluginKey() && ts[i].Type == frontend.TypeSeason {
-			together[frontend.ShowKey(ts[i].Key.TMDB())]++
+			together[titleShow(&ts[i])]++
 		}
 	}
 	bySeason := map[frontend.RatingKey]map[int][]frontend.Title{}
@@ -2106,7 +2215,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 		case frontend.TypeShow:
 			eps, err = s.episodesOfShow(ctx, pr, memo, title.Key)
 		case frontend.TypeSeason:
-			show := frontend.ShowKey(title.Key.TMDB())
+			show := titleShow(&title)
 			seasons, loaded := bySeason[show]
 			if !loaded && together[show] > 1 {
 				if all, e := s.episodesOfShow(ctx, pr, memo, show); e == nil {
@@ -2115,7 +2224,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 				bySeason[show] = seasons
 			}
 			if seasons != nil {
-				eps = seasons[title.Key.Season()]
+				eps = seasons[title.Season]
 			} else {
 				// A lone season, or its show's episodes failed to load.
 				eps, err = s.metadataChildren(ctx, pr, title.Key)
@@ -2142,7 +2251,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 				continue
 			}
 		}
-		showKey := frontend.ShowKey(title.Key.TMDB())
+		showKey := titleShow(&title)
 		showCovered := coveredShows[showKey]
 		if title.Type == frontend.TypeSeason && bySeason[showKey] == nil {
 			showCovered = false

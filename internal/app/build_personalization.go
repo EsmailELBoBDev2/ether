@@ -37,6 +37,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		Logger:             log.With("component", "state"),
 		Availability:       a.dbAvail,
 		PendingSQLite:      store.DialectOf(a.db) == store.SQLite,
+		Ancestry:           a.watchAncestry,
 		ResumeAfterSeconds: cfg.Server.ResumeAfterSeconds,
 	})
 	timeline.SetResumeAfter(cfg.Server.ResumeAfterSeconds)
@@ -266,4 +267,32 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	})
 
 	return nil
+}
+
+// watchAncestry combines durable identity links with the current cached
+// season projection. The timeline and manual watch writes need no provider I/O.
+func (a *App) watchAncestry(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]state.Ancestry, error) {
+	links, err := a.catalog.ChildAncestry(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[core.RatingKey]state.Ancestry, len(links))
+	for key, link := range links {
+		out[key] = state.Ancestry{ShowKey: link.ShowKey, ParentKey: link.ParentKey}
+	}
+	titles, err := a.catalog.CachedTitles(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for _, title := range titles {
+		ancestors := out[title.Key]
+		if title.ShowKey != 0 {
+			ancestors.ShowKey = title.ShowKey
+		}
+		if title.ParentKey != 0 {
+			ancestors.ParentKey = title.ParentKey
+		}
+		out[title.Key] = ancestors
+	}
+	return out, nil
 }

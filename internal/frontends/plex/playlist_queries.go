@@ -329,7 +329,7 @@ func (s *Server) playlistItemRows(ctx context.Context, pr *Request, pl *frontend
 		if t.Type == frontend.TypeEpisode && (want == frontend.TypeShow || want == frontend.TypeSeason) {
 			key := t.ShowKey
 			if want == frontend.TypeSeason {
-				key = frontend.SeasonKey(t.Key.TMDB(), t.Season)
+				key = titleParent(&t)
 			}
 			if seen[key] {
 				continue

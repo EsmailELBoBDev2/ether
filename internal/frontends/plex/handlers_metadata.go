@@ -385,8 +385,11 @@ func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *R
 		case frontend.KindCollection, frontend.KindSmart, frontend.KindPlaylist, frontend.KindExtra:
 		default:
 			addPreload(k)
-			if (k.Kind() == frontend.KindSeason || k.Kind() == frontend.KindEpisode) && k.TMDB() > 0 {
-				addPreload(frontend.ShowKey(k.TMDB()))
+			if parent := k.Parent(); parent != 0 {
+				if k.Kind() == frontend.KindEpisode {
+					parent = parent.Parent()
+				}
+				addPreload(parent)
 			}
 		}
 	}
@@ -608,7 +611,7 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 	if guidSrc == nil || t == nil || md == nil {
 		return
 	}
-	if !strings.HasPrefix(md.GUID, "plex://") && !(t.Type == frontend.TypeSeason && t.Season >= 9000) {
+	if !strings.HasPrefix(md.GUID, "plex://") && !virtualPlexSeason(t) {
 		if g := guidSrc.Cached(ctx, t.Key); g != "" {
 			md.GUID = g
 		} else if extras && frontend.ColdDetail(ctx, t.Key) && (t.Type == frontend.TypeMovie || t.Type == frontend.TypeShow) {
@@ -635,20 +638,20 @@ func (s *Server) refreshDetailGUID(ctx context.Context, t *frontend.Title, md *m
 	}
 	switch t.Type {
 	case frontend.TypeSeason:
-		if t.Season < 9000 && !strings.HasPrefix(md.ParentGUID, "plex://") && t.Key.TMDB() > 0 {
-			if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+		if !virtualPlexSeason(t) && !strings.HasPrefix(md.ParentGUID, "plex://") && titleShow(t) != 0 {
+			if sg := guidSrc.Cached(ctx, titleShow(t)); sg != "" {
 				md.ParentGUID = sg
 			}
 		}
 	case frontend.TypeEpisode:
-		if t.Key.TMDB() > 0 {
+		if titleShow(t) != 0 {
 			if !strings.HasPrefix(md.GrandparentGUID, "plex://") {
-				if sg := guidSrc.Cached(ctx, frontend.ShowKey(t.Key.TMDB())); sg != "" {
+				if sg := guidSrc.Cached(ctx, titleShow(t)); sg != "" {
 					md.GrandparentGUID = sg
 				}
 			}
 			if !strings.HasPrefix(md.ParentGUID, "plex://") && !strings.HasPrefix(md.ParentGUID, "local://episode-order/") {
-				if seag := guidSrc.Cached(ctx, frontend.SeasonKey(t.Key.TMDB(), t.Season)); seag != "" {
+				if seag := guidSrc.Cached(ctx, titleParent(t)); seag != "" {
 					md.ParentGUID = seag
 				}
 			}
@@ -681,7 +684,7 @@ func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *fronte
 	if onDeck && (t.Type == frontend.TypeShow || t.Type == frontend.TypeSeason) {
 		show := t.Key
 		if t.Type == frontend.TypeSeason {
-			show = frontend.ShowKey(t.Key.TMDB())
+			show = titleShow(t)
 		}
 		if ep, st := s.showOnDeck(ctx, pr, show, memo); ep != nil && (t.Type != frontend.TypeSeason || ep.Season == t.Season) {
 			// The show page's Play button plays this episode: resolve,
@@ -1202,14 +1205,19 @@ func (s *Server) handleParent(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	up := k.Parent()
-	if s.episodeOrder() != nil && k.Kind() == frontend.KindEpisode {
-		if n, _, _, ok := s.episodeOrder().Position(r.Context(), FromContext(r.Context()).User, k); ok {
-			up = frontend.SeasonKey(k.TMDB(), n)
-		}
+	ctx, pr := r.Context(), FromContext(r.Context())
+	title, err := s.metadataTitle(ctx, pr, k)
+	if err != nil || title == nil || !s.visibleTitle(ctx, pr.User, title) {
+		writeHTTPError(w, http.StatusNotFound)
+		return
 	}
+	up := s.presentedParent(ctx, pr, title)
 	if strings.HasSuffix(r.URL.Path, "/grandparent") {
-		up = up.Parent()
+		if title.Type == frontend.TypeEpisode {
+			up = titleShow(title)
+		} else {
+			up = 0
+		}
 	}
 	if up == 0 {
 		writeHTTPError(w, http.StatusNotFound)

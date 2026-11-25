@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,8 +69,8 @@ func titleWireForRegions(t frontend.Title, regions []string) object {
 	if t.Year > 0 {
 		out["year"] = t.Year
 	}
-	if !t.Released.IsZero() {
-		out["airDate"] = t.Released.UTC().Format("2006-01-02")
+	if date := cmp.Or(t.EpisodeAirDate, t.Released); !date.IsZero() {
+		out["airDate"] = date.UTC().Format("2006-01-02")
 	}
 	if t.DateDisplay == "date" {
 		out["dateDisplay"] = "date"
@@ -88,18 +89,10 @@ func titleWireForRegions(t frontend.Title, regions []string) object {
 		if showKey != 0 {
 			out["showId"] = ids.RatingKeyGUID(showKey)
 			if kind == "season" || kind == "episode" {
-				season := t.Season
-				if season == 0 && !t.Key.IsPluginKey() && (t.Key.Kind() == frontend.KindSeason || t.Key.Kind() == frontend.KindEpisode) {
-					season = t.Key.Season()
-				}
-				out["seasonNumber"] = season
+				out["seasonNumber"] = t.Season
 			}
 			if kind == "episode" {
-				episode := t.Episode
-				if episode == 0 && !t.Key.IsPluginKey() && t.Key.Kind() == frontend.KindEpisode {
-					episode = t.Key.Episode()
-				}
-				out["episodeNumber"] = episode
+				out["episodeNumber"] = t.Episode
 			}
 		}
 		if name := videoShowName(t); name != "" && (showKey != 0 || kind == "season" || kind == "episode") {
@@ -329,12 +322,6 @@ func videoShowKey(t frontend.Title) frontend.RatingKey {
 	if t.ShowKey != 0 {
 		return t.ShowKey
 	}
-	if !t.Key.IsPluginKey() && t.Key.TMDB() > 0 {
-		switch t.Key.Kind() {
-		case frontend.KindEpisode, frontend.KindSeason:
-			return frontend.ShowKey(t.Key.TMDB())
-		}
-	}
 	if t.Type == frontend.TypeEpisode || t.Type == frontend.TypeSeason {
 		for _, p := range t.MediaParents {
 			if p.Key != 0 && (p.Role == frontend.MediaRoleShow || p.Role == frontend.MediaRoleSeries) {
@@ -429,13 +416,7 @@ func episodePosterShow(title frontend.Title) frontend.RatingKey {
 		// (square or cover) art; a grandparent artist photo is never theirs.
 		return 0
 	}
-	if title.ShowKey != 0 {
-		return title.ShowKey
-	}
-	if !title.Key.IsPluginKey() {
-		return title.Key.Parent().Parent()
-	}
-	return 0
+	return title.ShowKey
 }
 
 func hasPortrait(images []frontend.GrantedImage) bool {
@@ -1484,8 +1465,6 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 		if detail.Title.Type == frontend.TypeEpisode || k.Kind() == frontend.KindEpisode {
 			if detail.Title.ShowKey != 0 {
 				target = detail.Title.ShowKey
-			} else if !k.IsPluginKey() && k.TMDB() > 0 {
-				target = frontend.ShowKey(k.TMDB())
 			}
 		}
 		e = i.host.Experience.RemoveFromContinue(r.Context(), v, target)

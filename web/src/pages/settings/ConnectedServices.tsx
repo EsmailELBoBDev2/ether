@@ -31,14 +31,16 @@ import { ErrorPanel, MutationError } from "../../components/feedback";
 import { TestButton, type TestState } from "../../components/fields";
 import { IntegrationAppCard } from "../../components/IntegrationAppCard";
 import { secretConfigured } from "../../components/IntegrationAccount";
-import { MDBListMark, SimklMark, TraktMark, TmdbMark } from "../../components/integration-brands";
+import { MDBListMark, SimklMark, TraktMark } from "../../components/integration-brands";
 import { useOwnerViewerPath } from "../../components/pickers";
 import { SaveBar } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
-import { localized, t, tn, tx } from "../../i18n";
+import { localized, t, tn } from "../../i18n";
 import { api, apiFetch, ApiError, errorMessage, type TestFn } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
+import { MetadataCatalogue } from "./MetadataCatalogue";
+import { builtinMetadataSources, metadataSources } from "../../lib/metadataSources";
 import { TmdbCatalogueSettings } from "./TmdbCatalogueSettings";
 import { NewReleasesSettings } from "../libraries/browser/NewReleasesSettings";
 import type { AvailabilityConfig } from "../../lib/types";
@@ -504,7 +506,8 @@ export function ConnectedServices({
   const config = useAsync(() => api.getConfig(), []);
   const ratings = useAsync(() => apiFetch<RatingSettings>("/discovery/ratings/settings"), []);
   const cfg = config.data;
-  const catalogSetupStatus = useAsync(() => api.setupStatus(), []);
+  const sources = useAsync(metadataSources, []);
+  const tmdb = sources.data?.find((source) => source.id === "tmdb");
   // i18n: memo holds no copy — only stable config keys and stored values.
   const stored = useMemo(() => {
     if (!cfg) return null;
@@ -516,7 +519,6 @@ export function ConnectedServices({
     } as Record<string, Obj>;
   }, [cfg]);
   const { draft, setDraft, dirty, reset } = useSectionDrafts(stored);
-  const [tmdbSetup, setTmdbSetup] = useState(false);
   const [ratingsSetup, setRatingsSetup] = useState(false);
   const [posterFlags, setPosterFlags] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -688,7 +690,6 @@ export function ConnectedServices({
           savedLabels.push(s.label);
         }
         toast.success(t("Settings saved"), { description: savedLabels.join(", ") });
-        setTmdbSetup(false);
         void refreshDashboard();
       } catch (e) {
         setError(e);
@@ -852,95 +853,8 @@ export function ConnectedServices({
       }
     });
   };
-  const tmdbTest = (
-    <TestButton
-      label={t("Test TMDB key")}
-      state={tests.catalog ?? { status: "idle" }}
-      onTest={() => {
-        setTests((prev) => ({ ...prev, catalog: { status: "running" } }));
-        api.testTMDB(String(draft.catalog?.tmdbKey ?? "")).then(
-          (r) =>
-            setTests((prev) => ({
-              ...prev,
-              catalog: r.ok
-                ? { status: "ok", durationMs: r.durationMs }
-                : { status: "fail", message: r.error ?? t("failed") },
-            })),
-          (e) =>
-            setTests((prev) => ({
-              ...prev,
-              catalog: { status: "fail", message: (e as Error).message },
-            })),
-        );
-      }}
-    />
-  );
-  const usingBundledKey =
-    !secretConfigured(stored?.catalog?.tmdbKey) &&
-    catalogSetupStatus.data?.steps.some((step) => step.id === "catalog" && step.complete) === true;
-  const tmdbForm = (
-    <SettingsSection
-      title={undefined}
-      description={
-        usingBundledKey
-          ? t("Ether includes a TMDB key. Add your own only if you want to use your own quota.")
-          : t("Ether uses this key to name titles, fetch artwork and fill the catalogue.")
-      }
-    >
-      {!usingBundledKey ? (
-        <p className="px-5 py-4 text-sm text-fg-muted">
-          {tx("Create a free API key in your {link} account settings, then paste it below.", {
-            link: (
-              <a
-                href="https://www.themoviedb.org/settings/api"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-primary underline"
-              >
-                themoviedb.org
-              </a>
-            ),
-          })}
-        </p>
-      ) : null}
-      <SchemaField
-        def={{
-          key: "tmdbKey",
-          label: usingBundledKey ? t("Your own TMDB key (optional)") : t("TMDB API key"),
-          kind: "secret",
-          help: t("Your personal TMDB v3 API key or v4 read-access token."),
-        }}
-        value={draft.catalog?.tmdbKey}
-        path="catalog.tmdbKey"
-        error={errors["catalog.tmdbKey"]}
-        onChange={(v) => setDraft({ ...draft, catalog: { ...draft.catalog, tmdbKey: v } })}
-      />
-    </SettingsSection>
-  );
   return (
     <>
-      <Drawer
-        open={tmdbSetup}
-        onClose={() => {
-          setTmdbSetup(false);
-          reset();
-        }}
-        title={t("Set up {app}", { app: "TMDB" })}
-        description={t("Save and enable turns this on. Cancel leaves it off.")}
-        footer={
-          <IntegrationSetupFooter
-            disabled={locked}
-            onCancel={() => {
-              setTmdbSetup(false);
-              reset();
-            }}
-            onSave={() => void save()}
-          />
-        }
-      >
-        {tmdbForm}
-        {tmdbTest}
-      </Drawer>
       <Drawer
         open={ratingsSetup}
         onClose={() => setRatingsSetup(false)}
@@ -1012,19 +926,7 @@ export function ConnectedServices({
       </Drawer>
       {tab === "tmdb" || visited.has("tmdb") ? (
         <div hidden={tab !== "tmdb"}>
-          <IntegrationTab
-            id="tmdb"
-            test={tmdbTest}
-            name="TMDB"
-            enabled
-            ready={
-              secretConfigured(stored?.catalog?.tmdbKey) ||
-              catalogSetupStatus.data?.steps.some(
-                (step) => step.id === "catalog" && step.complete,
-              ) === true
-            }
-          >
-            {tmdbForm}
+          <IntegrationTab id="tmdb" name="TMDB" enabled ready={Boolean(tmdb?.configured)}>
             <TmdbCatalogueSettings
               draft={draft.catalog ?? {}}
               onChange={(catalog) => setDraft({ ...draft, catalog })}
@@ -1059,7 +961,27 @@ export function ConnectedServices({
             <ServiceOverview
               posterCards={posterCards}
               posterSavedNote={posterSavedNote}
-              onTmdbSetup={() => setTmdbSetup(true)}
+              tmdbBundled={tmdb?.keySource === "built-in" && tmdb.enabled}
+              onMetadataSave={(patch) =>
+                enqueue(async () => {
+                  const res = await api.putSection("catalog", patch);
+                  const section = asObj(res.value);
+                  const latest = model.current.draft;
+                  if (latest)
+                    applySection("catalog", section, {
+                      ...latest,
+                      catalog: {
+                        ...section,
+                        ...latest.catalog,
+                        ...Object.fromEntries(
+                          Object.keys(patch).map((field) => [field, section[field]]),
+                        ),
+                      },
+                    });
+                  await sources.reload();
+                  void refreshDashboard();
+                })
+              }
               onRatingsSetup={toggleRatings}
               draft={draft}
               stored={stored}
@@ -1252,10 +1174,12 @@ function ServiceOverview({
   onToggle,
   posterCards,
   posterSavedNote,
-  onTmdbSetup,
+  tmdbBundled,
+  onMetadataSave,
   onRatingsSetup,
 }: {
-  onTmdbSetup: (next: boolean) => void;
+  tmdbBundled: boolean;
+  onMetadataSave: (patch: Record<string, string | boolean>) => Promise<void>;
   onRatingsSetup: (next: boolean) => void;
   posterCards: ReactNode;
   posterSavedNote?: ReactNode;
@@ -1266,7 +1190,6 @@ function ServiceOverview({
   locked: boolean;
   onToggle: (service: Service, next: boolean) => void;
 }) {
-  const navigate = useNavigate();
   const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
   const [addingSource, setAddingSource] = useState(false);
   const subtitlePlugins = useRegistry("subtitleProvider").descriptors.filter(isPluginDescriptor);
@@ -1278,18 +1201,10 @@ function ServiceOverview({
   useStreamEvent("plugins.changed", () => {
     void catalogue.reload();
   });
-  const { health } = useApp();
-  const catalogHealth = health.find((item) => item.id === "catalog");
   const service = (tab: Service["tab"]) => SERVICES.find((s) => s.tab === tab)!;
   const saved = (tab: Service["tab"]) => stored?.[service(tab).configKey] ?? {};
   const on = (tab: Service["tab"]) => flagOf(saved(tab), service(tab).flag);
   const switchesHeld = locked || busyId !== null;
-  const tmdbKey = stored?.catalog?.tmdbKey;
-  const setup = useAsync(() => api.setupStatus(), []);
-  const tmdbAvailable =
-    secretConfigured(tmdbKey) ||
-    setup.data?.steps.some((step) => step.id === "catalog" && step.complete);
-
   return (
     <>
       <IntegrationGroup
@@ -1301,45 +1216,32 @@ function ServiceOverview({
           </Button>
         }
       >
-        <IntegrationAppCard
-          identity={{ id: "tmdb", name: "TMDB" }}
-          logo={<TmdbMark />}
-          description={t("Names titles, fetches artwork and fills the catalogue.")}
-          status={
-            tmdbAvailable ? (
-              catalogHealth ? (
-                <LevelBadge level={catalogHealth.level} />
-              ) : (
-                <Badge variant="success">{t("Key saved")}</Badge>
-              )
-            ) : (
-              <Badge variant="warning">{t("Needs an API key")}</Badge>
-            )
-          }
-          action={
-            <>
-              <div className="w-full text-sm text-fg-muted">
-                {catalogue.data
-                  ?.filter((source) => source.group === "builtin")
-                  .map((source) => (
-                    <p key={source.id}>
-                      {source.name}
-                      {source.itemCount !== undefined
-                        ? ` · ${tn(source.itemCount, "{count} title", "{count} titles")}`
-                        : ""}
-                    </p>
-                  ))}
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => (tmdbAvailable ? navigate("/services/tmdb") : onTmdbSetup(true))}
-              >
-                {tmdbAvailable ? t("Manage TMDB") : t("Set up TMDB")}
-              </Button>
-            </>
-          }
-        />
+        {(["tmdb", "tvdb"] as const).map((source) => (
+          <MetadataCatalogue
+            key={source}
+            identity={{ id: source, name: builtinMetadataSources[source].name }}
+            source={source}
+            storedKey={String(stored?.catalog?.[builtinMetadataSources[source].key] ?? "")}
+            bundled={source === "tmdb" && tmdbBundled}
+            off={source === "tmdb" && stored?.catalog?.tmdbDisabled === true}
+            onToggle={
+              source === "tmdb"
+                ? async (enabled) => {
+                    await onMetadataSave({ tmdbDisabled: !enabled });
+                    void catalogue.reload();
+                  }
+                : undefined
+            }
+            locked={switchesHeld}
+            onSave={async (key) => {
+              await onMetadataSave({
+                [builtinMetadataSources[source].key]: key,
+                ...(source === "tmdb" && key ? { tmdbDisabled: false } : {}),
+              });
+              void catalogue.reload();
+            }}
+          />
+        ))}
         {catalogueGroups((catalogue.data ?? []).filter((source) => source.group !== "builtin")).map(
           (source) => (
             <IntegrationAppCard

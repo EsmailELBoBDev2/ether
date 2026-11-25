@@ -150,6 +150,11 @@ func WithOrigin(ctx context.Context, origin Origin) context.Context {
 }
 func originFrom(ctx context.Context) Origin { return frontend.WatchOriginFrom(ctx) }
 
+// Ancestry identifies an episode's season and the containing show.
+type Ancestry struct {
+	ShowKey, ParentKey core.RatingKey
+}
+
 // Options tune a State. Now is injectable for tests.
 type Options struct {
 	Logger *slog.Logger
@@ -167,6 +172,8 @@ type Options struct {
 	// persist a resume offset (for example music tracks). LastViewedAt and
 	// completion are still recorded.
 	SkipResume func(context.Context, core.RatingKey) bool
+	// Ancestry resolves a batch of stored children without loading provider data.
+	Ancestry func(context.Context, []core.RatingKey) (map[core.RatingKey]Ancestry, error)
 	// ResumeAfterSeconds sets how many seconds into a title a resume point is
 	// kept from, for every frontend. 0 keeps the default (StartedThreshold).
 	ResumeAfterSeconds int
@@ -190,6 +197,7 @@ type State struct {
 	subs        map[int]func(Event)
 	next        int
 	skipResume  func(context.Context, core.RatingKey) bool
+	ancestry    func(context.Context, []core.RatingKey) (map[core.RatingKey]Ancestry, error)
 	resumeAfter atomic.Int64
 
 	// progress holds timeline writes through a database outage (nil when
@@ -255,7 +263,7 @@ func New(db *sql.DB, opts Options) *State {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume}
+	s := &State{db: db, log: opts.Logger, now: opts.Now, subs: map[int]func(Event){}, wmu: make(chan struct{}, 1), skipResume: opts.SkipResume, ancestry: opts.Ancestry}
 	s.SetResumeAfter(opts.ResumeAfterSeconds)
 	if opts.PendingSQLite {
 		s.pending = newPendingWrites(s)

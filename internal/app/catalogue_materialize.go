@@ -15,6 +15,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/stremio"
 )
 
+const tvdbCatalogueLimit = 100
+
+func materializedCatalogueSource(id string) bool {
+	return id == "tvdb" || strings.HasPrefix(id, "stremio:")
+}
+
 type forceCatalogueSyncKey struct{}
 
 func withForceCatalogueSync(ctx context.Context) context.Context {
@@ -54,6 +60,9 @@ func (a *App) resolveCatalogueSource(ctx context.Context, id string) (catalogueS
 	}
 	if id == "tmdb-tv" {
 		return catalogueSourceRef{typ: "show"}, nil
+	}
+	if id == "tvdb" {
+		return catalogueSourceRef{typ: "show", limit: tvdbCatalogueLimit}, nil
 	}
 	parts := strings.SplitN(id, ":", 3)
 	if len(parts) != 3 || (parts[0] != "plugin" && parts[0] != "stremio") {
@@ -202,7 +211,7 @@ func (a *App) wireCatalogueSources() {
 		unique := make([]core.Title, 0, len(res.Titles))
 		seen := map[core.RatingKey]bool{}
 		for _, title := range res.Titles {
-			if title.Type == core.MediaType(ref.typ) && title.IDs.TMDB > 0 && !seen[title.Key] {
+			if title.Type == core.MediaType(ref.typ) && title.Key != 0 && (id == string(core.MetadataTVDB) || title.IDs.TMDB > 0) && !seen[title.Key] {
 				seen[title.Key] = true
 				unique = append(unique, title)
 			}
@@ -277,12 +286,17 @@ func (a *App) wireCatalogueSources() {
 				return nil
 			}
 		}
-		if a.collections == nil {
-			return fmt.Errorf("catalogue sources unavailable")
-		}
 		itemCtx, cancel := context.WithTimeout(ctx, catalogueSyncTimeout(ref.limit))
 		defer cancel()
-		res, err := a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, ref.typ)
+		var res collections.CatalogueSync
+		var err error
+		if id == string(core.MetadataTVDB) {
+			res.Titles, res.Listed, err = a.catalog.TVDBSourceTitles(itemCtx, ref.limit)
+		} else if a.collections != nil {
+			res, err = a.collections.GatherCatalogueSource(itemCtx, ref.kind, ref.label, ref.typ)
+		} else {
+			err = fmt.Errorf("catalogue sources unavailable")
+		}
 		if err == nil {
 			err = write(ctx, id, ref, res)
 		}
@@ -319,7 +333,7 @@ func (a *App) wireCatalogueSources() {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !strings.HasPrefix(id, "stremio:") {
+			if !materializedCatalogueSource(id) {
 				result(nil)
 				continue
 			}
@@ -340,7 +354,7 @@ func (a *App) wireCatalogueSources() {
 				result(nil)
 				continue
 			}
-			if !force && refreshed > 0 {
+			if !force && refreshed > 0 && id != string(core.MetadataTVDB) {
 				// Stale but synced before: serve what is stored and refresh
 				// in the background.
 				bg, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -354,6 +368,13 @@ func (a *App) wireCatalogueSources() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				// TheTVDB is refreshed in this open library's context only.
+				// Keep the recorded membership if a refresh fails.
+				if id == string(core.MetadataTVDB) && !force && refreshed > 0 {
+					_ = syncSource(ctx, id, ref, false, false)
+					result(nil)
+					return
+				}
 				result(syncSource(ctx, id, ref, force, true))
 			}()
 		}

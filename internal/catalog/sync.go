@@ -170,8 +170,7 @@ func (c *Catalog) Run(ctx context.Context) {
 			case err == nil || ctx.Err() != nil:
 				failures = 0
 			case errors.Is(err, tmdb.ErrNoKey):
-				// A fresh install before setup: expected, not an error.
-				c.log.Info("catalog: waiting for a TMDB API key (add it in setup or Integrations)")
+				// Metadata can be enabled later while the service stays running.
 				delay = min(delay, 5*time.Minute)
 			default:
 				failures++
@@ -242,6 +241,9 @@ func (c *Catalog) untilDue(ctx context.Context) time.Duration {
 var ErrSyncInProgress = fmt.Errorf("catalog: sync already in progress")
 
 func (c *Catalog) Sync(ctx context.Context) error {
+	if !c.TMDBConfigured() {
+		return tmdb.ErrNoKey
+	}
 	ctx = tmdb.Background(ctx)
 	if !c.syncing.CompareAndSwap(false, true) {
 		return ErrSyncInProgress
@@ -256,11 +258,7 @@ func (c *Catalog) Sync(ctx context.Context) error {
 	}
 	resumeCtx, err := c.resumeSync(ctx)
 	if err == nil {
-		if c.tmdb() == nil {
-			err = fmt.Errorf("catalog: sync: no TMDB client")
-		} else {
-			err = c.syncLocked(resumeCtx)
-		}
+		err = c.syncLocked(resumeCtx)
 	}
 	if err == nil {
 		tx, txErr := c.db.BeginTx(ctx, nil)
@@ -514,7 +512,7 @@ func (c *Catalog) qualifiesNewRelease(t core.Title) bool {
 // long-term vote counts to accumulate. Errors on optional endpoints are
 // ignored so minimal test fixtures are unaffected.
 func (c *Catalog) syncNewReleases(ctx context.Context) {
-	if c.tmdb() == nil || ctx.Err() != nil {
+	if !c.TMDBConfigured() || ctx.Err() != nil {
 		return
 	}
 	var batch []core.Title
@@ -550,7 +548,7 @@ func (c *Catalog) syncNewReleases(ctx context.Context) {
 // followed by the most popular and most-voted titles. Settled titles are
 // marked detail=1 and never re-queried.
 func (c *Catalog) WarmDetails(ctx context.Context, limit int) (int, error) {
-	if c.tmdb() == nil || limit <= 0 {
+	if !c.TMDBConfigured() || limit <= 0 {
 		return 0, nil
 	}
 	now := c.now()
@@ -671,7 +669,7 @@ type personCreditsTMDB interface {
 // the next read has the rest.
 func (c *Catalog) ensurePersonCredits(ctx context.Context, personID int64) {
 	client := c.tmdb()
-	if personID <= 0 || client == nil {
+	if personID <= 0 || !c.TMDBConfigured() {
 		return
 	}
 	pc, ok := client.(personCreditsTMDB)

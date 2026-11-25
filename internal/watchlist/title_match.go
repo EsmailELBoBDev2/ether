@@ -16,7 +16,7 @@ CREATE INDEX IF NOT EXISTS watchlist_episodes_title_match ON watchlist_episodes(
 }
 
 // RekeyTitle moves watchlist entries and remembered episodes in the caller’s transaction.
-func RekeyTitle(ctx context.Context, tx *sql.Tx, old, next *core.Title) error {
+func RekeyTitle(ctx context.Context, tx *sql.Tx, old, next *core.Title, ranges []core.TitleKeyRange) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO watchlist_items(user_id,item_key,source,title,added,checked,available,notified,warmed)
 		SELECT user_id,?,source,?,added,checked,available,notified,warmed FROM watchlist_items WHERE item_key=?
 		ON CONFLICT(user_id,item_key,source) DO NOTHING`, int64(next.Key), next.Title, int64(old.Key)); err != nil {
@@ -26,14 +26,19 @@ func RekeyTitle(ctx context.Context, tx *sql.Tx, old, next *core.Title) error {
 		return err
 	}
 	if old.Type == core.TypeShow {
-		delta := core.EpisodeKey(next.Key.TMDB(), 0, 0) - core.EpisodeKey(old.Key.TMDB(), 0, 0)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO watchlist_episodes(user_id,item_key,episode_key,at)
-			SELECT user_id,?,episode_key+?,at FROM watchlist_episodes WHERE item_key=?
-			ON CONFLICT(user_id,item_key,episode_key) DO NOTHING`, int64(next.Key), delta, int64(old.Key)); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM watchlist_episodes WHERE item_key=?`, int64(old.Key)); err != nil {
-			return err
+		for _, r := range ranges {
+			if core.RatingKey(r.First).Kind() != core.KindEpisode {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO watchlist_episodes(user_id,item_key,episode_key,at)
+				SELECT user_id,?,episode_key+?,at FROM watchlist_episodes WHERE item_key=? AND episode_key BETWEEN ? AND ?
+				ON CONFLICT(user_id,item_key,episode_key) DO NOTHING`, int64(next.Key), r.Delta, int64(old.Key), r.First, r.Last); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM watchlist_episodes WHERE item_key=? AND episode_key BETWEEN ? AND ?`,
+				int64(old.Key), r.First, r.Last); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

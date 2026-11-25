@@ -451,6 +451,8 @@ type Library struct {
 	Name    string        `json:"name"` // owner-editable display name
 	Source  LibrarySource `json:"source"`
 	Sources []string      `json:"sources"`
+	// Empty selects the first configured provider that supports MediaType.
+	MetadataSource string `json:"metadataSource,omitempty"`
 	// Builtin only: TypeMovie or TypeShow.
 	MediaType MediaType `json:"mediaType,omitempty"`
 	// Plugin only.

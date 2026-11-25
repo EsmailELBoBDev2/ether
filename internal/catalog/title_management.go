@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/tmdb"
@@ -86,82 +84,6 @@ func (c *Catalog) removeMissingChildren(ctx context.Context, tx *sql.Tx, show co
 		}
 	}
 	return nil
-}
-
-// SearchTitleMatches searches TMDB directly, independent of library admission.
-func (c *Catalog) SearchTitleMatches(ctx context.Context, typ core.MediaType, query string, year int) ([]core.Title, error) {
-	query = strings.TrimSpace(query)
-	out := []core.Title{}
-	if query == "" || len(query) > 300 {
-		return out, nil
-	}
-	client := c.tmdb()
-	if client == nil {
-		return nil, core.ErrNotAvailable
-	}
-	// Native app identify forms can submit a TMDB ID instead of a name.
-	if rawID, ok := strings.CutPrefix(query, "tmdb-"); ok {
-		id, err := strconv.ParseInt(rawID, 10, 64)
-		if err != nil || id <= 0 || id >= 100_000_000 {
-			return out, nil
-		}
-		var t core.Title
-		switch typ {
-		case core.TypeMovie:
-			d, err := client.MovieDetails(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			t = c.movieDetailsToTitle(ctx, d)
-		case core.TypeShow:
-			d, err := client.TVDetails(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			t = c.tvDetailsToTitle(ctx, d)
-		default:
-			return nil, core.ErrNotFound
-		}
-		if t.IDs.TMDB == id && !t.Adult {
-			out = append(out, t)
-		}
-		return out, nil
-	}
-	search, ok := client.(interface {
-		SearchMoviesByYear(context.Context, string, int, int) (*tmdb.Paged[tmdb.Movie], error)
-		SearchTVByYear(context.Context, string, int, int) (*tmdb.Paged[tmdb.TVShow], error)
-	})
-	if !ok {
-		return nil, core.ErrNotAvailable
-	}
-
-	switch typ {
-	case core.TypeMovie:
-		page, err := search.SearchMoviesByYear(ctx, query, 1, year)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range page.Results {
-			t := c.movieToTitle(ctx, item)
-			if !t.Adult && (year == 0 || year == t.Year) {
-				out = append(out, t)
-			}
-		}
-	case core.TypeShow:
-		page, err := search.SearchTVByYear(ctx, query, 1, year)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range page.Results {
-			t := c.tvToTitle(ctx, item)
-			if !t.Adult && (year == 0 || year == t.Year) {
-				out = append(out, t)
-			}
-		}
-	default:
-		return nil, core.ErrNotFound
-	}
-	return out, nil
 }
 
 // TitleTreeArtwork reads only the named title and its stored descendants.

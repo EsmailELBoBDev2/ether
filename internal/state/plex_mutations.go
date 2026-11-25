@@ -48,22 +48,14 @@ func (s *State) ScrobbleTree(ctx context.Context, user int64, key core.RatingKey
 	switch key.Kind() {
 	case core.KindEpisode:
 		if watched {
-			show, parent, err := childAncestry(ctx, s.db, key)
-			if err != nil {
-				return err
-			}
-			add(parent)
-			add(show)
+			add(key.Parent())
+			add(key.Parent().Parent())
 		}
 	case core.KindShow, core.KindSeason:
 		add(key)
 		if !watched && key.Kind() == core.KindShow {
 			for _, leaf := range leaves {
-				_, parent, err := childAncestry(ctx, s.db, leaf)
-				if err != nil {
-					return err
-				}
-				add(parent)
+				add(leaf.Parent())
 			}
 		}
 	}
@@ -102,15 +94,7 @@ func (s *State) TouchParents(ctx context.Context, user int64, key core.RatingKey
 	if key.Kind() != core.KindEpisode {
 		return nil
 	}
-	show, parent, err := childAncestry(ctx, s.db, key)
-	if err != nil || show == 0 {
-		return err
-	}
-	keys := []core.RatingKey{show}
-	if parent != 0 {
-		keys = append(keys, parent)
-	}
-	return s.updateAt(ctx, user, keys, at, func(cur *row, now time.Time) (bool, bool, []Event) {
+	return s.updateAt(ctx, user, []core.RatingKey{key.Parent(), key.Parent().Parent()}, at, func(cur *row, now time.Time) (bool, bool, []Event) {
 		cur.ws.LastViewedAt = now
 		cur.ws.UpdatedAt = now
 		cur.watchAt = now

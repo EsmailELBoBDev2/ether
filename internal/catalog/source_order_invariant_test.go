@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -111,5 +112,57 @@ func TestSourceOrderPreservesEpisodeIdentityAcrossOrders(t *testing.T) {
 	}
 	if ep, found := restored.EpisodeAt(2025, 2); !found || ep.Key != legacy {
 		t.Fatalf("original coordinate changed: %+v", ep)
+	}
+}
+
+type linkedLayoutSource struct{ layoutSource }
+
+func (linkedLayoutSource) Lookup(context.Context, core.ProviderRef) (*core.Title, error) {
+	return &core.Title{Type: core.TypeShow, IDs: core.IDs{IMDB: "tt0123000", TVDB: 970}, Title: "Linked", Released: metadataDate("2020-01-01")}, nil
+}
+
+func TestAllocatedSourceAliasKeepsCanonicalWatchIdentity(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	c, err := New(db, nil, config.Catalog{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.MetadataSources().Register(linkedLayoutSource{})
+	canonical := core.ShowKey(700)
+	if err := c.UpsertDetailedTitle(ctx, core.Title{Key: canonical, Type: core.TypeShow, IDs: core.IDs{TMDB: 700, IMDB: "tt0123000"},
+		Title: "Original", Released: metadataDate("2020-01-01")}); err != nil {
+		t.Fatal(err)
+	}
+	hit := core.MetadataHit{Ref: core.ProviderRef{Source: core.MetadataTVDB, ID: "970", Type: core.TypeShow}}
+	stub, err := c.SourceSummary(ctx, hit)
+	if err != nil || !stub.Key.Allocated() {
+		t.Fatalf("initial identity: %v %v", stub.Key, err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO state_watch(user_id,rating_key,view_count) VALUES (1,?,1)`, stub.Key); err != nil {
+		t.Fatal(err)
+	}
+	c.SetSourceIdentityRekey(func(ctx context.Context, tx *sql.Tx, old, next *core.Title, ranges []core.TitleKeyRange) (func(), error) {
+		if len(ranges) != 1 || old.Key != stub.Key || next.Key != canonical {
+			t.Fatalf("wrong alias migration: %+v", ranges)
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE state_watch SET rating_key=? WHERE rating_key=?`, next.Key, old.Key)
+		return nil, err
+	})
+	opened, err := c.Get(ctx, stub.Key)
+	if err != nil || opened.Key != canonical || opened.IDs.TMDB != 700 || opened.IDs.TVDB != 970 {
+		t.Fatalf("opened: %+v %v", opened, err)
+	}
+	again, err := c.SourceSummary(ctx, hit)
+	if err != nil || again.Key != canonical {
+		t.Fatalf("summary after linking: %+v %v", again, err)
+	}
+	var watchKey core.RatingKey
+	if err := db.QueryRowContext(ctx, `SELECT rating_key FROM state_watch WHERE user_id=1`).Scan(&watchKey); err != nil || watchKey != canonical {
+		t.Fatalf("watch identity: %v %v", watchKey, err)
+	}
+	alias, err := c.CachedTitle(ctx, stub.Key)
+	if err != nil || alias.Key != canonical {
+		t.Fatalf("alias stopped resolving: %+v %v", alias, err)
 	}
 }

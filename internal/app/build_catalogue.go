@@ -75,6 +75,7 @@ func (a *App) buildCatalogue(ctx context.Context, cfg config.Config) error {
 		return cfg.TVDBKey, cfg.Language
 	}))
 	a.catalog.SetEpisodeOrderDefault(a.libraryEpisodeOrder)
+	a.catalog.SetEpisodeOrderBatchDefault(a.libraryEpisodeOrders)
 	a.catalog.SetMetadataSourceDefault(a.libraryMetadataSource)
 	a.catalog.SetSourceIdentityRekey(a.rekeyTitleBindings)
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
@@ -126,7 +127,8 @@ func (c *Catalog) sourceTitleDetails(ctx context.Context, t *core.Title, source 
 }
 
 func (c *Catalog) refreshSourceTree(ctx context.Context, t *core.Title, source core.MetadataSourceID) (*core.Title, error) {
-	fresh, err := c.sourceTitleDetails(ctx, t, source, true)
+	refreshCtx := core.WithMetadataRefresh(ctx)
+	fresh, err := c.sourceTitleDetails(refreshCtx, t, source, true)
 	if err != nil || t.Type != core.TypeShow {
 		return fresh, err
 	}
@@ -142,7 +144,7 @@ func (c *Catalog) refreshSourceTree(ctx context.Context, t *core.Title, source c
 	if err != nil {
 		return nil, err
 	}
-	rows, err := provider.Seasons(ctx, ref, order.Order)
+	rows, err := provider.Seasons(refreshCtx, ref, order.Order)
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +155,14 @@ func (c *Catalog) refreshSourceTree(ctx context.Context, t *core.Title, source c
 	if err != nil {
 		return nil, err
 	}
+	if order.Order.Source == core.MetadataTMDB && strings.HasPrefix(order.Order.Kind, "group:") {
+		// Seasons refreshed the shared group payload. Reuse it for all its
+		// coordinates instead of re-downloading the same group for each.
+		refreshCtx = ctx
+	}
+
 	for _, season := range seasons {
-		items, err := provider.Episodes(ctx, ref, order.Order, season.Season)
+		items, err := provider.Episodes(refreshCtx, ref, order.Order, season.Season)
 		if err != nil {
 			return nil, err
 		}

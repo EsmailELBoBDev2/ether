@@ -153,3 +153,25 @@ func (r *MetadataSources) Configured() []MetadataSource {
 	}
 	return configured
 }
+
+type metadataRefreshContextKey struct{}
+
+// WithMetadataRefresh requests fresh source data for an explicit metadata
+// refresh. Providers may reuse responses fetched during the same refresh.
+func WithMetadataRefresh(ctx context.Context) context.Context {
+	if MetadataRefreshRequested(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, metadataRefreshContextKey{}, time.Now())
+}
+
+func MetadataRefreshRequested(ctx context.Context) bool {
+	return !MetadataRefreshStarted(ctx).IsZero()
+}
+
+// MetadataRefreshStarted distinguishes responses from this explicit action
+// from entries already in the provider cache when the action began.
+func MetadataRefreshStarted(ctx context.Context) time.Time {
+	started, _ := ctx.Value(metadataRefreshContextKey{}).(time.Time)
+	return started
+}

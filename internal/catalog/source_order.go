@@ -96,6 +96,29 @@ func (c *Catalog) SetEpisodeOrderDefault(load func(context.Context, *core.Title)
 	c.episodeOrderDefault.Store(&fn)
 }
 
+type orderBatchDefaultLoader func(context.Context, []core.Title) (map[core.RatingKey]EffectiveEpisodeOrder, error)
+
+func (c *Catalog) SetEpisodeOrderBatchDefault(load func(context.Context, []core.Title) (map[core.RatingKey]EffectiveEpisodeOrder, error)) {
+	if load == nil {
+		c.episodeOrderBatchDefault.Store(nil)
+		return
+	}
+	fn := orderBatchDefaultLoader(load)
+	c.episodeOrderBatchDefault.Store(&fn)
+}
+
+func (c *Catalog) canProjectAlternateOrders() bool {
+	if c.hasEpisodeLayouts.Load() || store.DialectOf(c.db) == store.Postgres {
+		return true
+	}
+	for _, source := range c.metadataSources.Configured() {
+		if source.ID() != core.MetadataTMDB && source.Capabilities().Shows {
+			return true
+		}
+	}
+	return false
+}
+
 type metadataGroupLoader func(context.Context, int64, string) (*tmdb.EpisodeGroup, error)
 
 func (c *Catalog) SetMetadataEpisodeGroup(load func(context.Context, int64, string) (*tmdb.EpisodeGroup, error)) {
@@ -143,26 +166,28 @@ func (c *Catalog) effectiveEpisodeOrder(ctx context.Context, show *core.Title) (
 }
 
 func (c *Catalog) episodeLibraryDefault(ctx context.Context, show *core.Title) (EffectiveEpisodeOrder, error) {
-	out := EffectiveEpisodeOrder{LibraryDefault: tmdbAired}
-	if show.IDs.TMDB == 0 && show.IDs.TVDB > 0 {
-		out.LibraryDefault.Source = core.MetadataTVDB
-	}
+	var selected EffectiveEpisodeOrder
 	if load := c.episodeOrderDefault.Load(); load != nil && ctx.Value(resolvingEpisodeDefault{}) == nil {
-		resolved, err := (*load)(context.WithValue(ctx, resolvingEpisodeDefault{}, true), show)
+		var err error
+		selected, err = (*load)(context.WithValue(ctx, resolvingEpisodeDefault{}, true), show)
 		if err != nil {
-			return out, err
-		}
-		out.LibraryID, out.LibraryName = resolved.LibraryID, resolved.LibraryName
-		if resolved.LibraryDefault.Source != "" {
-			out.LibraryDefault = resolved.LibraryDefault
-		} else if resolved.Order.Source != "" {
-			out.LibraryDefault = resolved.Order
+			return selected, err
 		}
 	}
-	if show.Key.Allocated() && show.IDs.TMDB == 0 && show.IDs.TVDB > 0 && out.LibraryDefault == tmdbAired {
-		out.LibraryDefault.Source = core.MetadataTVDB
+	return normalizeLibraryEpisodeOrder(show, selected), nil
+}
+
+func normalizeLibraryEpisodeOrder(show *core.Title, selected EffectiveEpisodeOrder) EffectiveEpisodeOrder {
+	if selected.LibraryDefault.Source == "" {
+		selected.LibraryDefault = selected.Order
 	}
-	return out, nil
+	if selected.LibraryDefault.Source == "" {
+		selected.LibraryDefault = tmdbAired
+	}
+	if show.IDs.TMDB == 0 && show.IDs.TVDB > 0 && selected.LibraryDefault == tmdbAired && (show.Key.Allocated() || selected.LibraryID == 0) {
+		selected.LibraryDefault.Source = core.MetadataTVDB
+	}
+	return selected
 }
 
 func (c *Catalog) SetEpisodeOrder(ctx context.Context, show core.RatingKey, order core.EpisodeOrder) error {

@@ -281,7 +281,7 @@ func (s *Service) MetadataGroup(ctx context.Context, id int64, groupID string) (
 func (s *Service) group(ctx context.Context, id string) (*tmdb.EpisodeGroup, error) {
 	var body string
 	var at int64
-	if e := s.db.QueryRowContext(ctx, `SELECT body,updated_at FROM episodeorder_groups WHERE id=?`, id).Scan(&body, &at); e == nil && time.Since(time.Unix(at, 0)) < 24*time.Hour {
+	if e := s.db.QueryRowContext(ctx, `SELECT body,updated_at FROM episodeorder_groups WHERE id=?`, id).Scan(&body, &at); e == nil && !core.MetadataRefreshRequested(ctx) && time.Since(time.Unix(at, 0)) < 24*time.Hour {
 		var g tmdb.EpisodeGroup
 		if json.Unmarshal([]byte(body), &g) == nil {
 			return &g, nil

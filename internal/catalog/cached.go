@@ -98,42 +98,7 @@ func (c *Catalog) RecentEpisodesMany(ctx context.Context, shows []core.RatingKey
 // Episode and season lookups also include upcoming rows. Batch consumers such as recommendation
 // builders use this to avoid one full hydration round trip per history entry.
 func (c *Catalog) CachedTitles(ctx context.Context, keys []core.RatingKey) ([]core.Title, error) {
-	var roots, children []core.RatingKey
-	for _, key := range keys {
-		if key.Kind() == core.KindEpisode || key.Kind() == core.KindSeason {
-			children = append(children, key)
-		} else {
-			roots = append(roots, key)
-		}
-	}
-	items, err := c.titlesByKeys(ctx, roots)
-	if err != nil {
-		return nil, err
-	}
-	byKey := make(map[core.RatingKey]core.Title, len(items)+len(children))
-	for _, item := range items {
-		byKey[item.Key] = item
-	}
-	if len(children) > 0 {
-		filter, args := c.keyMembership("key", false, uniqueRatingKeys(children))
-		found, err := c.queryTitlesUnfiltered(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE `+filter, args...)
-		if err != nil {
-			return nil, err
-		}
-		if err := c.ProjectEpisodeTitles(ctx, found); err != nil {
-			return nil, err
-		}
-		for _, item := range found {
-			byKey[item.Key] = item
-		}
-	}
-	out := make([]core.Title, 0, len(byKey))
-	for _, key := range keys {
-		if item, ok := byKey[key]; ok {
-			out = append(out, item)
-		}
-	}
-	return out, nil
+	return c.titlesByKeysMode(ctx, keys, true)
 }
 
 // ShowTrajectories computes season/episode rating trajectories for a batch of

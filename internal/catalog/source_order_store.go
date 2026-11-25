@@ -243,7 +243,11 @@ func (c *Catalog) storeOrderManifest(ctx context.Context, show *core.Title, orde
 	if err != nil {
 		return err
 	}
-	return c.commitOrderWrite(tx)
+	if err := c.commitOrderWrite(tx); err != nil {
+		return err
+	}
+	c.hasEpisodeLayouts.Store(true)
+	return nil
 }
 
 func (c *Catalog) commitOrderWrite(tx *sql.Tx) error {

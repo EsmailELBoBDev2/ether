@@ -329,6 +329,7 @@ type QualityImportPlan struct {
 	App       string              `json:"app"`
 	ProfileID string              `json:"profileId"`
 	TrashID   string              `json:"trashId"`
+	MediaType string              `json:"mediaType"`
 	Profile   core.QualityProfile `json:"profile"`
 	ScoreSet  string              `json:"scoreSet,omitempty"`
 	Formats   []ImportFormat      `json:"formats"`
@@ -378,8 +379,9 @@ func formatScore(f core.CustomFormat, set string) int {
 // make the scoring configuration invalid.
 func PlanQualityImport(imp QualityImport, app string, found map[string]core.CustomFormat, cfg config.Config) QualityImportPlan {
 	plan := QualityImportPlan{Source: imp.Source, App: app, ProfileID: imp.ProfileID, TrashID: imp.TrashID,
-		Profile: imp.Profile, ScoreSet: imp.ScoreSet, Skipped: imp.Skipped,
+		MediaType: core.MediaTypeForApp(app), Profile: imp.Profile, ScoreSet: imp.ScoreSet, Skipped: imp.Skipped,
 		Formats: []ImportFormat{}, Warnings: append([]string{}, imp.Warnings...)}
+	plan.Profile.MediaType = plan.MediaType
 	if plan.Skipped == nil {
 		plan.Skipped = []string{}
 	}
@@ -482,7 +484,7 @@ func PlanQualityImport(imp QualityImport, app string, found map[string]core.Cust
 		plan.MinimumWarning = fmt.Sprintf("This profile prefers a custom format score of at least %d, but its importable formats can score at most %d. Ether will use the best available release while keeping hard rules.", *min, bestPossible)
 		plan.Warnings = append(plan.Warnings, plan.MinimumWarning)
 	}
-	plan.Profile.Name = uniqueProfileName(plan.Profile.Name, cfg.Quality.Profiles)
+	plan.Profile.Name = uniqueProfileName(plan.Profile.Name, plan.MediaType, cfg.Quality.Profiles)
 	return plan
 }
 
@@ -516,10 +518,11 @@ func unsupportedReason(def core.CustomFormat, err error) string {
 	return strings.ToUpper(msg[:1]) + msg[1:]
 }
 
-// uniqueProfileName suffixes name ("Name (2)") until no profile uses it.
-func uniqueProfileName(name string, profiles []core.QualityProfile) string {
+// uniqueProfileName suffixes name ("Name (2)") until no profile for media
+// uses it. Names are unique per media.
+func uniqueProfileName(name, media string, profiles []core.QualityProfile) string {
 	taken := func(n string) bool {
-		return slices.ContainsFunc(profiles, func(p core.QualityProfile) bool { return p.Name == n })
+		return slices.ContainsFunc(profiles, func(p core.QualityProfile) bool { return p.Name == n && p.MediaType == media })
 	}
 	if !taken(name) {
 		return name
@@ -548,7 +551,14 @@ func (p QualityImportPlan) Apply(c *config.Config, name string) error {
 	if len(name) > 200 {
 		return fmt.Errorf("%w: the profile name is too long", ErrImportRejected)
 	}
-	if slices.ContainsFunc(c.Quality.Profiles, func(q core.QualityProfile) bool { return q.Name == name }) {
+	media := p.MediaType
+	if media == "" {
+		media = core.MediaTypeForApp(p.App)
+	}
+	if !core.IsProfileMedia(media) {
+		return fmt.Errorf("%w: choose whether the profile is for movies or TV shows", ErrImportRejected)
+	}
+	if slices.ContainsFunc(c.Quality.Profiles, func(q core.QualityProfile) bool { return q.Name == name && q.MediaType == media }) {
 		return ErrProfileExists
 	}
 	have := map[string]bool{}
@@ -557,6 +567,8 @@ func (p QualityImportPlan) Apply(c *config.Config, name string) error {
 	}
 	prof := p.Profile
 	prof.Name = name
+	prof.MediaType = media
+	prof.CustomFormatScores = core.ScoresForMedia(prof.CustomFormatScores, media)
 	if p.Source != "" {
 		prof.Import = &core.ProfileImport{
 			Source:   p.Source,

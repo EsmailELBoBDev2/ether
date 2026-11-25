@@ -145,7 +145,8 @@ A profile's device formats are scored when Ether creates or imports it,
 because device fit is Ether's job; at these sizes they only separate
 releases a pack scores alike. Imports get Series year differs too, but not
 Viewer's language: language preference is the pack's to express. Series
-year differs only matches episodes, so it never changes a film's rank.
+year differs only matches episodes, so only TV profiles score it and the
+console lists it only on them.
 
 Prefer rules are formats too: each Prefer rule has a score (a new one
 starts above everything else the profile scores). A plugin ranking step
@@ -303,10 +304,11 @@ Owner decisions on this design (v0.3.6):
 
 ## Changing quality groups through MCP
 
-`quality_profiles` reads each profile's quality groups, custom format
+`quality_profiles` reads each profile's media, quality groups, custom format
 scores, language settings and limits. `quality_order_set` proposes replacing
-one profile's groups; the owner approves the change in the console. Other
-profile settings stay as configured.
+one profile's groups; the owner approves the change in the console. Pass
+`media` when movie and TV profiles share a name. Other profile settings stay
+as configured.
 
 For a viewer who wants Spanish 1080p ahead of English 4K, read the profile
 first, then put the relevant 1080p and 2160p qualities in one group. Keep

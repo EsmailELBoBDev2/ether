@@ -202,7 +202,7 @@ func pageParams(r *http.Request) (limit, offset int) {
 }
 
 func (h *consoleAPI) profiles(w http.ResponseWriter, r *http.Request) {
-	def, names := h.s.ConsoleProfiles()
+	def, names := h.s.ConsoleProfilesFor(r.URL.Query().Get("media"))
 	if names == nil {
 		names = []string{}
 	}

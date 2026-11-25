@@ -517,7 +517,6 @@ func (c *librariesConsole) handler() http.Handler {
 			Rules             *[]core.LibraryExclusion  `json:"rules"`
 			VisibilityDefault *string                   `json:"visibilityDefault"`
 			QualityProfile    *string                   `json:"qualityProfile"`
-			AwayProfile       *string                   `json:"awayQualityProfile"`
 			Tabs              *[]core.LibraryTab        `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
@@ -601,22 +600,22 @@ func (c *librariesConsole) handler() http.Handler {
 			}
 			sectionsChanged = true
 		}
-		for _, pick := range []struct {
-			name *string
-			set  func(context.Context, core.LibraryID, string) error
-		}{{body.QualityProfile, svc.SetQualityProfile}, {body.AwayProfile, svc.SetAwayQualityProfile}} {
-			if pick.name == nil {
-				continue
+		if body.QualityProfile != nil {
+			name := strings.TrimSpace(*body.QualityProfile)
+			media := core.MediaMovie
+			if lib.MediaType == core.TypeShow {
+				media = core.MediaTV
 			}
-			if name := strings.TrimSpace(*pick.name); name != "" {
-				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name)
-				if !lib.UsesReleaseProfiles() || !valid {
-					libError(w, http.StatusBadRequest, "Could not update the release profile")
+			if name != "" {
+				_, valid := core.FindProfile(c.app.cfg.Read().Quality.Profiles, name, media)
+				if lib.Source == core.LibraryPlugin || !valid {
+					libError(w, http.StatusBadRequest, "Could not update the quality profile")
 					return
 				}
 			}
-			if err := pick.set(ctx, lib.ID, *pick.name); err != nil {
-				libError(w, libErrStatus(err), "Could not update the release profile")
+
+			if err := svc.SetQualityProfile(ctx, lib.ID, *body.QualityProfile); err != nil {
+				libError(w, libErrStatus(err), "Could not update the quality profile")
 				return
 			}
 		}

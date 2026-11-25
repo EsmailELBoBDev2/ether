@@ -363,12 +363,12 @@ func (f *fakeEnv) Profiles(ctx context.Context) ([]builtin.ProfileInfo, error) {
 	}, nil
 }
 
-func (f *fakeEnv) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
+func (f *fakeEnv) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
 	f.writes++
 	return nil
 }
 
-func (f *fakeEnv) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
+func (f *fakeEnv) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
 	f.writes++
 	for id, v := range scores {
 		f.scores[profile][id] = v
@@ -376,7 +376,7 @@ func (f *fakeEnv) SetFormatScores(ctx context.Context, profile string, scores ma
 	return nil
 }
 
-func (f *fakeEnv) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
+func (f *fakeEnv) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
 	f.writes++
 	f.rules[profile] = append(f.rules[profile], rule)
 	return nil

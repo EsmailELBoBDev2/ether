@@ -44,9 +44,9 @@ describe("Quality profile import from guides", () => {
     expect(within(drawer).getByText("Bluray-2160p › WEB 2160p")).toBeInTheDocument();
     expect(within(drawer).getByText(/Left out SDTV/)).toBeInTheDocument();
     expect(within(drawer).getByText("1,000")).toBeInTheDocument();
-    // The drawer names the source profile and the guide it came from.
+    // The drawer names the source profile and the media it applies to.
     expect(within(drawer).getByText("Source profile: sqp-1-2160p")).toBeInTheDocument();
-    expect(within(drawer).getAllByText("Radarr").length).toBeGreaterThan(0);
+    expect(within(drawer).getByText("Movies")).toBeInTheDocument();
 
     // "4K" is taken by an existing profile in the fake; rename before adding.
     fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "4K" } });
@@ -73,7 +73,10 @@ describe("Quality profile import from guides", () => {
     const editor = await screen.findByRole("dialog", { name: "UHD (TRaSH)" }, WAIT);
     expect(within(editor).getByText("Allowed qualities")).toBeInTheDocument();
     expect(within(editor).getAllByText("WEB-DL 4K").length).toBeGreaterThan(0);
-    // The imported profile names its source.
+    // The imported profile's media and source are read-only.
+    expect(
+      within(editor).getByText("Set by the Radarr profile it was imported from."),
+    ).toBeInTheDocument();
     expect(within(editor).getByText("TRaSH Guides")).toBeInTheDocument();
     expect(within(editor).queryByRole("radio", { name: "Both" })).not.toBeInTheDocument();
     fireEvent.click(within(editor).getByRole("tab", { name: "Scoring" }));
@@ -144,8 +147,17 @@ describe("Quality profile import from guides", () => {
     });
     fireEvent.change(within(drawer).getByLabelText("Profile JSON"), { target: { value: json } });
     fireEvent.click(within(drawer).getByRole("button", { name: "Preview" }));
-    // The pasted profile names Sonarr qualities, so it imports as Sonarr.
-    const showsDrawer = drawer;
+    expect(await within(drawer).findByText(/This profile is for Shows/)).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Add profile" })).toBeDisabled();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Shows" }));
+    const showsDrawer = await openImport();
+    expect(within(showsDrawer).getByText("Shows (Sonarr)")).toBeInTheDocument();
+    fireEvent.click(within(showsDrawer).getByRole("radio", { name: "Paste JSON" }));
+    fireEvent.change(within(showsDrawer).getByLabelText("Profile JSON"), {
+      target: { value: json },
+    });
+    fireEvent.click(within(showsDrawer).getByRole("button", { name: "Preview" }));
     const table = await within(showsDrawer).findByRole("table", { name: "Custom formats" }, WAIT);
     expect(within(table).getByText("Not found")).toBeInTheDocument();
     expect(within(showsDrawer).getByText("Remux 1080p")).toBeInTheDocument();
@@ -156,6 +168,7 @@ describe("Quality profile import from guides", () => {
       json,
       name: "My remuxes",
     });
+    // A show profile is listed under Shows, not Movies.
     expect(await screen.findByText("My remuxes", {}, WAIT)).toBeInTheDocument();
   });
 });

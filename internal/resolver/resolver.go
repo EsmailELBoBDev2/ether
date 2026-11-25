@@ -74,13 +74,13 @@ type AnimeCour interface {
 	LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error)
 }
 
-// LibraryProfiles answers which library a title belongs to and the release
-// profiles that library chose for viewers at home and away. A catalogue or
-// collection library that chose a profile wins over the built-in library;
-// the lowest library id breaks a tie between them. An empty name means the
-// server's Default (or Default away) profile applies.
+// LibraryProfiles answers which library a title belongs to and the quality
+// profile set on it (spec §419: a quality profile per library). A filter
+// library wins over the built-in Movies/TV Shows library; the lowest
+// library id breaks a tie between filter libraries. An empty name means the
+// library set no profile, so today's home/away defaults apply.
 type LibraryProfiles interface {
-	LibraryQualityForTitle(ctx context.Context, t *core.Title) core.LibraryQuality
+	QualityProfileForTitle(ctx context.Context, t *core.Title) string
 }
 
 // Options tunes a Service. Zero values get sensible defaults.

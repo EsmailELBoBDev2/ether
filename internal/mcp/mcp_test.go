@@ -119,14 +119,14 @@ func (s *stubServices) Approval(ctx context.Context, id string) (builtin.Approva
 func (s *stubServices) Profiles(ctx context.Context) ([]builtin.ProfileInfo, error) {
 	return []builtin.ProfileInfo{{Name: "Default"}}, nil
 }
-func (s *stubServices) SetQualityOrder(ctx context.Context, profile string, order []core.QualityItem) error {
+func (s *stubServices) SetQualityOrder(ctx context.Context, profile, media string, order []core.QualityItem) error {
 	return nil
 }
 
-func (s *stubServices) SetFormatScores(ctx context.Context, profile string, scores map[string]int) error {
+func (s *stubServices) SetFormatScores(ctx context.Context, profile, media string, scores map[string]int) error {
 	return nil
 }
-func (s *stubServices) AddRule(ctx context.Context, profile string, rule core.ReleaseRule) error {
+func (s *stubServices) AddRule(ctx context.Context, profile, media string, rule core.ReleaseRule) error {
 	return nil
 }
 func (s *stubServices) Frontends(ctx context.Context) ([]builtin.FrontendInfo, error) {

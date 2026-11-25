@@ -372,6 +372,7 @@ function defaultConfig(): EtherConfig {
       profiles: [
         {
           name: "4K",
+          mediaType: "movie",
           maxHeight: 2160,
           minHeight: 1080,
           allowHdr: true,
@@ -402,6 +403,7 @@ function defaultConfig(): EtherConfig {
         },
         {
           name: "1080p",
+          mediaType: "movie",
           maxHeight: 1080,
           minHeight: 720,
           allowHdr: false,
@@ -427,7 +429,8 @@ function defaultConfig(): EtherConfig {
           allowCam: false,
         },
         {
-          name: "Episodes 1080p",
+          name: "1080p",
+          mediaType: "tv",
           maxHeight: 1080,
           minHeight: 720,
           allowHdr: false,
@@ -2008,7 +2011,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
       name: "TV Shows",
       source: "builtin",
       mediaType: "show",
-      qualityProfile: "Episodes 1080p",
       sort: 2,
       hidden: false,
       createdAt: "2026-01-01T00:00:00Z",

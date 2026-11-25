@@ -7,6 +7,7 @@ import { t, tn } from "../../i18n";
 import { formatBytes } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import {
+  MEDIA_TV,
   PROFILE_DOWNLOAD,
   PROFILE_NONE,
   qualityLabel,
@@ -62,7 +63,7 @@ export function SeasonPinDrawer({
   const targetKey = target ? `${target.key ?? ""}|${target.show ?? ""}|${target.season ?? ""}` : "";
 
   const profiles = useAsync(
-    () => (open ? releaseConsole.profiles() : Promise.resolve(null)),
+    () => (open ? releaseConsole.profiles(MEDIA_TV) : Promise.resolve(null)),
     [open],
   );
 

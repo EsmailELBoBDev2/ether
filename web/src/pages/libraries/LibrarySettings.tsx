@@ -24,13 +24,6 @@ import { errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import { useQuality } from "../releases/useQuality";
 import {
-  PluginReleaseChoice,
-  ProfilePicker,
-  awayFallback,
-  homeFallback,
-  usesReleaseProfiles,
-} from "../releases/LibraryProfiles";
-import {
   librariesApi,
   publishedTo,
   type AppSwitchPatch,
@@ -341,52 +334,48 @@ function PresentationsEditor({
 }
 
 /**
- * "Release profile": the profile titles in this library rank with at home and
- * away, from Releases › Profiles. Default uses the server's Default profile.
+ * "Quality profile" (spec #419): Default, or a profile from Releases ›
+ * Profiles filtered to this library's media type. Titles in this library
+ * rank with it wherever they appear.
  */
-function ReleaseProfileRows({
-  home,
-  away,
+function QualityProfileRow({
+  library,
+  value,
   onChange,
 }: {
-  home: string;
-  away: string;
-  onChange: (home: string, away: string) => void;
+  library: Library;
+  value: string;
+  onChange: (value: string) => void;
 }) {
   const { quality } = useQuality();
-  const profiles = quality?.profiles ?? [];
-  const defaultName = quality?.default || profiles[0]?.name || "";
+  const media = library.mediaType === "show" ? "show" : "movie";
+  const profileMedia = media === "show" ? "tv" : "movie";
+  const names = (quality?.profiles ?? [])
+    .filter((p) => !p.mediaType || p.mediaType === profileMedia)
+    .map((p) => p.name);
+  const current = value && names.includes(value) ? value : "";
+
   return (
-    <>
-      <SettingsRow
-        title={t("Release profile")}
-        description={t(
-          "Titles in this library rank releases with this profile. A device or viewer rule still takes precedence.",
-        )}
-        control={
-          <ProfilePicker
-            value={home}
-            onChange={(v) => onChange(v, away)}
-            profiles={profiles}
-            fallback={homeFallback(defaultName)}
-            ariaLabel={t("Release profile")}
+    <SettingsRow
+      title={t("Quality profile")}
+      description={t(
+        "Titles in this library rank with this profile. Rules and the Away profile still take precedence.",
+      )}
+      control={
+        <div className="w-56">
+          <SearchSelect
+            value={current}
+            onChange={onChange}
+            options={[
+              { value: "", label: t("Default") },
+              ...names.map((name) => ({ value: name, label: name })),
+            ]}
+            ariaLabel={t("Quality profile")}
+            searchable={false}
           />
-        }
-      />
-      <SettingsRow
-        title={t("Away from home")}
-        description={t("The profile for viewers away from home.")}
-        control={
-          <ProfilePicker
-            value={away}
-            onChange={(v) => onChange(home, v)}
-            profiles={profiles}
-            fallback={awayFallback(quality?.remote ?? "")}
-            ariaLabel={t("Release profile away from home")}
-          />
-        }
-      />
-    </>
+        </div>
+      }
+    />
   );
 }
 
@@ -423,7 +412,6 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       cardShape: storedCardShape,
       presentApps: initialAppSwitches(resolvedPresentations),
       qualityProfile: library.qualityProfile ?? "",
-      awayQualityProfile: library.awayQualityProfile ?? "",
       sources: library.sources ?? [],
       collectionId: library.collectionId,
       cacheMaxBytes: cache.data?.maxBytes ?? 0,
@@ -451,12 +439,8 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
         body.cardShape =
           library.source !== "plugin" && draft.cardShape === "poster" ? "" : draft.cardShape;
       }
-      if (usesReleaseProfiles(library)) {
-        if (draft.qualityProfile !== stored.qualityProfile)
-          body.qualityProfile = draft.qualityProfile;
-        if (draft.awayQualityProfile !== stored.awayQualityProfile)
-          body.awayQualityProfile = draft.awayQualityProfile;
-      }
+      if (library.source !== "plugin" && draft.qualityProfile !== stored.qualityProfile)
+        body.qualityProfile = draft.qualityProfile;
       if (
         library.source !== "builtin" &&
         JSON.stringify(draft.presentApps) !== JSON.stringify(stored.presentApps)
@@ -579,22 +563,15 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
               onChange={(presentApps) => setDraft({ ...draft, presentApps })}
             />
           )}
-          <SettingsSection title={t("Releases")}>
-            {usesReleaseProfiles(library) ? (
-              <ReleaseProfileRows
-                home={draft.qualityProfile}
-                away={draft.awayQualityProfile}
-                onChange={(qualityProfile, awayQualityProfile) =>
-                  setDraft({ ...draft, qualityProfile, awayQualityProfile })
-                }
+          {library.source !== "plugin" && (
+            <SettingsSection title={t("Quality")}>
+              <QualityProfileRow
+                library={library}
+                value={draft.qualityProfile}
+                onChange={(qualityProfile) => setDraft({ ...draft, qualityProfile })}
               />
-            ) : (
-              <SettingsRow
-                title={t("Release profile")}
-                control={<PluginReleaseChoice library={library} />}
-              />
-            )}
-          </SettingsSection>
+            </SettingsSection>
+          )}
           {library.source === "plugin" && library.kind?.sync?.mode !== "push" ? (
             <PluginLibrarySyncSection library={library} onChanged={onSaved} />
           ) : null}

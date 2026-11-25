@@ -458,17 +458,22 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		v.add("resolver.sameQualityAlternatives", "must be between 0 and 3")
 	}
 
-	profiles := map[string]bool{}
+	// Names are unique per media: a movie and a TV profile may share one.
+	type profileKey struct{ media, name string }
+	profiles := map[profileKey]bool{}
 	for i, p := range cfg.Quality.Profiles {
 		f := fmt.Sprintf("quality.profiles[%d]", i)
+		if !core.IsProfileMedia(p.MediaType) {
+			v.add(f+".mediaType", "must be one of %s", strings.Join(core.ProfileMediaTypes, ", "))
+		}
 		if strings.TrimSpace(p.Name) == "" {
 			v.add(f+".name", "is required")
 			continue
 		}
-		if profiles[p.Name] {
+		if profiles[profileKey{p.MediaType, p.Name}] {
 			v.add(f+".name", "duplicate profile name %q", p.Name)
 		}
-		profiles[p.Name] = true
+		profiles[profileKey{p.MediaType, p.Name}] = true
 		if _, err := releasepolicy.Compile(p.ReleaseRules); err != nil {
 			v.add(f+".releaseRules", "%s", err)
 		} else if msg := releasepolicy.Conflict(p.ReleaseRules); msg != "" {
@@ -513,23 +518,47 @@ func ValidateConfig(cfg config.Config) []FieldError {
 			v.add(f+".episodeMinSizeMbPerMin", "must be <= episodeMaxSizeMbPerMin")
 		}
 	}
-	exists := func(name string) bool {
-		_, ok := core.FindProfile(cfg.Quality.Profiles, name)
+	exists := func(name, media string) bool {
+		_, ok := core.FindProfile(cfg.Quality.Profiles, name, media)
 		return ok
 	}
-	if cfg.Quality.Default != "" && len(profiles) > 0 && !exists(cfg.Quality.Default) {
+	if cfg.Quality.Default != "" && len(profiles) > 0 && !exists(cfg.Quality.Default, core.MediaAny) {
 		v.add("quality.default", "names a profile that does not exist")
 	}
-	if cfg.Quality.Remote != "" && len(profiles) > 0 && !exists(cfg.Quality.Remote) {
+	if cfg.Quality.Remote != "" && len(profiles) > 0 && !exists(cfg.Quality.Remote, core.MediaAny) {
 		v.add("quality.remote", "names a profile that does not exist")
 	}
+	checkMediaProfile := func(field, name, media string) {
+		if name == "" {
+			return
+		}
+		if !exists(name, core.MediaAny) {
+			v.add(field, "names a profile that does not exist")
+			return
+		}
+		if !exists(name, media) {
+			noun := "movies"
+			if media == core.MediaTV {
+				noun = "shows"
+			}
+			v.add(field, "names a profile that does not apply to %s", noun)
+		}
+	}
+	checkMediaProfile("quality.defaultMovie", cfg.Quality.DefaultMovie, core.MediaMovie)
+	checkMediaProfile("quality.defaultTv", cfg.Quality.DefaultTV, core.MediaTV)
+	checkMediaProfile("quality.remoteMovie", cfg.Quality.RemoteMovie, core.MediaMovie)
+	checkMediaProfile("quality.remoteTv", cfg.Quality.RemoteTV, core.MediaTV)
 	for i, r := range cfg.Quality.Rules {
 		f := fmt.Sprintf("quality.rules[%d]", i)
 		v.oneOf(f+".mediaType", r.MediaType, core.MediaAny, core.MediaMovie, core.MediaTV)
 		if r.Profile == "" {
 			v.add(f+".profile", "is required")
-		} else if len(profiles) > 0 && !exists(r.Profile) {
-			v.add(f+".profile", "names a profile that does not exist")
+		} else if len(profiles) > 0 {
+			if !exists(r.Profile, core.MediaAny) {
+				v.add(f+".profile", "names a profile that does not exist")
+			} else if !exists(r.Profile, r.MediaType) {
+				v.add(f+".profile", "names a profile that does not apply to this rule's media")
+			}
 		}
 		if r.MaxHeight < 0 {
 			v.add(f+".maxHeight", "must be >= 0")

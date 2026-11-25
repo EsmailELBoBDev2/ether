@@ -19,7 +19,14 @@ import { useViewers, viewerName } from "../../components/pickers";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
-import { MEDIA_MOVIE, MEDIA_TV, mediaApplies, mediaLabel } from "../../lib/releases";
+import {
+  MEDIA_MOVIE,
+  MEDIA_TV,
+  mediaApplies,
+  mediaLabel,
+  ruleProfileNames,
+  profileMediaType,
+} from "../../lib/releases";
 import type { QualityRule } from "../../lib/types";
 import {
   OrderButtons,
@@ -108,18 +115,23 @@ export function ClientRulesTab() {
     .filter(({ rule }) => mediaApplies(rule.mediaType, filter || undefined));
 
   const open = (index: number, draft: QualityRule) => {
-    const names = profiles.map((p) => p.name);
+    const compatible = ruleProfileNames(profiles, draft.mediaType);
     const copy = { ...draft };
-    if (!names.includes(copy.profile) && names.length)
-      copy.profile = names.includes(quality.default) ? quality.default : names[0]!;
+    if (!compatible.includes(copy.profile) && compatible.length) copy.profile = compatible[0]!;
     setErrors({});
     setError(null);
     setEditing({ index, draft: copy });
   };
 
-  /** Change which titles a rule applies to. */
+  /** Change a rule's media and point its profile at a compatible one when needed. */
   function setMedia(media: "" | "movie" | "tv") {
-    setEditing((e) => (e ? { ...e, draft: { ...e.draft, mediaType: media || undefined } } : e));
+    setEditing((e) => {
+      if (!e) return e;
+      const draft = { ...e.draft, mediaType: media || undefined };
+      const compatible = ruleProfileNames(profiles, media);
+      if (!compatible.includes(draft.profile)) draft.profile = compatible[0] ?? "";
+      return { ...e, draft };
+    });
   }
 
   async function save() {
@@ -294,7 +306,7 @@ export function ClientRulesTab() {
                 <Segmented
                   ariaLabel={t("Applies to")}
                   size="sm"
-                  value={(draft.mediaType ?? "") as "" | "movie" | "tv"}
+                  value={profileMediaType(draft) as "" | "movie" | "tv"}
                   options={APPLIES_OPTIONS}
                   onChange={setMedia}
                 />
@@ -394,7 +406,11 @@ export function ClientRulesTab() {
             <SettingsRow
               title={t("Quality profile")}
               description={
-                errors.profile ? <span className="text-danger">{errors.profile}</span> : undefined
+                errors.profile ? (
+                  <span className="text-danger">{errors.profile}</span>
+                ) : draft.mediaType ? undefined : (
+                  t("Movies use the movie profile with this name, and shows the show one.")
+                )
               }
               control={
                 <div className="w-56">
@@ -402,7 +418,10 @@ export function ClientRulesTab() {
                     {...searchSelectLabels()}
                     value={draft.profile}
                     onChange={(v) => set({ profile: v })}
-                    options={profiles.map(({ name }) => ({ value: name, label: name }))}
+                    options={ruleProfileNames(profiles, draft.mediaType).map((name) => ({
+                      value: name,
+                      label: name,
+                    }))}
                     ariaLabel={t("Profile")}
                     searchable={false}
                   />

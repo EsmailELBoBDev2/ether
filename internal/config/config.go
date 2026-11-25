@@ -566,19 +566,18 @@ type Resolver struct {
 }
 
 type Quality struct {
-	// Profiles by name. Each library chooses one for viewers at home and
-	// away; client rules can override per device or viewer.
+	// Profiles by name. Rules pick a profile per client.
 	Profiles []core.QualityProfile `json:"profiles"`
 	Rules    []QualityRule         `json:"rules"`
-	// Default is the profile of every library that has not chosen one;
-	// Remote (Default away) is the one for viewers away from home, "" =
-	// the library's At home profile.
-	Default string      `json:"default"`
-	Remote  string      `json:"remote"`
-	Sync    QualitySync `json:"sync,omitempty"`
-	// LibraryProfileMigration is the one-time hand-off of per-media
-	// defaults to the libraries; nil once applied.
-	LibraryProfileMigration *LibraryProfileMigration `json:"libraryProfileMigration,omitempty"`
+	// Default and Remote are the media-neutral fallbacks. A media-specific
+	// value, when set, wins for that media; legacy configs keep working.
+	Default      string      `json:"default"`
+	Remote       string      `json:"remote"` // profile for remote clients, "" = same as default
+	DefaultMovie string      `json:"defaultMovie,omitempty"`
+	DefaultTV    string      `json:"defaultTv,omitempty"`
+	RemoteMovie  string      `json:"remoteMovie,omitempty"`
+	RemoteTV     string      `json:"remoteTv,omitempty"`
+	Sync         QualitySync `json:"sync,omitempty"`
 }
 
 // QualitySync keeps imported profiles and their format definitions aligned
@@ -596,8 +595,7 @@ type QualityRule struct {
 	Product  string        `json:"product,omitempty"`  // substring of X-Plex-Product
 	Platform string        `json:"platform,omitempty"` // substring of X-Plex-Platform
 	UserID   int64         `json:"userId,omitempty"`
-	// MediaType scopes the rule to films ("movie") or episodes ("tv");
-	// empty matches every title.
+	// MediaType scopes the rule to movies or shows; empty matches both.
 	MediaType            string `json:"mediaType,omitempty"`
 	Profile              string `json:"profile"`
 	MaxHeight            int    `json:"maxHeight,omitempty"`            // optional max-height override (2160, 1080, 720, 480; 0 = profile ceiling)
@@ -1052,6 +1050,7 @@ func Open(dataDir string) (*Store, error) {
 			}
 		}
 	case os.IsNotExist(err):
+		freshInstallQuality(&s.cfg.Quality)
 		if err := s.save(); err != nil {
 			return nil, err
 		}
@@ -1192,10 +1191,6 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 	}
 	if resetPreStandardQuality(file) {
 		dropped = true
-	}
-	if notes := normalizeSharedDocument(file); len(notes) > 0 {
-		dropped = true
-		slog.Info("config: settled quality profiles", "changes", notes)
 	}
 	if upgradeClientIdentity(file) {
 		dropped = true

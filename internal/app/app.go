@@ -601,11 +601,6 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, fmt.Errorf("libraries: migrate config rules: %w", err)
 	}
-	if err := a.applyLibraryProfileMigration(ctx); err != nil {
-		a.Close()
-		return nil, fmt.Errorf("libraries: migrate release profiles: %w", err)
-	}
-	cfg = a.cfg.Get()
 	// Recheck after the shared settings overlay and override migration, before
 	// constructing services. Role/address settings remain node-local.
 	if err := a.validateRuntimeSettings(cfg.Server, dbCfg); err != nil {

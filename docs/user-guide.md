@@ -686,35 +686,31 @@ indexers by that number for anime, meaning TMDB's "anime" keyword or
 Japanese-language animation. When an earlier season's episode count is
 unknown, only the season-and-episode numbering is used.
 
-## Release profiles for every library
+## Quality profiles for movies and shows
 
-A quality profile ranks releases for whatever library picks it: one profile
-covers films and episodes alike. Its **Limits** tab has a **Size** range and
-an optional **Episodes** range, which only matters for libraries with
-episodes.
+Every quality profile ranks releases for one kind of title, **Movies** or
+**Shows**, as in Radarr and Sonarr. The **Movies | Shows** picker on
+**Releases › Profiles** shows that kind's profiles with their **At home** and
+**Away** defaults, and **Add profile** creates one of the kind shown. A movie
+profile and a show profile can share a name, such as *1080p*, and still have
+different settings. A profile's **Applies to** in its editor offers **Movies**
+or **Shows**; moving a profile to the other kind takes the rules that used it
+along, and a default it can no longer serve moves to another profile.
 
-**Releases › Profiles** lists the profiles, and **Used by** lists every
-library with the profile it uses **At home** and **Away**. A library left on
-**Default** uses the **Default profile**; away from home it uses the
-**Default away profile**, or, with none, its own At home profile. Set the
-defaults from a profile's editor (**Default for**). A library's own settings
-show the same two pickers under **Releases**.
+A rule under **Releases › Rules** applies to movies, to shows, or to both. A
+rule for both names a profile that exists for movies and for shows; movies
+then use the movie profile of that name and shows the show one.
 
-Libraries whose plugin chooses its own releases (music, books and other
-plugin libraries) show "Release choice is set by" and the plugin, linking to
-its settings, instead of a profile.
-
-A title in more than one library ranks with the profile of the catalogue or
-collection library that picked one (the lowest-numbered when several did),
-otherwise with its built-in library's. A rule under **Releases › Rules** still
-wins for its device or viewer, and can apply to films only, to episodes only,
-or to both.
-
-Upgrading from v0.3.20 or earlier, where every profile served movies or
-shows: a movie and a show profile with the same name become one profile
-when they rank alike. When the owner made them differ, both are kept and
-the show one is renamed "<name> (TV)". Each library takes the profile its
-kind used, so every title keeps the quality it got before.
+A new install starts with 4K, 1080p and 720p profiles for movies and the same
+three for shows, with 4K as the At home default for each. Upgrading from
+v0.3.4 or earlier: each profile there served movies and shows alike. Ether
+splits it once, when the server starts, into a movie profile and a show
+profile with the same name and settings. Rules and defaults keep the names
+they had, so every viewer, app and title gets exactly the quality it got
+before, and remembered releases and resume points stay valid. Renaming or
+removing one of the pair changes only that kind: a rule for both kinds that
+named it becomes one rule for each kind, so the other kind keeps its
+profile.
 
 ## Import a quality profile
 

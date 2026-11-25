@@ -431,31 +431,70 @@ func (r *Resolution) MatchesVersion(id string) bool {
 	return r != nil && (r.Release.ID == id || id != "" && r.VersionSelector == id)
 }
 
-// Media scopes a client quality rule to the films or the episodes it
-// applies to; an empty scope applies to every title. Quality profiles have
-// no media: a library chooses its profile.
+// Media scopes a quality profile or rule. Every profile serves exactly one
+// media; a client rule may leave it empty to apply to every media.
 const (
 	MediaAny   = ""
 	MediaMovie = "movie"
 	MediaTV    = "tv"
 )
 
-// FindProfile returns the profile named name.
-func FindProfile(profiles []QualityProfile, name string) (QualityProfile, bool) {
+// ProfileMediaTypes lists the media a quality profile can serve, in the
+// order the console shows them. It is the one list: validation, the
+// upgrade split, shared-name resolution and the console's media options
+// (PROFILE_MEDIA in web/src/lib/releases.ts) all follow it. Adding a media
+// such as anime means adding its constant here and to PROFILE_MEDIA, plus
+// classifying titles into it (titleMedia in the resolver); nothing else
+// is restructured.
+var ProfileMediaTypes = []string{MediaMovie, MediaTV}
+
+// IsProfileMedia reports whether media is one a profile can serve.
+func IsProfileMedia(media string) bool {
+	for _, m := range ProfileMediaTypes {
+		if m == media {
+			return true
+		}
+	}
+	return false
+}
+
+// FindProfile returns the profile named name that serves media. Names are
+// unique per media, so the same name can serve movies and shows as two
+// profiles; with no media it is the first profile of that name.
+func FindProfile(profiles []QualityProfile, name, media string) (QualityProfile, bool) {
 	if name == "" {
 		return QualityProfile{}, false
 	}
 	for _, p := range profiles {
-		if p.Name == name {
+		if p.Name == name && MediaApplies(p.MediaType, media) {
 			return p, true
 		}
 	}
 	return QualityProfile{}, false
 }
 
-// MediaApplies reports whether a rule's media scope applies when choosing
-// for media. An empty media means the caller has no title context and
-// accepts any scope.
+// ProfileServesEveryMedia reports whether a profile named name exists for
+// every profile media, which makes the name shared policy before a title's
+// media is known.
+func ProfileServesEveryMedia(profiles []QualityProfile, name string) bool {
+	for _, m := range ProfileMediaTypes {
+		found := false
+		for _, p := range profiles {
+			if p.Name == name && p.MediaType == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// MediaApplies reports whether a scope (a profile or rule's MediaType)
+// applies when choosing for media. An empty media means the caller has no
+// title context and accepts any scope.
 func MediaApplies(scope, media string) bool {
 	if media == MediaAny {
 		return true
@@ -463,11 +502,15 @@ func MediaApplies(scope, media string) bool {
 	return scope == MediaAny || scope == media
 }
 
-// LibraryQuality is the release profile a library chose for viewers at
-// home and away. Empty names fall back to the server's default profiles.
-type LibraryQuality struct {
-	Home string `json:"home,omitempty"`
-	Away string `json:"away,omitempty"`
+// MediaTypeForApp maps a Starr app to the media its profiles describe.
+func MediaTypeForApp(app string) string {
+	switch strings.ToLower(strings.TrimSpace(app)) {
+	case "radarr":
+		return MediaMovie
+	case "sonarr":
+		return MediaTV
+	}
+	return MediaAny
 }
 
 // ProfileImport records where a synced quality profile came from. Manual
@@ -498,9 +541,8 @@ const (
 	AudioLanguageModePreferred = "preferred"
 )
 
-// QualityProfile is an owner-editable rule set ranking releases for the
-// libraries that choose it. One profile serves films and episodes alike;
-// the Episode* fields only apply to episodes.
+// QualityProfile is an owner-editable rule set ranking releases for a class
+// of client.
 type QualityProfile struct {
 	ReleaseRules []ReleaseRule `json:"releaseRules,omitempty"`
 	// PluginScores lists the plugin ranking steps the profile uses, each
@@ -524,8 +566,9 @@ type QualityProfile struct {
 	// reach this score. Lower scores remain playable. nil sets no preference.
 	MinCustomFormatScore *int           `json:"minCustomFormatScore,omitempty"`
 	Name                 string         `json:"name"`
-	Import               *ProfileImport `json:"import,omitempty"` // set on imported, syncable profiles
-	MaxHeight            int            `json:"maxHeight"`        // cap, e.g. 1080
+	MediaType            string         `json:"mediaType,omitempty"` // "movie" or "tv" (ProfileMediaTypes); empty only in configs saved before profiles were per media
+	Import               *ProfileImport `json:"import,omitempty"`    // set on imported, syncable profiles
+	MaxHeight            int            `json:"maxHeight"`           // cap, e.g. 1080
 	// ConfiguredMaxHeight is MaxHeight as the owner configured it,
 	// before download reshaping or a client's caps clamped the
 	// effective MaxHeight. -1 means the owner set no ceiling ("Any");
@@ -613,6 +656,9 @@ func (p QualityProfile) ComputeSelectionKey() string {
 	// Provenance is not part of the ranking definition: a sync updating
 	// SyncedAt must not change the key that keys resumes and warm entries.
 	p.Import = nil
+	// Neither is the media a profile serves: splitting a shared profile
+	// into its movie and TV copies keeps every remembered release valid.
+	p.MediaType = ""
 	b, err := json.Marshal(p)
 	if err != nil {
 		return ""

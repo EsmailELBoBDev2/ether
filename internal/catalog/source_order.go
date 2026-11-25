@@ -154,6 +154,11 @@ func (c *Catalog) effectiveEpisodeOrder(ctx context.Context, show *core.Title) (
 		return out, err
 	}
 	out.Order = out.LibraryDefault
+	// The same catalogue guard used by batch projection knows when this
+	// database has never stored an alternate layout or an override.
+	if !c.canProjectAlternateOrders() {
+		return out, nil
+	}
 	err = c.db.QueryRowContext(ctx, `SELECT provider,order_kind FROM catalog_episode_order WHERE show_key=?`, show.Key).Scan(&out.Override.Source, &out.Override.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
@@ -215,6 +220,7 @@ func (c *Catalog) SetEpisodeOrder(ctx context.Context, show core.RatingKey, orde
 	_, err = c.db.ExecContext(ctx, `INSERT INTO catalog_episode_order(show_key,provider,order_kind) VALUES (?,?,?)
  ON CONFLICT(show_key) DO UPDATE SET provider=excluded.provider,order_kind=excluded.order_kind`, show, order.Source, order.Kind)
 	if err == nil {
+		c.hasEpisodeLayouts.Store(true)
 		c.writeGen.Add(1)
 	}
 	return err

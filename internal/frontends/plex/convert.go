@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -123,7 +122,7 @@ func localAgentGUID(key frontend.RatingKey) string {
 	return "com.plexapp.agents.none://" + key.String() + "?lang=xn"
 }
 
-func showGUID(show frontend.RatingKey, ids core.IDs) string {
+func showGUID(show frontend.RatingKey, ids frontend.IDs) string {
 	return guidFor(&frontend.Title{Key: show, Type: frontend.TypeShow, IDs: ids})
 }
 
@@ -2001,9 +2000,7 @@ func (s *Server) applyListLeafCountsOpts(ctx context.Context, pr *Request, items
 // applyProjectedListLeafCounts uses stored counts for the page's alternate
 // orders. It does not load the shows' layouts or visit metadata providers.
 func (s *Server) applyProjectedListLeafCounts(ctx context.Context, pr *Request, items []model.Metadata, titles []frontend.Title) {
-	catalogue, ok := s.catalog().(interface {
-		AiredEpisodeTallies(context.Context, int64, []frontend.RatingKey, time.Time, []frontend.RatingKey) (map[frontend.RatingKey]core.AiredEpisodeTally, error)
-	})
+	catalogue, ok := s.catalog().(frontend.AiredEpisodeTallyReader)
 	if !ok || len(titles) == 0 {
 		return
 	}
@@ -2015,9 +2012,7 @@ func (s *Server) applyProjectedListLeafCounts(ctx context.Context, pr *Request, 
 		}
 	}
 	var pending []frontend.RatingKey
-	if reader, ok := s.state().(interface {
-		PendingKeys(int64) []frontend.RatingKey
-	}); ok {
+	if reader, ok := s.state().(frontend.PendingWatchKeys); ok {
 		pending = reader.PendingKeys(pr.User.ID)
 	}
 	tallies, err := catalogue.AiredEpisodeTallies(ctx, pr.User.ID, shows, s.now(), pending)

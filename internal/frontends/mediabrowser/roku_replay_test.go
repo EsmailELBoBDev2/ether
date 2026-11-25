@@ -240,11 +240,11 @@ func TestRokuFilmDetailsReplay(t *testing.T) {
 
 func TestRokuColdVideoDetailShape(t *testing.T) {
 	lib, _, inst := mountRoku(t)
-	// The existing replay fixture supplies probed tracks. A cold title has
-	// none, and an independently keyed episode can carry only its parent.
+	// A cold title has no probed tracks. Its independent episode identity
+	// carries explicit series, season and position metadata.
 	lib.eps[0].Key = core.LocalKey(421)
-	lib.eps[0].ShowKey = 0
-	lib.eps[0].Season = 0
+	lib.eps[0].ShowKey = lib.show.Key
+	lib.eps[0].Season = lib.season.Season
 	lib.eps[0].ParentKey = lib.season.Key
 	lib.ItemFunc = func(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
 		detail, err := lib.item(ctx, req)

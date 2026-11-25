@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderAppWith } from "./routes";
-import { calls } from "./harness";
+import { calls, renderApp } from "./harness";
 
 const title = {
   key: "1000000000000007",
@@ -282,12 +282,14 @@ describe("Catalog workspace", () => {
     );
   });
 
-  it("shows a one-line notice linking to /services/tmdb when no TMDB key is configured", async () => {
-    renderAppWith("/catalog", (_method, path) => {
-      if (path === "/catalog/browse") return { items: [], total: 0 };
+  it("links to the Catalogues cards when no metadata source is configured", async () => {
+    renderApp("/catalog", {}, (fake) => {
+      fake.state.config.catalog.tmdbDisabled = true;
     });
-    const link = await screen.findByRole("link", { name: "Add a TMDB key" });
-    expect(link).toHaveAttribute("href", "/services/tmdb");
+    const link = await screen.findByRole("link", { name: "Add a metadata source" });
+    expect(link).toHaveAttribute("href", "/services/overview");
+    fireEvent.click(link);
+    expect(await screen.findByRole("heading", { name: "Catalogues" })).toBeInTheDocument();
   });
 
   it("shows errors with retry and provides an empty-result reset", async () => {

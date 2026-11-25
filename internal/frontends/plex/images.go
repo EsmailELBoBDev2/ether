@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	kitimages "github.com/braedonsaunders/ether/internal/frontend/kit/images"
 )
@@ -147,7 +146,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, element string, width int) {
-	if r.URL.Query().Get("collectionCard") == "1" && key.Kind() == core.KindSmart {
+	if r.URL.Query().Get("collectionCard") == "1" && key.Kind() == frontend.KindSmart {
 		s.serveCardArtwork(w, r, key, element, width)
 		return
 	}

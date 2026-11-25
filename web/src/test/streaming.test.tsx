@@ -32,7 +32,10 @@ async function pick(scope: HTMLElement, label: string, ...options: string[]) {
 
 describe("Sources", () => {
   it("enables bounded repair without changing provider credentials", async () => {
-    const { fake } = renderApp("/sources/usenet");
+    const { fake } = renderApp("/sources/usenet", {}, (server) => {
+      server.state.config.usenet.loadMode = "balanced";
+    });
+    const { providers } = fake.state.config.usenet;
     fireEvent.click(await screen.findByRole("button", { name: "Configure repair" }, WAIT));
     const enabled = await screen.findByRole("switch", { name: "Enable repair" });
     expect(enabled).not.toBeChecked();
@@ -42,8 +45,12 @@ describe("Sources", () => {
     await waitFor(() => expect(calls(fake, "PUT", "/config/usenet")).toHaveLength(1), WAIT);
     const body = calls(fake, "PUT", "/config/usenet")[0]!.body as EtherConfig["usenet"];
     expect(body.repair).toMatchObject({ enabled: true, maxDownloadBytes: 256 * 1024 * 1024 });
-    expect(body.providers).toHaveLength(2);
-    expect(body.providers?.[0]?.password).toBe("••••");
+    expect(body).not.toHaveProperty("providers");
+    expect(body).not.toHaveProperty("loadMode");
+    expect(providers).toHaveLength(2);
+    expect(providers?.[0]?.password).toBe("••••");
+    expect(fake.state.config.usenet.providers).toEqual(providers);
+    expect(fake.state.config.usenet.loadMode).toBe("balanced");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 

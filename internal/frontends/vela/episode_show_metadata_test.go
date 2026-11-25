@@ -72,10 +72,12 @@ func TestVelaEpisodeHomeAndRowPayloadsCarryShowNameAndShowID(t *testing.T) {
 		Episode:   3,
 		Runtime:   55 * time.Minute,
 	}
-	// Episode 2 (Next Up): omits ShowKey and ShowTitle — must derive showId
-	// from EpisodeKey and resolve showName in the single batched parent lookup.
+	// Episode 2 (Next Up): its provider-only key cannot encode the parent.
+	// Resolve its missing show name in the single batched parent lookup.
+	allocated, _ := core.AllocatedKey(core.KindEpisode, 1)
 	epNextUp := core.Title{
-		Key:     core.EpisodeKey(202, 1, 6),
+		Key:     allocated,
+		ShowKey: showB.Key,
 		Type:    core.TypeEpisode,
 		Title:   "The Eye",
 		Season:  1,

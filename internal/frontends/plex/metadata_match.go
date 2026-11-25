@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
@@ -41,7 +40,7 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch source {
-		case string(core.MetadataTMDB), string(core.MetadataTVDB):
+		case string(frontend.MetadataTMDB), string(frontend.MetadataTVDB):
 			n, err := strconv.ParseInt(id, 10, 64)
 			if err != nil || n <= 0 || strconv.FormatInt(n, 10) != id {
 				writeHTTPError(w, http.StatusBadRequest)
@@ -53,7 +52,7 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		next, err := matcher.ApplyTitleMatch(ctx, key, core.ProviderRef{Source: core.MetadataSourceID(source), ID: id, Type: title.Type})
+		next, err := matcher.ApplyTitleMatch(ctx, key, frontend.ProviderRef{Source: frontend.MetadataSourceID(source), ID: id, Type: title.Type})
 		if err != nil {
 			writeMatchError(w, err)
 			return
@@ -85,7 +84,7 @@ func (s *Server) handleMetadataMatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeMatchError(w http.ResponseWriter, err error) {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, frontend.ErrNotFound) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}

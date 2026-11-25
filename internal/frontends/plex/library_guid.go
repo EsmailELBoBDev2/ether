@@ -158,9 +158,7 @@ func (s *Server) guidKeys(ctx context.Context, guid string, typ frontend.MediaTy
 }
 
 func (s *Server) storedGUIDKeys(ctx context.Context, provider, id string, typ frontend.MediaType) ([]frontend.RatingKey, error) {
-	catalogue, ok := s.catalog().(interface {
-		KeysByProviderID(context.Context, string, string, []frontend.MediaType) ([]frontend.RatingKey, error)
-	})
+	catalogue, ok := s.catalog().(frontend.ProviderIDKeyReader)
 	if !ok {
 		return nil, nil
 	}
@@ -288,9 +286,7 @@ func (s *Server) tvdbGUIDKeys(ctx context.Context, id string, typ frontend.Media
 		if len(parts) != 3 {
 			return nil, frontend.ErrNotFound
 		}
-		resolver, ok := s.catalog().(interface {
-			ResolveEpisode(context.Context, frontend.RatingKey, int, int) (frontend.RatingKey, error)
-		})
+		resolver, ok := s.catalog().(frontend.EpisodeCoordinateResolver)
 		if !ok {
 			return nil, frontend.ErrNotFound
 		}

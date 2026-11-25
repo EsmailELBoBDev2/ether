@@ -217,12 +217,27 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	committed := false
 	pinned := false
 	defer func() {
-		if !committed && !sameSource {
+		if committed {
+			return
+		}
+		if !sameSource {
 			b.releasePlanSource(ps.ID, pinned)
+		} else if pinned {
+			if pins, ok := b.deps.Playback.(core.PlaybackRevisionPin); ok {
+				pins.UnpinSourceRevision(ps.ID)
+			}
 		}
 	}()
 
+	// The new file is admitted like a fresh start: from the session's initial
+	// options and original-file declaration, not the options a track, quality
+	// or re-encode restart of the old file left behind.
 	opts := s.opts
+	var original *frontend.OriginalPlaybackCapabilities
+	if entry, ok := b.bindings.Get(sessionID); ok {
+		opts = entry.Requested.Options
+		original = entry.Requested.OriginalPlayback
+	}
 	opts.AudioStream = -1
 	opts.SubtitleStream = -1
 	planReq := frontend.PlanRequest{
@@ -237,6 +252,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 			AllowTranscoding: s.allowTranscoding,
 			DeclaredCaps:     true,
 			ExactVersion:     !isAuto,
+			OriginalPlayback: original,
 		},
 	}
 	if b.deps.SelectScopedTracks != nil || b.deps.SelectTracks != nil {
@@ -252,49 +268,19 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		}
 		planReq.Intent.Options = selected
 	}
-	admitSwitch := func(ps *core.PlaySession, r *frontend.PlanRequest) (core.Decision, error) {
-		dec, err := b.decideProfile(ps, *r)
-		if err != nil {
-			return core.Decision{}, err
-		}
-		if b.videoOff(r.Caps) && decisionEncodesVideo(dec, ps.Info) {
-			return core.Decision{}, &frontend.NoCompatiblePathError{
-				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-				Cause:         core.ErrVideoTranscodingDisabled,
-			}
-		}
-		if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
-			return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
-		}
-		if (dec.Kind == core.DecisionDirectPlay && !r.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !r.Intent.Options.DirectStream) {
-			return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
-		}
-		if s.public.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-			hlsAllowed, _ := b.hlsPlanOutput(ps, *r, dec)
-			httpAllowed := false
-			if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
-				httpAllowed, _ = b.httpPlanOutput(ps, *r, dec)
-			}
-			if !hlsAllowed && !httpAllowed {
-				outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, *r)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
-				if b.videoOff(r.Caps) {
-					if hlsDec, ok := b.hlsOutputDecision(ps, r.Caps, r.Intent.Options, s.allowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
-						outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
-						outErr.Cause = core.ErrVideoTranscodingDisabled
-					}
-				}
-				return core.Decision{}, outErr
-			}
-		}
-		return dec, nil
-	}
 	sourceChosenAt := b.deps.Now()
-	dec, originalChoice, err := b.admitWithClientCap(ps, &planReq, s.clientCap, admitSwitch)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &planReq, s.clientCap, b.admitPlanDecision)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if !sameSource {
+	// Original playback of the current source keeps the session's pin while
+	// the file is still the pinned revision, or takes one for this revision.
+	if sameSource && s.sourcePinned {
+		if s.sourceETag == "" || sourceRevision(ps) != s.sourceETag {
+			return frontend.PlayPlan{}, frontend.ErrSourceGone
+		}
+	} else {
 		var pinErr error
 		ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &planReq, ps, dec, pinned)
 		if pinErr != nil {
@@ -360,7 +346,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	live.versionHandle = normHandle
 	live.exactRelease = relID
 	live.autoRelease = !exact
-	if !sameSource {
+	if !sameSource || pinned {
 		live.sourcePinned = pinned
 	}
 	live.sourceETag = etag

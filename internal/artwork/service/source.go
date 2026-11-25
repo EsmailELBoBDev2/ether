@@ -785,6 +785,60 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 	return out, nil
 }
 
+// ListCollectionPage builds images from policy-checked collection headers and
+// preloads metadata for every image on the page together.
+func (a Source) ListCollectionPage(ctx context.Context, viewer *core.Viewer, device core.Device, cols []core.Collection) (map[core.RatingKey][]frontend.Image, error) {
+	type listedCollection struct {
+		req     frontend.ArtworkRequest
+		ctx     context.Context
+		entries []frontendArtworkEntry
+	}
+	withMetadata := a.Metadata != nil && frontend.ArtworkMetadataWanted(ctx)
+	listed := make([]listedCollection, 0, len(cols))
+	var lookups []artworkMetadataLookup
+	for i := range cols {
+		c := &cols[i]
+		req := frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: c.Key}
+		listCtx := ctx
+		if c.Key.Kind() == core.KindCollection || (!c.Upcoming && c.PosterPath != "") {
+			listCtx = frontend.WithArtworkCollection(ctx, c)
+		}
+		entries, _, err := a.entries(listCtx, req)
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		listed = append(listed, listedCollection{req: req, ctx: listCtx, entries: entries})
+		if withMetadata && a.meta != nil {
+			for _, e := range entries {
+				lookups = append(lookups, artworkMetadataLookup{request: req, image: e.image})
+			}
+		}
+	}
+	if len(lookups) > 0 {
+		ctx = a.meta.Preload(ctx, lookups)
+	}
+	out := make(map[core.RatingKey][]frontend.Image, len(listed))
+	for _, item := range listed {
+		images := make([]frontend.Image, 0, len(item.entries))
+		for _, e := range item.entries {
+			img := e.image
+			if withMetadata {
+				metadataCtx := ctx
+				if col, ok := frontend.ArtworkCollection(item.ctx, item.req.Item); ok {
+					metadataCtx = frontend.WithArtworkCollection(ctx, col)
+				}
+				img = a.Metadata(metadataCtx, item.req, img)
+			}
+			images = append(images, img)
+		}
+		out[item.req.Item] = images
+	}
+	return out, nil
+}
+
 func (a Source) List(ctx context.Context, req frontend.ArtworkRequest) ([]frontend.Image, bool, error) {
 	entries, complete, err := a.entries(ctx, req)
 	if err != nil {

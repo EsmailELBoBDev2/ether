@@ -242,6 +242,27 @@ func (c *reviewCollections) ListOwnedComplete(ctx context.Context, u *core.User,
 	return c.withReviews(ctx, u, typ, out), includeFranchises, nil
 }
 
+// VisitOwned forwards bounded owner batches, followed by the viewer's review.
+func (c *reviewCollections) VisitOwned(ctx context.Context, u *core.User, typ core.MediaType, query string, batchSize int, visit func([]core.Collection) (bool, error)) (bool, error) {
+	base, ok := c.base.(interface {
+		VisitOwned(context.Context, *core.User, core.MediaType, string, int, func([]core.Collection) (bool, error)) (bool, error)
+	})
+	if !ok {
+		return false, core.ErrNotAvailable
+	}
+	stopped := false
+	franchises, err := base.VisitOwned(ctx, u, typ, query, batchSize, func(cols []core.Collection) (bool, error) {
+		stop, err := visit(cols)
+		stopped = stop
+		return stop, err
+	})
+	if err != nil || stopped {
+		return false, err
+	}
+	_, err = visit(c.withReviews(ctx, u, typ, nil))
+	return franchises, err
+}
+
 // ListPage forwards page-first collection paging (Plex /collections,
 // /collection, /all?type=18) and appends the viewer's Year in Review
 // collections after the base listing without materializing every franchise.
@@ -466,22 +487,26 @@ func (c *reviewCollections) CheckMembersBatch(ctx context.Context, u *core.User,
 	var baseKeys []core.RatingKey
 	for _, key := range keys {
 		if year, typ, ok := reviewCollectionParts(key); ok {
+			w := want[key]
+			if len(w) == 0 || scanLimit <= 0 {
+				if col, ok := c.reviewCard(ctx, u, year, typ); ok {
+					cols[key] = col
+				}
+				continue
+			}
 			col, items, e := c.review(ctx, u, year, typ)
 			if e != nil || col == nil {
 				continue
 			}
 			cols[key] = col
-			w := want[key]
-			if len(w) > 0 && scanLimit > 0 {
-				wantSet := make(map[core.RatingKey]bool, len(w))
-				for _, k := range w {
-					wantSet[k] = true
-				}
-				for _, it := range items[:min(len(items), scanLimit)] {
-					delete(wantSet, it.Key)
-				}
-				matched[key] = len(wantSet) == 0
+			wantSet := make(map[core.RatingKey]bool, len(w))
+			for _, k := range w {
+				wantSet[k] = true
 			}
+			for _, it := range items[:min(len(items), scanLimit)] {
+				delete(wantSet, it.Key)
+			}
+			matched[key] = len(wantSet) == 0
 			continue
 		}
 		baseKeys = append(baseKeys, key)

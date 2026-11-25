@@ -531,6 +531,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/indexer/preview", h.handleIndexerPreview)
 	api("POST /api/test/debrid", h.handleTestDebrid)
 	api("POST /api/test/tmdb", h.handleTestTMDB)
+	api("POST /api/test/tvdb", h.handleTestTVDB)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/subdl", h.handleTestSubDL)
 	api("POST /api/test/subsource", h.handleTestSubSource)

@@ -21,6 +21,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/datafs"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/tmdb"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 // ---- Setup status ----
@@ -557,6 +558,20 @@ func (h *Handler) handleTestSkipDB(w http.ResponseWriter, r *http.Request) {
 		key = h.deps.Config.Get().Markers.SkipDBAPIKey
 	}
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestSkipDB(ctx, key) })
+}
+
+func (h *Handler) handleTestTVDB(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if !decodeTestBody(w, r, &body) {
+		return
+	}
+	key := body.Key
+	if isRedacted(key) {
+		key = h.deps.Config.Get().Catalog.TVDBKey
+	}
+	h.runTest(w, r, func(ctx context.Context) error { return tvdb.Test(ctx, key) })
 }
 
 func (h *Handler) handleTestTMDB(w http.ResponseWriter, r *http.Request) {

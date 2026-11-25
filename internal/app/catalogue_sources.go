@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
-	"github.com/braedonsaunders/ether/internal/core"
 	"net/http"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/tvdb"
 )
 
 type catalogueSource struct {
@@ -37,6 +39,7 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 	out := []catalogueSource{
 		{ID: "tmdb-movies", Name: "TMDB Movies", Owner: "Built in", Group: "builtin", MediaTypes: []string{"movie"}, Health: "ok", Libraries: []catalogueLibrary{}},
 		{ID: "tmdb-tv", Name: "TMDB TV shows", Owner: "Built in", Group: "builtin", MediaTypes: []string{"show"}, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tvdb", Name: "TheTVDB", Owner: "TheTVDB", Group: "builtin", MediaTypes: []string{"show"}, Health: "unknown", Libraries: []catalogueLibrary{}},
 	}
 	if c.app.catalog != nil {
 		if stats, err := c.app.catalog.Stats(r.Context()); err == nil {
@@ -119,7 +122,7 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 		}
 	}
 	for i := range out {
-		if out[i].Group == "stremio" {
+		if materializedCatalogueSource(out[i].ID) {
 			var count int
 			var refreshed int64
 			if err := c.app.db.QueryRowContext(r.Context(), `SELECT item_count,refreshed,last_error,listed,item_limit FROM libraries_catalogue_state WHERE source_id=?`, out[i].ID).Scan(&count, &refreshed, &out[i].LastError, &out[i].Listed, &out[i].Limit); err == nil {
@@ -133,6 +136,10 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 					out[i].Health = "error"
 				}
 			}
+		}
+		if out[i].ID == "tvdb" && strings.TrimSpace(c.app.cfg.Get().Catalog.TVDBKey) == "" {
+			out[i].Health = "error"
+			out[i].LastError = tvdb.ErrKeyRequired.Error()
 		}
 		for _, lib := range libs {
 			if out[i].Group == "plugin" && lib.PluginID == out[i].PluginID && lib.KindKey == out[i].KindKey {
@@ -152,8 +159,8 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 
 func (c *librariesConsole) handleCatalogueSourceSync(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("source")
-	if !strings.HasPrefix(id, "stremio:") {
-		libError(w, 400, "Only Stremio catalogues use this refresh")
+	if !materializedCatalogueSource(id) {
+		libError(w, 400, "This catalogue source cannot be refreshed")
 		return
 	}
 	if _, err := c.app.catalogueSourceType(r.Context(), id); err != nil {

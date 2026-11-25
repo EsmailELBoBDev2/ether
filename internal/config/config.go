@@ -478,6 +478,7 @@ type Catalog struct {
 	// (hide rules, first match) identical to the previous OR of groups.
 	VisibilityDefault string                  `json:"visibilityDefault,omitempty"`
 	Exclusions        []core.LibraryExclusion `json:"exclusions,omitempty"`
+	TVDBKey           string                  `json:"tvdbKey"`
 	TMDBKey           string                  `json:"tmdbKey"`  // owner override; empty uses the bundled key
 	Language          string                  `json:"language"` // TMDB language, e.g. "en-US"
 	Region            string                  `json:"region"`

@@ -36,6 +36,11 @@ type ArchiveRangeInput struct {
 }
 
 type HLSRequest struct {
+	// WaitForEncoder gives interactive starts a bounded wait at the local encoder.
+	// EncoderViewer identifies a viewer in owner-only capacity diagnostics.
+	WaitForEncoder bool   `json:"-"`
+	EncoderViewer  string `json:"-"`
+
 	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
 	PMSDASH bool
 
@@ -483,4 +488,24 @@ type PlaybackSourceSnapshot interface {
 // The source fence is acquired before any manual-intent database writer in fn.
 type PlaybackSelectionFence interface {
 	WithSourceSelection(context.Context, string, string, func(MediaInfo) error) error
+}
+
+type sourceDecisionKey struct{}
+
+// SourceDecision evaluates a candidate before its source identity is published.
+// The estimate may lack full track evidence, so the chooser checks again on open.
+type SourceDecision struct {
+	Options DecideOptions
+	Decide  func(MediaInfo, *Resolution) Decision
+}
+
+// WithSourceDecision carries the playback request's output permissions
+// into source selection, before the source revision is published.
+func WithSourceDecision(ctx context.Context, selection SourceDecision) context.Context {
+	return context.WithValue(ctx, sourceDecisionKey{}, selection)
+}
+
+func PlaybackSourceDecision(ctx context.Context) (SourceDecision, bool) {
+	selection, ok := ctx.Value(sourceDecisionKey{}).(SourceDecision)
+	return selection, ok
 }

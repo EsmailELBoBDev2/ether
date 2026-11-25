@@ -501,6 +501,12 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 		if errors.As(err, &encoder) {
 			delay = encoder.RetryAfter
 		}
+		message := frontend.VideoEncoderCapacityMessage(err, acceptLanguage)
+		if message == "" {
+			message = "playback capacity"
+		} else if delay == 0 {
+			delay = 5 * time.Second
+		}
 		if delay > 0 && delay <= 5*time.Minute {
 			seconds := min(300, int(delay/time.Second))
 			if delay%time.Second != 0 && seconds < 300 {
@@ -508,7 +514,7 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 			}
 			seconds = max(seconds, 1)
 			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-			send(w, 503, object{"error": object{"class": "capacity", "code": "playback_capacity", "message": "playback capacity", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+			send(w, 503, object{"error": object{"class": "capacity", "code": "playback_capacity", "message": message, "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
 		} else {
 			problem(w, 503, "capacity", "playback_capacity")
 		}

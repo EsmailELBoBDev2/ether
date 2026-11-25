@@ -802,6 +802,24 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if req.ExpectedSourceETag != "" && detail == nil && (!existed || previous == nil || sourceRevision(previous) != req.ExpectedSourceETag) {
 		return frontend.PlayPlan{}, frontend.ErrSourceGone
 	}
+	if !req.Intent.Queued && !req.Intent.AudioSet && !req.Intent.SubtitleSet &&
+		req.Intent.AudioOrdinal == nil && req.Intent.SubtitleOrdinal == nil && detail == nil &&
+		req.ExpectedSourceETag == "" && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) {
+		candidate := copyRequest(req)
+		ctx = core.WithSourceDecision(ctx, core.SourceDecision{
+			Options: candidate.Intent.Options,
+			Decide: func(info core.MediaInfo, res *core.Resolution) core.Decision {
+				probe := &core.PlaySession{Info: info, Resolution: res}
+				if info.Estimated {
+					d, _ := b.decideProfile(probe, candidate)
+					return d
+				}
+				request := candidate
+				d, _ := b.admitPlanDecision(probe, &request)
+				return d
+			},
+		})
+	}
 	var ps *core.PlaySession
 	// autoRelease: the handle names Auto's release, so the session may play
 	// another release in its place (a fallback now, a failover later).

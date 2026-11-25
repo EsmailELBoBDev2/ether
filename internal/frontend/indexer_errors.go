@@ -15,7 +15,7 @@ type IndexersPausedError = core.IndexersPausedError
 
 const IndexersPausedCode = "indexer_paused"
 
-var indexersPausedMatcher = language.NewMatcher([]language.Tag{
+var playbackErrorLocaleMatcher = language.NewMatcher([]language.Tag{
 	language.English, language.German, language.Spanish, language.French, language.Italian,
 	language.Japanese, language.Korean, language.Dutch, language.Norwegian, language.Polish,
 	language.MustParse("pt-BR"), language.Russian, language.Swedish, language.Turkish,
@@ -53,7 +53,7 @@ func IndexersPausedMessage(err error, languages ...string) string {
 	if !errors.As(err, &paused) {
 		return ""
 	}
-	_, locale := language.MatchStrings(indexersPausedMatcher, languages...)
+	_, locale := language.MatchStrings(playbackErrorLocaleMatcher, languages...)
 	t := indexersPausedText[locale]
 	reasons := make([]string, 0, len(paused.Names))
 	for _, name := range paused.Names {

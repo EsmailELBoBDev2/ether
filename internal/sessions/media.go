@@ -390,7 +390,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if proto != core.ProtocolDASH && !s.live {
 		startAt = ps.SourcePosition(startAt)
 	}
-	request := core.HLSRequest{FirstSegmentAt: firstSegmentAt, LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), NoVideoTranscode: !s.live && b.videoOff(s.caps), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	request := core.HLSRequest{WaitForEncoder: !req.PrepareOnly, EncoderViewer: viewer.Username, FirstSegmentAt: firstSegmentAt, LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), NoVideoTranscode: !s.live && b.videoOff(s.caps), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
 	if req.Continuous && s.public.Protocol == "vela" {
 		variants, _, e := b.qualityPlan(ctx, s, viewer)
 		if e != nil {
@@ -443,7 +443,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			return "", leaseErr
 		}
 		request.InputLease = lease
-		hs, err = b.deps.Transcoder.StartHLS(context.WithoutCancel(ctx), request)
+		hs, err = b.deps.Transcoder.StartHLS(ctx, request)
 	}
 
 	if err != nil || hs == nil {
@@ -451,7 +451,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			lease.SealInput()
 		}
 		if err != nil {
-			return "", capacityError(err)
+			return "", b.recordEncoderFailure(s.playID, err)
 		}
 		b.transcodeStop(id)
 		return "", core.ErrNotAvailable

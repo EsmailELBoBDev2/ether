@@ -888,7 +888,11 @@ func playbackErrorFor(w http.ResponseWriter, policy any, viewer *frontend.Viewer
 			return
 		}
 		w.Header().Set("X-Request-ID", requestID)
-		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "https://siloserver.org/docs/api/v2/problems/transcode_capacity", "title": "Transcode capacity unavailable", "status": 503, "detail": "The server is busy; retry later.", "instance": "urn:silo:request:" + requestID})
+		detail := frontend.VideoEncoderCapacityMessage(err, languages...)
+		if detail == "" {
+			detail = "The server is busy; retry later."
+		}
+		problemReply(w, http.StatusServiceUnavailable, map[string]any{"type": "https://siloserver.org/docs/api/v2/problems/transcode_capacity", "title": "Transcode capacity unavailable", "status": 503, "detail": detail, "instance": "urn:silo:request:" + requestID})
 		return
 	}
 	http.Error(w, "Playback unavailable", 503)

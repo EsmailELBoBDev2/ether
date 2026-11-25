@@ -197,7 +197,7 @@ func (a *App) buildAdmin() http.Handler {
 				return map[string]string{"error": "ffmpeg not found"}
 			}
 			accel := a.transcoder.HWAccel()
-			hw := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus()}
+			hw := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "hwaccel": accel, "ffmpeg": a.transcoder.Version(), "enhancement": a.transcoder.EnhancementStatus(), "videoEncoderLimit": a.transcoder.VideoEncoderLimit()}
 			if vendor := transcode.GPUVendor(accel.Device); vendor != "" {
 				hw["vendor"] = vendor
 			}

@@ -732,6 +732,9 @@ func (s *lazyStreams) sourceGone(w http.ResponseWriter, r *http.Request) {
 // 404. Only a full encoder or admission slot stays 503, with Retry-After
 // when the broker named a delay.
 func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request, err error) {
+	if frontend.WriteIndexersPaused(w, err, r.Header.Get("Accept-Language")) {
+		return
+	}
 	if errors.Is(err, core.ErrPreparing) {
 		w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")

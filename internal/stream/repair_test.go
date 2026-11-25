@@ -298,7 +298,7 @@ func TestRepairLiveDeadlineIncludesMetadataLock(t *testing.T) {
 func TestRepairedSpanCacheVersion(t *testing.T) {
 	s := &segData{begin: 10, fileSize: 100, total: 4, name: "test", data: []byte("recovered"), repairedSpan: true}
 	b := encodeSegment(s)
-	if string(b[:4]) != "ETS3" {
+	if string(b[:4]) != repairedSegMagic {
 		t.Fatal("old binaries would mistake a span for one article")
 	}
 	d, ok := decodeSegment(b)
@@ -308,7 +308,7 @@ func TestRepairedSpanCacheVersion(t *testing.T) {
 	s.repairedSpan = false
 	s.rangeExact = true
 	b = encodeSegment(s)
-	if string(b[:4]) != "ETS2" {
+	if string(b[:4]) != segMagic {
 		t.Fatal("ordinary cache entries changed version")
 	}
 }

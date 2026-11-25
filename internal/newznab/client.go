@@ -143,20 +143,22 @@ type Client struct {
 	rate         rateLimitState
 	apiLimit     apiLimitState
 
-	cacheMu  sync.RWMutex
-	memCache map[string]memCacheEntry
-	torrents torrentDescriptorCache
-	br       breaker
+	cacheMu      sync.RWMutex
+	memCache     map[string]memCacheEntry
+	torrents     torrentDescriptorCache
+	br           breaker
+	backgroundBR breaker
 	// newznabPath is set once /api answered 404 and {base}/api/newznab
 	// worked: some indexers serve Newznab there, which Radarr and
 	// Sonarr reach through their API Path field.
 	newznabPath atomic.Bool
 
-	capsMu     sync.Mutex
-	caps       *Caps
-	capsAt     time.Time
-	capsEP     string    // capsEndpoint the cached caps came from
-	capsFailAt time.Time // last failed caps request; searches skip caps for capsRetry
+	capsMu               sync.Mutex
+	caps                 *Caps
+	capsAt               time.Time
+	capsEP               string    // capsEndpoint the cached caps came from
+	capsFailAt           time.Time // last failed foreground caps request
+	capsBackgroundFailAt time.Time
 
 	// nzbFlights coalesces concurrent FetchNZB calls per release id, so
 	// racing warm-up, playback and validation spend one grab.
@@ -328,7 +330,7 @@ func (c *Client) UpdateConfig(cfg config.Indexer) {
 		// old endpoint's caps no longer describe this indexer.
 		c.newznabPath.Store(false)
 		c.capsMu.Lock()
-		c.capsFailAt = time.Time{}
+		c.capsFailAt, c.capsBackgroundFailAt = time.Time{}, time.Time{}
 		c.caps, c.capsAt, c.capsEP = nil, time.Time{}, ""
 		c.capsMu.Unlock()
 		c.searchModeMu.Lock()
@@ -755,12 +757,17 @@ func (c *Client) capsEndpoint() string {
 // and a response from the old endpoint still in flight is not kept.
 func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 	ep := c.capsEndpoint()
+	background := backgroundSearch(ctx)
 	c.capsMu.Lock()
 	if c.caps != nil && c.capsEP == ep && c.now().Sub(c.capsAt) < 24*time.Hour {
 		defer c.capsMu.Unlock()
 		return c.caps, nil
 	}
-	if !c.capsFailAt.IsZero() && c.now().Sub(c.capsFailAt) < capsRetry {
+	failedAt := c.capsFailAt
+	if background && c.capsBackgroundFailAt.After(failedAt) {
+		failedAt = c.capsBackgroundFailAt
+	}
+	if !failedAt.IsZero() && c.now().Sub(failedAt) < capsRetry {
 		c.capsMu.Unlock()
 		return nil, errCapsUnavailable
 	}
@@ -783,13 +790,18 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 	current := c.capsEndpoint() == ep // the config did not change meanwhile
 	if err != nil {
 		if current && !callerLeft(ctx, capsElapsed) && !errors.Is(err, core.ErrBudgetExhausted) {
-			c.capsFailAt = c.now()
+			if background {
+				c.capsBackgroundFailAt = c.now()
+			} else {
+				c.capsFailAt = c.now()
+			}
 		}
 		c.capsMu.Unlock()
 		return nil, err
 	}
 	if current {
-		c.caps, c.capsAt, c.capsEP, c.capsFailAt = caps, c.now(), ep, time.Time{}
+		c.caps, c.capsAt, c.capsEP = caps, c.now(), ep
+		c.capsFailAt, c.capsBackgroundFailAt = time.Time{}, time.Time{}
 	}
 	c.capsMu.Unlock()
 	if current {
@@ -1372,7 +1384,7 @@ func stampMissingCategory(results []core.Release, media config.IdentityMediaType
 }
 
 func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity, media config.IdentityMediaType) ([]core.Release, error) {
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	usedNewznab := c.newznabPath.Load()
@@ -1514,7 +1526,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
 		return nil, fmt.Errorf("indexer %q: %w: %w", c.Name(), errLocalBudget, core.ErrBudgetExhausted)
 	}
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	if c.Config().UsesBackend() {
@@ -1530,11 +1542,12 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 	media := config.IdentityMediaTypeForSearch(req)
 	id := c.identityFor(config.RequestSearch, cfg.URL, media)
 	capsStarted := time.Now()
+	br := c.searchBreaker(ctx)
 	caps, capsErr := c.Caps(ctx) // best effort; failures just mean no param gating
 	if capsErr != nil && ctx.Err() != nil {
 		capsElapsed := time.Since(capsStarted)
 		if !callerLeft(ctx, capsElapsed) {
-			c.recordSearchTimeout(ctx, capsErr, capsElapsed)
+			c.recordSearchTimeout(ctx, br, capsErr, capsElapsed)
 		}
 		return nil, capsErr
 	}
@@ -1606,7 +1619,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				width := c.br.burstLimit(maxBurstWidth)
+				width := c.searchBreaker(ctx).burstLimit(maxBurstWidth)
 				end := min(base+width, len(rest))
 				batch := rest[base:end]
 				base = end
@@ -1942,7 +1955,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 		c.emit(Event{Kind: "search", Purpose: usagePurpose(ctx), BudgetExhausted: true})
 		return nil, fmt.Errorf("indexer %q: %w: %w", c.Name(), errLocalBudget, core.ErrBudgetExhausted)
 	}
-	if err := c.searchPaused(); err != nil {
+	if err := c.searchPaused(ctx); err != nil {
 		return nil, err
 	}
 	if cfg := c.Config(); cfg.UsesBackend() {
@@ -2042,7 +2055,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			width := c.br.burstLimit(len(attempts))
+			width := c.searchBreaker(ctx).burstLimit(len(attempts))
 			end := min(base+width, len(attempts))
 			batch := attempts[base:end]
 			base = end

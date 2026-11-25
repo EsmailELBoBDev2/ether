@@ -317,6 +317,9 @@ func (f *Fetcher) startHedge(ctx context.Context, id string, groups []string, pr
 		defer stop()
 		defer h.release(id)
 		part, wire, err := target.hedgeBody(hctx, id, groups)
+		if err == nil {
+			err = validateArticleSlot(hctx, part)
+		}
 		if err == nil && race.claim() {
 			target.hedgeWins.Add(1)
 			out <- hedgeResult{part: part}

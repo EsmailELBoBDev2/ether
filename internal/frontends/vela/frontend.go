@@ -386,6 +386,14 @@ func failWithPolicy(w http.ResponseWriter, policy any, viewer *frontend.Viewer, 
 		send(w, http.StatusOK, object{"query": b.Query, "generation": b.Generation, "items": []object{}, "continuation": frontend.ContinuationExhausted, "match": string(frontend.SearchMatchNone), "state": "complete", "retry": object{"allowed": false}})
 		return
 	}
+	var acceptLanguage string
+	if len(requests) > 0 && requests[0] != nil {
+		acceptLanguage = requestDevice(requests[0]).Language
+	}
+	if msg := frontend.IndexersPausedMessage(err, acceptLanguage); msg != "" {
+		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": frontend.IndexersPausedCode, "message": msg, "retry": object{"allowed": false}}})
+		return
+	}
 	var capErr *frontend.ProviderConnectionCapError
 	if errors.As(err, &capErr) {
 		sendProviderConnectionCap(w, capErr)

@@ -800,6 +800,22 @@ type ArticlePart struct {
 	End      int64  `json:"end"`
 }
 
+// ArticlePartValidator checks whether a decoded article belongs to the requested
+// slot. It must be side-effect free: provider attempts (including hedges) can
+// call it concurrently, and only the winning result may update the index.
+type ArticlePartValidator func([]byte, ArticlePart) error
+
+type articlePartValidatorKey struct{}
+
+func WithArticlePartValidator(ctx context.Context, validate ArticlePartValidator) context.Context {
+	return context.WithValue(ctx, articlePartValidatorKey{}, validate)
+}
+
+func ArticleValidator(ctx context.Context) ArticlePartValidator {
+	validate, _ := ctx.Value(articlePartValidatorKey{}).(ArticlePartValidator)
+	return validate
+}
+
 // ---------------------------------------------------------------------------
 // Stream engine (internal/stream)
 

@@ -525,7 +525,7 @@ func (i *instance) serveAliasSession(w http.ResponseWriter, r *http.Request, acc
 	fullTimeline := i.protocol == "jellyfin" && format == frontend.StreamHLS
 	url, err := i.host.Sessions.StartStream(r.Context(), access, sessionID, frontend.StreamRequest{Format: format, FullTimeline: fullTimeline})
 	if err != nil {
-		streamError(i.protocol, w, err)
+		streamError(i.protocol, w, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	if !strings.HasPrefix(url, "/sessions/media/") || strings.ContainsAny(url, "\r\n") {

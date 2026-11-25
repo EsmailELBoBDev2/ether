@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -137,9 +138,10 @@ const (
 )
 
 type resolveFlightKey struct {
-	ref    core.ItemRef
-	part   int
-	source string
+	ref        core.ItemRef
+	part       int
+	source     string
+	background bool
 }
 
 type resolveFlight struct {
@@ -371,7 +373,7 @@ func (r *KindResolver) ResolveForMatch(ctx context.Context, lib core.Library, re
 	if !ok || !lv.Playable || !item.Playable {
 		return nil, nil
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	var partIdx *int
@@ -528,7 +530,7 @@ func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, 
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	var forcedPart *int
@@ -593,7 +595,7 @@ func (r *KindResolver) OpenKindPartSource(ctx context.Context, viewer *core.View
 	if partIndex != nil && *partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
@@ -744,6 +746,9 @@ func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, ke
 		}
 	}
 	if err != nil {
+		if !speculative && errors.As(err, new(*core.IndexersPausedError)) {
+			return nil, err
+		}
 		if errors.Is(err, core.ErrNotAvailable) || errors.Is(err, core.ErrPreparing) || errors.Is(err, core.ErrSourceUnavailable) {
 			return nil, nil
 		}
@@ -1014,7 +1019,7 @@ func (r *KindResolver) OpenKindExcluding(ctx context.Context, viewer *core.Viewe
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	if parentKey, partIdx, isPart := key.PluginPart(); isPart {
@@ -1136,7 +1141,7 @@ func (r *KindResolver) OpenKindPartExcluding(ctx context.Context, viewer *core.V
 	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
 		return nil, core.ErrNotFound
 	}
-	if core.IndexerPurpose(ctx) == "" {
+	if core.IndexerPurpose(ctx) == core.IndexerPurposeOther {
 		ctx = core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback)
 	}
 	if parentKey, _, isPart := key.PluginPart(); isPart {
@@ -1719,6 +1724,8 @@ type resolveSearchState struct {
 	oneShotPending   bool
 	pendingBySearch  map[string]bool
 	budgetSkipped    bool
+	indexerAnswered  bool
+	pausedIndexers   map[string]string
 	inFlight         int
 	sliceSourceCalls int
 	sliceWorkKeys    map[string]struct{}
@@ -1830,7 +1837,29 @@ func noteResolveSearchResult(ctx context.Context, res core.SourceResolveResult) 
 	} else if hasPending {
 		st.oneShotPending = true
 	}
+	for _, status := range res.Indexers {
+		switch {
+		case status.Status == core.IndexerStatusAnswered:
+			st.indexerAnswered = true
+		case status.Status == core.IndexerStatusSkipped && status.Reason == core.IndexerSkipReasonPaused:
+			if st.pausedIndexers == nil {
+				st.pausedIndexers = make(map[string]string)
+			}
+			st.pausedIndexers[status.IndexerID] = status.ConfiguredName
+		}
+	}
 	st.mu.Unlock()
+}
+
+func (s *resolveSearchState) indexerPause() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.indexerAnswered || len(s.pausedIndexers) == 0 {
+		return nil
+	}
+	names := slices.Collect(maps.Values(s.pausedIndexers))
+	slices.Sort(names)
+	return &core.IndexersPausedError{Names: slices.Compact(names)}
 }
 
 func noteResolveSearchCanceled(ctx context.Context, searchID string) {
@@ -1882,9 +1911,6 @@ func (s *resolveSearchState) hadBudgetSkip() bool {
 func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
 	if q.Stream {
 		return r.startStreamingIndexerSearch(ctx, pluginID, q)
-	}
-	if core.IndexerPurpose(ctx) == "" && wasm.IsBackgroundCall(ctx) {
-		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
 	}
 	query, category, err := r.validateIndexerSearchQuery(ctx, q)
 	if err != nil {
@@ -2058,6 +2084,9 @@ func (r *KindResolver) resolveIndexerSearch(ctx context.Context, pluginID string
 func (r *KindResolver) ResolveSourcesWithResult(ctx context.Context, pluginID string, q core.SourceQuery) (core.SourceResolveResult, error) {
 	if r == nil {
 		return core.SourceResolveResult{}, core.ErrNotAvailable
+	}
+	if wasm.IsBackgroundCall(ctx) {
+		ctx = core.WithUnattendedSearch(core.WithIndexerPurpose(ctx, core.IndexerPurposeWarmup))
 	}
 	switch q.Kind {
 	case "indexer_search":
@@ -3390,6 +3419,8 @@ func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec plug
 		return nil, core.ErrSourceUnavailable
 	}
 	fk := flightKeyForItemSource(item.Ref, partIdx, sourceID)
+	flightKey := fk
+	flightKey.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	var partCopy *int
 	if partIdx != nil {
 		v := *partIdx
@@ -3397,19 +3428,19 @@ func (r *KindResolver) resolveItemSourcesForSource(ctx context.Context, rec plug
 	}
 
 	r.flightMu.Lock()
-	fl, ok := r.flights[fk]
+	fl, ok := r.flights[flightKey]
 	if !ok {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
-		r.flights[fk] = fl
+		r.flights[flightKey] = fl
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
 					fl.err = fmt.Errorf("kindresolver: resolve panic: %v", p)
 				}
 				r.flightMu.Lock()
-				if r.flights[fk] == fl {
-					delete(r.flights, fk)
+				if r.flights[flightKey] == fl {
+					delete(r.flights, flightKey)
 				}
 				r.flightMu.Unlock()
 				close(fl.done)
@@ -3436,6 +3467,8 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 		return nil, core.ErrSourceUnavailable
 	}
 	fk := flightKeyForItem(item.Ref, partIdx)
+	flightKey := fk
+	flightKey.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	var partCopy *int
 	if partIdx != nil {
 		v := *partIdx
@@ -3443,14 +3476,14 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 	}
 
 	r.flightMu.Lock()
-	fl, ok := r.flights[fk]
+	fl, ok := r.flights[flightKey]
 	if !ok {
 		// Give the detached flight slightly more headroom than Manager.Call's
 		// ResolverTotal so pending expiry returns HTTP 202 (ErrPreparing)
 		// rather than racing parent context cancellation (#580).
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 		fl = &resolveFlight{done: make(chan struct{}), cancel: cancel}
-		r.flights[fk] = fl
+		r.flights[flightKey] = fl
 		go func() {
 			defer func() {
 				if p := recover(); p != nil {
@@ -3460,8 +3493,8 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 				// after a waiter returns must start a new resolve, never
 				// join this finished flight and reuse its result.
 				r.flightMu.Lock()
-				if r.flights[fk] == fl {
-					delete(r.flights, fk)
+				if r.flights[flightKey] == fl {
+					delete(r.flights, flightKey)
 				}
 				r.flightMu.Unlock()
 				close(fl.done)
@@ -3521,6 +3554,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		return nil, err
 	}
 	fk := flightKeyForItemSource(item.Ref, partIdx, source)
+	fk.background = core.SpeculativeIndexerWork(ctx) || core.IsBackgroundCheck(ctx)
 	ctx, searchState := withResolveSearchState(ctx)
 	ctx = plugins.WithResolveSliceHook(ctx, searchState.beginSlice)
 	unit := resolveUnitKey{pluginID: rec.PluginID, library: lib.Key, parent: item.ParentID}
@@ -3565,7 +3599,11 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if searchState.hasPending() {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
-		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
+		if err := searchState.indexerPause(); err != nil {
+			r.clearResolveProgress(fk)
+			return nil, err
+		}
+		if source == "" && !fk.background && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
 		r.clearResolveProgress(fk)
@@ -3605,7 +3643,11 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		if searchState.hasPending() {
 			return nil, &core.PreparingError{RetryAfter: 2 * time.Second}
 		}
-		if source == "" && !core.SpeculativeIndexerWork(ctx) && !searchState.hadBudgetSkip() {
+		if err := searchState.indexerPause(); err != nil {
+			r.clearResolveProgress(fk)
+			return nil, err
+		}
+		if source == "" && !fk.background && !searchState.hadBudgetSkip() {
 			_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		}
 		r.clearResolveProgress(fk)

@@ -67,6 +67,11 @@ const (
 // playbackMessageFor is playbackMessage with the wording for a viewer whose
 // own account has video transcoding switched off.
 func (s *Server) playbackMessageFor(pr *Request, err error) string {
+	if pr != nil {
+		if msg := frontend.IndexersPausedMessage(err, pr.Language); msg != "" {
+			return msg
+		}
+	}
 	if pr != nil && pr.User != nil && errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 		return frontend.VideoTranscodingOffMessage(s.policy(), pr.User)
 	}
@@ -132,6 +137,9 @@ func (s *Server) writeStartErr(w http.ResponseWriter, r *http.Request, pr *Reque
 	s.log.Warn("playback start failed", "reason", playbackMessage(err), "err", err)
 	if pr != nil && pr.User != nil {
 		s.setTermination(trackID(pr.User.ID, pr.ClientID, pr.SessionID), s.playbackMessageFor(pr, err))
+	}
+	if frontend.WriteIndexersPaused(w, err, notificationLanguage(r)) {
+		return
 	}
 	// A completed attempt is terminal. Retry-After on a 503 makes media
 	// loaders retry while waiting for a timeline they may never send.
@@ -3378,7 +3386,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 // Part acquisition failures distinguish an absent provider file from a failed
 // upstream transport; the conversion start routes retain their own contract.
 func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Request, err error) {
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) || errors.Is(err, frontend.ErrArchiveUnstreamable) {
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) || errors.Is(err, frontend.ErrArchiveUnstreamable) || errors.As(err, new(*frontend.IndexersPausedError)) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}

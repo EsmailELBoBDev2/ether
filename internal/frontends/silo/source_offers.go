@@ -160,6 +160,9 @@ func (i *instance) pluginVersions(r *http.Request, scope frontend.VersionScope, 
 	} else {
 		variants, err = i.host.Editions.Variants(vctx, req, frontend.MaxVariants)
 	}
+	if errors.As(err, new(*frontend.IndexersPausedError)) {
+		return nil, nil, err
+	}
 	if err != nil || len(variants) == 0 {
 		return nil, nil, nil
 	}

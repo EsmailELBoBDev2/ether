@@ -122,7 +122,7 @@ func (i *instance) startCatchUp(w http.ResponseWriter, r *http.Request, viewer *
 	caps.Protocol, caps.ClientID = "silo", d.ID
 	info, err := frontend.OpenLibraryCatchUp(r.Context(), live, archive, viewer, req, caps, b.Attempt, time.Duration(b.Position*float64(time.Second)))
 	if err != nil {
-		i.playbackError(w, viewer, err)
+		i.playbackError(w, viewer, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	reply(w, http.StatusCreated, catchUpPlan(info, d, b.FileID, b.Position))
@@ -196,7 +196,7 @@ func (i *instance) replanCatchUp(w http.ResponseWriter, r *http.Request, viewer 
 	}
 	next, err := archive.SeekCatchUp(r.Context(), viewer, info.ID, time.Duration(b.Position*float64(time.Second)))
 	if err != nil {
-		i.playbackError(w, viewer, err)
+		i.playbackError(w, viewer, err, r.Header.Get("Accept-Language"))
 		return
 	}
 	file := frontend.CatchUpGUID(frontend.CatchUpItem{Type: frontend.TypeEpisode, Programme: frontend.LiveTVProgramme{ChannelID: next.ChannelID, Start: next.Start}})

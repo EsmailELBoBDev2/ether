@@ -1329,8 +1329,10 @@ export interface QualityLayer {
 
 export interface QualityAnswer {
   profile: string;
-  /** "movie" or "episode" when the answer is scoped to one kind. */
-  kind?: string;
+  /** The kind the play was evaluated for. Send `kind` in the question to choose it. */
+  kind: "movie" | "episode";
+  /** Nothing in the question named the kind (no title, no Movies/Shows library, no `kind`), so it is "movie". */
+  kindAssumed?: boolean;
   profileSource: QualityDecisionSource;
   profileRuleId?: string;
   limitRuleIds: string[];

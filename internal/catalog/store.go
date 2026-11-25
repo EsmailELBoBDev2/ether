@@ -1709,6 +1709,10 @@ func (c *Catalog) queryTitlesRows(ctx context.Context, sqlGated, rowsOnly bool, 
 	if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); !deferred {
 		c.rememberTitles(gen, minute, full)
 	}
+	if err := c.ProjectEpisodeTitles(ctx, visible); err != nil {
+		return nil, err
+	}
+
 	return visible, nil
 }
 

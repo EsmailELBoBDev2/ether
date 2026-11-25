@@ -303,3 +303,41 @@ func (c *Catalog) EpisodeMatchRanges(ctx context.Context, from, to core.RatingKe
 	sort.Slice(out[1:], func(i, j int) bool { return out[i+1].First < out[j+1].First })
 	return out, nil
 }
+
+// HydrateEpisodeLayout loads the selected layout on explicit use, including
+// the destination tree of a user-requested match correction.
+func (c *Catalog) HydrateEpisodeLayout(ctx context.Context, show core.RatingKey) (EpisodeLayout, error) {
+	t, err := c.StoredTitle(ctx, show)
+	if err != nil {
+		return EpisodeLayout{}, err
+	}
+	effective, err := c.effectiveEpisodeOrder(ctx, t)
+	if err != nil {
+		return EpisodeLayout{}, err
+	}
+	if t.Key.Allocated() && t.IDs.TMDB == 0 && t.IDs.TVDB > 0 && effective.Order == tmdbAired {
+		effective.Order = core.EpisodeOrder{Source: core.MetadataTVDB, Kind: core.OrderAired}
+	}
+
+	if !providerLayout(t, effective.Order) {
+		seasons, err := c.seasonsOfShow(ctx, t.IDs.TMDB)
+		if err != nil {
+			return EpisodeLayout{}, err
+		}
+		if err := c.loadSeasons(ctx, t.IDs.TMDB, seasons); err != nil {
+			return EpisodeLayout{}, err
+		}
+	} else {
+		seasons, err := c.ensureOrderManifest(ctx, t, effective.Order)
+		if err != nil {
+			return EpisodeLayout{}, err
+		}
+		for _, season := range seasons {
+			if err := c.ensureOrderSeason(ctx, t, effective.Order, season); err != nil {
+				return EpisodeLayout{}, err
+			}
+		}
+	}
+	layout, _, err := c.readEpisodeLayout(ctx, t, effective.Order)
+	return layout, err
+}

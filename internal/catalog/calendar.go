@@ -322,6 +322,20 @@ func (c *Catalog) RefreshSchedule(ctx context.Context, show core.RatingKey) erro
 	if show.Kind() != core.KindShow {
 		return nil
 	}
+	parent, err := c.StoredTitle(ctx, show)
+	if err == nil {
+		effective, err := c.effectiveEpisodeOrder(ctx, parent)
+		if err != nil {
+			return err
+		}
+		if !parent.Adult && providerLayout(parent, effective.Order) {
+			return c.refreshProviderSchedule(ctx, parent, effective.Order)
+		}
+	}
+	if !c.MetadataSources().Get(core.MetadataTMDB).Configured() {
+		return nil
+	}
+
 	t, err := c.getShow(ctx, show.TMDB())
 	if err != nil {
 		return err

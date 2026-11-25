@@ -57,6 +57,16 @@ CREATE INDEX catalog_order_episodes_date ON catalog_order_episodes(show_key,prov
 `)
 }
 
+func init() {
+	store.Register("catalog", 83, `
+ALTER TABLE catalog_order_episodes ADD COLUMN title TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_order_episodes ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_order_episodes ADD COLUMN still TEXT NOT NULL DEFAULT '';
+ALTER TABLE catalog_order_episodes ADD COLUMN runtime_min INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE catalog_order_seasons ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
+`)
+}
+
 var tmdbAired = core.EpisodeOrder{Source: core.MetadataTMDB, Kind: core.OrderAired}
 
 type EffectiveEpisodeOrder struct {
@@ -108,12 +118,29 @@ func (c *Catalog) EffectiveEpisodeOrder(ctx context.Context, show core.RatingKey
 }
 
 func (c *Catalog) effectiveEpisodeOrder(ctx context.Context, show *core.Title) (EffectiveEpisodeOrder, error) {
+	out, err := c.episodeLibraryDefault(ctx, show)
+	if err != nil {
+		return out, err
+	}
+	out.Order = out.LibraryDefault
+	err = c.db.QueryRowContext(ctx, `SELECT provider,order_kind FROM catalog_episode_order WHERE show_key=?`, show.Key).Scan(&out.Override.Source, &out.Override.Kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	out.Order = out.Override
+	return out, nil
+}
+
+func (c *Catalog) episodeLibraryDefault(ctx context.Context, show *core.Title) (EffectiveEpisodeOrder, error) {
 	out := EffectiveEpisodeOrder{LibraryDefault: tmdbAired}
 	if show.IDs.TMDB == 0 && show.IDs.TVDB > 0 {
 		out.LibraryDefault.Source = core.MetadataTVDB
 	}
-	if load := c.episodeOrderDefault.Load(); load != nil {
-		resolved, err := (*load)(ctx, show)
+	if load := c.episodeOrderDefault.Load(); load != nil && ctx.Value(resolvingEpisodeDefault{}) == nil {
+		resolved, err := (*load)(context.WithValue(ctx, resolvingEpisodeDefault{}, true), show)
 		if err != nil {
 			return out, err
 		}
@@ -124,15 +151,6 @@ func (c *Catalog) effectiveEpisodeOrder(ctx context.Context, show *core.Title) (
 			out.LibraryDefault = resolved.Order
 		}
 	}
-	out.Order = out.LibraryDefault
-	err := c.db.QueryRowContext(ctx, `SELECT provider,order_kind FROM catalog_episode_order WHERE show_key=?`, show.Key).Scan(&out.Override.Source, &out.Override.Kind)
-	if errors.Is(err, sql.ErrNoRows) {
-		return out, nil
-	}
-	if err != nil {
-		return out, err
-	}
-	out.Order = out.Override
 	return out, nil
 }
 

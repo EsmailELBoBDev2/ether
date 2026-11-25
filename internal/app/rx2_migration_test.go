@@ -85,10 +85,17 @@ func TestRX2MigrationMatrix(t *testing.T) {
 						record(key, label)
 					}
 				}
+				// Owner decision (Option C): a migrated server away bitrate cap
+				// now also steers source selection for 4K plays instead of
+				// picking a 4K release only to transcode it down at delivery.
+				wantBitrate := old.Bitrate
+				if fixture.Name == "away-cap-4k" && strings.HasSuffix(key, "/away=true") && old.Bitrate == 0 {
+					wantBitrate = 8000
+				}
 				for _, limit := range []struct {
 					label     string
 					old, next any
-				}{{"bitrate", old.Bitrate, next.Bitrate}, {"stereo", old.Stereo, next.Stereo}, {"blocked", old.Blocked, next.Blocked}} {
+				}{{"bitrate", wantBitrate, next.Bitrate}, {"stereo", old.Stereo, next.Stereo}, {"blocked", old.Blocked, next.Blocked}} {
 					if limit.old != limit.next {
 						label := fmt.Sprintf("%s: %v → %v", limit.label, limit.old, limit.next)
 						record(key, label)

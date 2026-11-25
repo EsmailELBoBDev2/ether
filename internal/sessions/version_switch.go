@@ -250,40 +250,47 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		}
 		planReq.Intent.Options = selected
 	}
+	admitSwitch := func(ps *core.PlaySession, r *frontend.PlanRequest) (core.Decision, error) {
+		dec, err := b.decideProfile(ps, *r)
+		if err != nil {
+			return core.Decision{}, err
+		}
+		if b.videoOff(r.Caps) && decisionEncodesVideo(dec, ps.Info) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{
+				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+				Cause:         core.ErrVideoTranscodingDisabled,
+			}
+		}
+		if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
+		}
+		if (dec.Kind == core.DecisionDirectPlay && !r.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !r.Intent.Options.DirectStream) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
+		}
+		if s.public.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
+			hlsAllowed, _ := b.hlsPlanOutput(ps, *r, dec)
+			httpAllowed := false
+			if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
+				httpAllowed, _ = b.httpPlanOutput(ps, *r, dec)
+			}
+			if !hlsAllowed && !httpAllowed {
+				outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, *r)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
+				if b.videoOff(r.Caps) {
+					if hlsDec, ok := b.hlsOutputDecision(ps, r.Caps, r.Intent.Options, s.allowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
+						outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
+						outErr.Cause = core.ErrVideoTranscodingDisabled
+					}
+				}
+				return core.Decision{}, outErr
+			}
+		}
+		return dec, nil
+	}
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideProfile(ps, planReq)
+	dec, originalChoice, err := b.admitWithClientCap(ps, &planReq, s.clientCap, admitSwitch)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err
-	}
-	if b.videoOff(planReq.Caps) && decisionEncodesVideo(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
-			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
-			Cause:         core.ErrVideoTranscodingDisabled,
-		}
-	}
-	if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
-	}
-	if (dec.Kind == core.DecisionDirectPlay && !planReq.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !planReq.Intent.Options.DirectStream) {
-		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(dec.Kind), Reasons: []string{"delivery mode not allowed by client"}}}}
-	}
-	if s.public.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
-		hlsAllowed, _ := b.hlsPlanOutput(ps, planReq, dec)
-		httpAllowed := false
-		if ps.Info.Video() == nil && ps.Info.HasPlayableMedia() {
-			httpAllowed, _ = b.httpPlanOutput(ps, planReq, dec)
-		}
-		if !hlsAllowed && !httpAllowed {
-			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: b.originalRejection(ps.Info, planReq)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
-			if b.videoOff(planReq.Caps) {
-				if hlsDec, ok := b.hlsOutputDecision(ps, planReq.Caps, planReq.Intent.Options, s.allowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
-					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
-					outErr.Cause = core.ErrVideoTranscodingDisabled
-				}
-			}
-			return frontend.PlayPlan{}, outErr
-		}
 	}
 	if !sameSource {
 		var pinErr error
@@ -374,22 +381,23 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	hls, hlsContainer := b.hlsPlanOutput(ps, planReq, dec)
 	httpOK, httpContainer := b.httpPlanOutput(ps, planReq, dec)
 	return frontend.PlayPlan{
-		SourceChosenAt:      sourceChosenAt,
-		DecisionAt:          decisionAt,
-		ID:                  sessionID,
-		Media:               publicMedia(ps.Info),
-		Decision:            dec,
-		SelectedSubtitle:    sideSubtitleStream(ps, planReq, dec),
-		DirectPlay:          direct,
-		DirectStream:        remux,
-		Transcoding:         transcoding,
-		VideoTranscodingOff: b.videoOff(planReq.Caps),
-		HLS:                 hls,
-		HLSContainer:        hlsContainer,
-		HTTP:                httpOK,
-		HTTPContainer:       httpContainer,
-		ETag:                etag,
-		VersionHandle:       normHandle,
-		ReleaseID:           relID,
+		SourceChosenAt:        sourceChosenAt,
+		DecisionAt:            decisionAt,
+		ID:                    sessionID,
+		Media:                 publicMedia(ps.Info),
+		Decision:              dec,
+		SelectedSubtitle:      sideSubtitleStream(ps, planReq, dec),
+		DirectPlay:            direct,
+		DirectStream:          remux,
+		Transcoding:           transcoding,
+		VideoTranscodingOff:   b.videoOff(planReq.Caps),
+		HLS:                   hls,
+		HLSContainer:          hlsContainer,
+		HTTP:                  httpOK,
+		HTTPContainer:         httpContainer,
+		ETag:                  etag,
+		VersionHandle:         normHandle,
+		ReleaseID:             relID,
+		OriginalOverClientCap: originalChoice,
 	}, nil
 }

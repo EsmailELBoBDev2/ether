@@ -468,7 +468,7 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 		}
 		if caps.MaxBitrateKbps > 0 && caps.MaxBitrateKbps < bitrate {
 			bitrate = caps.MaxBitrateKbps
-			if height == 1080 {
+			if outputHeight == 1080 {
 				outputHeight = 720
 			} else {
 				outputHeight = 480

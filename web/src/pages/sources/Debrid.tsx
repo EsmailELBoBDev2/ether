@@ -1,3 +1,4 @@
+import { ProviderSpeedButton, ProviderSpeedReport, useProviderSpeed } from "./provider-speed";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { formatThroughput } from "../../lib/format";
 import { t, tn, tx } from "../../i18n";
@@ -318,6 +319,9 @@ export function DebridSources({
     }
   }
 
+  const savedProvider = editing ? providers.find((p) => p.id === editing.draft.id) : undefined;
+  const speedTest = useProviderSpeed("debrid", savedProvider?.id);
+
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (!cfg || !debrid) return <LoadingRows rows={3} />;
 
@@ -500,11 +504,25 @@ export function DebridSources({
         error={error}
         tools={
           draft ? (
-            <TestButton
-              state={tests[draft.id] ?? { status: "idle" }}
-              onTest={() => runTest(draft.id, () => api.testDebrid(draft))}
-              disabled={!draft.apiKey}
-            />
+            <>
+              <ProviderSpeedReport
+                kind="debrid"
+                result={speedTest.result}
+                running={speedTest.running}
+              />
+              <TestButton
+                state={tests[draft.id] ?? { status: "idle" }}
+                onTest={() => runTest(draft.id, () => api.testDebrid(draft))}
+                disabled={!draft.apiKey || speedTest.running}
+              />
+              {savedProvider && (
+                <ProviderSpeedButton
+                  running={speedTest.running}
+                  disabled={!savedProvider.enabled || tests[draft.id]?.status === "running"}
+                  run={speedTest.run}
+                />
+              )}
+            </>
           ) : null
         }
       >

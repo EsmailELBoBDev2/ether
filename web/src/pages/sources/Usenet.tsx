@@ -1,3 +1,4 @@
+import { ProviderSpeedButton, ProviderSpeedReport, useProviderSpeed } from "./provider-speed";
 import { SourceEditorHeader, SourceEditorMetrics } from "../../components/SourceEditorSummary";
 import { t, tn } from "../../i18n";
 import {
@@ -266,6 +267,9 @@ export function UsenetProviders({
     }
   }
 
+  const savedProvider = editing ? providers.find((p) => p.id === editing.draft.id) : undefined;
+  const speedTest = useProviderSpeed("usenet", savedProvider?.id);
+
   if (config.error) return <ErrorPanel error={config.error} onRetry={() => void config.reload()} />;
   if (!cfg) return <LoadingRows rows={3} />;
 
@@ -487,11 +491,25 @@ export function UsenetProviders({
         error={error}
         tools={
           draft ? (
-            <TestButton
-              state={tests[draft.id] ?? { status: "idle" }}
-              onTest={() => runTest(draft.id, () => api.testUsenet(draft))}
-              disabled={!draft.host}
-            />
+            <>
+              <ProviderSpeedReport
+                kind="usenet"
+                result={speedTest.result}
+                running={speedTest.running}
+              />
+              <TestButton
+                state={tests[draft.id] ?? { status: "idle" }}
+                onTest={() => runTest(draft.id, () => api.testUsenet(draft))}
+                disabled={!draft.host || speedTest.running}
+              />
+              {savedProvider && (
+                <ProviderSpeedButton
+                  running={speedTest.running}
+                  disabled={!savedProvider.enabled || tests[draft.id]?.status === "running"}
+                  run={speedTest.run}
+                />
+              )}
+            </>
           ) : null
         }
       >

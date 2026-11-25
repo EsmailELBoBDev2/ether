@@ -1,5 +1,7 @@
 package diagnostics
 
+import "github.com/braedonsaunders/ether/internal/speedtest"
+
 // collect runs archive collectors outside the recorder lock. A failed
 // collector becomes a gap and does not stop the ZIP.
 func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap) {
@@ -62,6 +64,18 @@ func (r *Recorder) collect(snap finishSnap, uses []secretUse) ([]archived, []Gap
 		gaps = append(gaps, Gap{Collector: "settings", Status: "failed", Detail: "Settings could not be collected."})
 	} else {
 		put("settings.json", redactSettings(s, snap.flags[0], uses))
+	}
+	if r.deps.UsenetSpeed != nil {
+		tests, observed := r.deps.UsenetSpeed()
+		put("usenet.json", struct {
+			SpeedTests map[string]speedtest.Result `json:"speedTests"`
+			Observed   []speedtest.Observation     `json:"observedThroughput,omitempty"`
+		}{tests, observed})
+	}
+	if r.deps.DebridSpeed != nil {
+		put("debrid.json", struct {
+			SpeedTests map[string]speedtest.Result `json:"speedTests"`
+		}{r.deps.DebridSpeed()})
 	}
 	if r.deps.Sessions == nil {
 		gaps = append(gaps, Gap{Collector: "sessions", Status: "unavailable", Detail: "Sessions were not collected."})

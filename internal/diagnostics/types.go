@@ -3,7 +3,11 @@
 // accept paths, URLs, or commands from the caller.
 package diagnostics
 
-import "time"
+import (
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/speedtest"
+)
 
 // Schema is the archive manifest version.
 const Schema = "ether.support.v1"
@@ -424,6 +428,8 @@ type Deps struct {
 	Uptime      func() time.Duration
 	Secrets     func() []string
 	Settings    func() (Settings, error)
+	UsenetSpeed func() (map[string]speedtest.Result, []speedtest.Observation)
+	DebridSpeed func() map[string]speedtest.Result
 	// Sessions returns facts for deviceKey and a count of sessions that
 	// belonged to someone else and were not copied into the slice.
 	Sessions     func(deviceKey string) (matched []SessionFact, omitted int, err error)

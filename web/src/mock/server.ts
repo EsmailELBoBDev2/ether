@@ -3850,6 +3850,39 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return json({ ok: true });
     }
 
+    if (
+      method === "POST" &&
+      seg.length === 4 &&
+      seg[0] === "test" &&
+      seg[3] === "speed" &&
+      (seg[1] === "usenet" || seg[1] === "debrid")
+    ) {
+      const usenet = seg[1] === "usenet";
+      const providers = usenet ? state.config.usenet.providers : state.config.debrid?.providers;
+      if (
+        !providers?.some(
+          (provider) => provider.id === decodeURIComponent(seg[2]!) && provider.enabled,
+        )
+      ) {
+        return json({ status: "unavailable" });
+      }
+      const mbps = usenet ? 0.65 : 6.4;
+      const connections = usenet ? 4 : 1;
+      return json({
+        status: "ok",
+        seconds: 10,
+        mbps,
+        mbpsPerConnection: mbps / connections,
+        streamMbps: mbps * 8 * 0.8,
+        typicalMbps: 10.16,
+        connections,
+        opened: usenet ? 2 : 1,
+        refused: 0,
+        misses: usenet ? 3 : 0,
+        spareOnly: usenet,
+      });
+    }
+
     // Static routes
     switch (route) {
       case "GET /availability/titles":

@@ -18,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/logfile"
 	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/speedtest"
 	"github.com/braedonsaunders/ether/internal/updater"
 )
 
@@ -57,6 +58,8 @@ func (a *App) supportDeps() diagnostics.Deps {
 			return fact, nil
 		},
 		Viewer:        a.supportViewer,
+		UsenetSpeed:   a.supportUsenetSpeed,
+		DebridSpeed:   func() map[string]speedtest.Result { return a.supportProviderSpeed("debrid") },
 		LogExtract:    a.supportLogs,
 		ReleaseSearch: a.supportReleaseSearch,
 	}

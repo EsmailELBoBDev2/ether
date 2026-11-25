@@ -44,6 +44,9 @@ CREATE INDEX vault_tracks_updated ON vault_tracks(updated_at);
 	store.Register("vault", 4, `
 CREATE INDEX vault_nzb_name_size ON vault_releases(name,size) WHERE kind='usenet';
 `)
+	store.Register("vault", 5, `
+CREATE INDEX vault_speed_sample ON vault_releases(added DESC, key) WHERE kind='usenet' AND dead=0 AND segments>0;
+`)
 }
 
 const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
@@ -69,6 +72,29 @@ func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	e = json.Unmarshal([]byte(raw), &x.Info)
 	return x, e
 }
+
+// SpeedSampleKeys returns a bounded window of recent NZBs, largest first.
+func (v *library) SpeedSampleKeys(ctx context.Context) ([]Key, error) {
+	rows, err := v.DB.QueryContext(ctx, `SELECT key FROM (
+        SELECT key,size,added FROM vault_releases
+        WHERE kind='usenet' AND dead=0 AND segments>0
+        ORDER BY added DESC,key LIMIT 32
+    ) recent ORDER BY size DESC,added DESC,key LIMIT 4`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []Key
+	for rows.Next() {
+		var k Key
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 func (v *library) Entry(ctx context.Context, k Key) (Entry, error) {
 	return scan(v.DB.QueryRowContext(ctx, "SELECT "+columns+" FROM vault_releases WHERE key=? AND dead=0", k))
 }

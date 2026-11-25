@@ -806,6 +806,20 @@ export interface Bootstrap {
   /** False when the Plex app is off. Omitted means Plex is on. */
   plexEnabled?: boolean;
 }
+export interface ProviderSpeedResult {
+  status: string;
+  seconds?: number;
+  mbps?: number;
+  mbpsPerConnection?: number;
+  streamMbps?: number;
+  typicalMbps?: number;
+  connections?: number;
+  opened?: number;
+  refused?: number;
+  misses?: number;
+  spareOnly?: boolean;
+}
+
 export interface TestResult {
   ok: boolean;
   error?: string;

@@ -239,6 +239,7 @@ type App struct {
 	cacheConfig         atomic.Pointer[config.Cache]
 	engine              *stream.Engine
 	vault               vault.Store
+	providerSpeedRuns   sync.Map
 	indexers            *newznab.Manager
 	sites               *cardigann.Service // built-in indexer sites from owner-installed definitions
 	addons              *stremio.Service   // Stremio stream addons configured as indexers

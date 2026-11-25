@@ -140,13 +140,14 @@ type entry struct {
 	err error // construction error (missing key, unknown kind)
 	sem *limiter
 
-	mu        sync.Mutex
-	failures  int
-	until     time.Time
-	outageAt  time.Time
-	state     string // "", "backoff", "auth_failed"
-	lastError string
-	stats     ProviderStats
+	mu              sync.Mutex
+	failures        int
+	until           time.Time
+	outageAt        time.Time
+	state           string // "", "backoff", "auth_failed"
+	lastError       string
+	lastSpeedSample playbackSpeedSample
+	stats           ProviderStats
 	// Add refusals (ErrAddRefused): consecutive count, the latest, and the
 	// pause on new torrents they caused.
 	addRefusals int

@@ -63,19 +63,18 @@ func planProgrammes(ps []Programme) (programmePlan, error) {
 	return p, nil
 }
 
-// writeProgrammes makes the source's stored programmes equal the planned
-// guide. Stored rows are streamed once and compared with the incoming guide
-// (already encoded in memory), so the database side never holds the
-// source's schedule in RAM. Identical rows stay untouched; removed ones are
-// deleted, new or changed ones (end time or data, which carries the rating)
-// are upserted, in bounded batches.
-func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string, plan programmePlan, saved func(int)) (importWrites, error) {
+// writeProgrammes applies the source's planned guide and retains omitted
+// ended programmes inside their archive windows. It streams stored rows
+// once and compares them with the incoming guide already encoded in memory.
+// Identical rows stay untouched. Deletions and upserts run in bounded batches.
+func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string, plan programmePlan, now time.Time, archiveSince map[string]int64, saved func(int)) (importWrites, error) {
 	var w importWrites
 	in, order := plan.in, plan.order
 	rows, err := tx.QueryContext(ctx, `SELECT channel_id, start_ms, end_ms, data FROM livetv_programmes WHERE source_id=?`, sourceID)
 	if err != nil {
 		return w, err
 	}
+	nowMS := now.UnixMilli()
 	var gone []programmeKey
 	for rows.Next() {
 		var k programmeKey
@@ -90,6 +89,10 @@ func writeProgrammes(ctx context.Context, tx *sql.Tx, batch int, sourceID string
 		cur, ok := in[k]
 		switch {
 		case !ok:
+			if since, archived := archiveSince[k.channel]; archived && end <= nowMS && end >= since {
+				w.ProgrammesKept++
+				continue
+			}
 			gone = append(gone, k)
 		case cur.end == end && bytes.Equal(cur.data, data):
 			cur.seen = true // identical: nothing to write

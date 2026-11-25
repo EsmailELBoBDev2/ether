@@ -2665,7 +2665,27 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	if err != nil {
 		return src, err
 	}
-	pw, err := writeProgrammes(ctx, tx, batch, src.ID, progPlan, savedProgrammes)
+	// Guide rows are shared by every channel mapped to this source and guide
+	// ID. Keep the longest window among those channels, using the new lineup
+	// for the source being refreshed.
+	archiveSince := make(map[string]int64)
+	noteArchive := func(c Channel) {
+		if days := min(c.ArchiveDays(), 30); days > 0 && c.GuideID != "" && guideSource(c) == src.ID {
+			since := src.UpdatedAt.Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+			if previous, ok := archiveSince[c.GuideID]; !ok || since < previous {
+				archiveSince[c.GuideID] = since
+			}
+		}
+	}
+	for _, c := range old {
+		if c.SourceID != src.ID {
+			noteArchive(c)
+		}
+	}
+	for _, c := range stored {
+		noteArchive(c)
+	}
+	pw, err := writeProgrammes(ctx, tx, batch, src.ID, progPlan, src.UpdatedAt, archiveSince, savedProgrammes)
 	if err != nil {
 		return src, err
 	}
@@ -2794,38 +2814,51 @@ func guidePinned(previous Channel) bool {
 	return previous.GuideID != previous.ProviderGuideID
 }
 
-// guideAllow is the set of XMLTV channel ids a playlist source keeps.
-// Nil means every channel (a guide-only source). Stored guide ids are
-// included so an owner mapping survives the next refresh.
-func (s *Service) guideAllow(ctx context.Context, src Source, playlist []Channel, hasChannels bool) (map[string]struct{}, error) {
-	if !hasChannels {
-		return nil, nil
+// sourceGuideFilter bounds XMLTV imports by guide ID and time. A guide-only
+// source accepts every ID. Owner mappings contribute their archive windows.
+func (s *Service) sourceGuideFilter(ctx context.Context, src Source, playlist []Channel, hasChannels bool) (guideFilter, error) {
+	now := s.o.Now()
+	filter := guideFilter{From: now.Add(-guideLookback), Until: now.Add(guideLookahead), ArchiveFrom: map[string]time.Time{}}
+	if hasChannels {
+		filter.IDs = map[string]struct{}{}
 	}
-	ids := map[string]struct{}{}
-	add := func(id string) {
+	add := func(c Channel, id string) {
 		id = strings.ToLower(strings.TrimSpace(id))
-		if id != "" {
-			ids[id] = struct{}{}
+		if id == "" {
+			return
+		}
+		if filter.IDs != nil {
+			filter.IDs[id] = struct{}{}
+		}
+		if days := min(c.ArchiveDays(), 30); days > 1 {
+			from := now.Add(-time.Duration(days) * 24 * time.Hour)
+			if previous, ok := filter.ArchiveFrom[id]; !ok || from.Before(previous) {
+				filter.ArchiveFrom[id] = from
+			}
 		}
 	}
-	inPlaylist := make(map[string]bool, len(playlist))
+	inPlaylist := make(map[string]Channel, len(playlist))
 	for _, c := range playlist {
-		inPlaylist[c.ID] = true
-		add(c.GuideID)
+		inPlaylist[c.ID] = c
+		add(c, c.GuideID)
 	}
 	stored, err := s.allChannels(ctx)
 	if err != nil {
-		return nil, err
+		return guideFilter{}, err
 	}
 	for _, c := range stored {
-		if c.SourceID == src.ID && inPlaylist[c.ID] && !guidePinned(c) {
+		if guideSource(c) != src.ID {
 			continue
 		}
-		if guideSource(c) == src.ID {
-			add(c.GuideID)
+		if next, ok := inPlaylist[c.ID]; c.SourceID == src.ID && ok {
+			if guidePinned(c) {
+				add(next, c.GuideID)
+			}
+			continue
 		}
+		add(c, c.GuideID)
 	}
-	return ids, nil
+	return filter, nil
 }
 
 // nameCandidates returns guide ids whose normalized name matches a playlist
@@ -2979,11 +3012,10 @@ func (s *Service) ImportUpload(ctx context.Context, id, part string, body io.Rea
 			}
 		}
 	}
-	allow, err := s.guideAllow(ctx, src, cs, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
+	filter, err := s.sourceGuideFilter(ctx, src, cs, strings.TrimSpace(src.Playlist) != "" || src.PlaylistURL != "")
 	if err != nil {
 		return src, err
 	}
-	filter := guideFilter{From: s.o.Now().Add(-guideLookback), Until: s.o.Now().Add(guideLookahead), IDs: allow}
 	if len(cs) > 0 {
 		filter.Resolve = func(channels map[string]Channel, names map[string][]string) map[string]struct{} {
 			return nameCandidates(cs, channels, names)

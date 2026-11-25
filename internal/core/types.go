@@ -525,7 +525,9 @@ type User struct {
 // ClientCaps is what a Plex client can play, derived from X-Plex-* headers,
 // the client profile and its declared limits.
 type ClientCaps struct {
-	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an owner-forced empty profile set
+	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an explicit empty profile set
+	// DVProfileVariants restricts client-declared profiles to the exact input variants.
+	DVProfileVariants []string `json:"dvProfileVariants,omitempty"`
 	// DVProfilesForced records an owner-forced non-empty Dolby Vision profile list.
 	DVProfilesForced bool `json:"-"`
 	// ForcedOverrideApplied records a runtime declaration replaced by an owner edit.

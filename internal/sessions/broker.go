@@ -455,6 +455,7 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 	r.Caps.SubtitleCodecs = slices.Clone(r.Caps.SubtitleCodecs)
 	r.Caps.HDRFormats = slices.Clone(r.Caps.HDRFormats)
 	r.Caps.DVProfiles = slices.Clone(r.Caps.DVProfiles)
+	r.Caps.DVProfileVariants = slices.Clone(r.Caps.DVProfileVariants)
 	r.Caps.VideoLevels = maps.Clone(r.Caps.VideoLevels)
 	r.Caps.VideoMaxHeights = maps.Clone(r.Caps.VideoMaxHeights)
 	r.Caps.VideoProfiles = maps.Clone(r.Caps.VideoProfiles)

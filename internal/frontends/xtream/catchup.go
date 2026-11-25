@@ -47,7 +47,7 @@ func (i *instance) catchUp(w http.ResponseWriter, r *http.Request, l login) {
 	client.HLSContainers = []string{"mpegts"}
 	req := frontend.CatchUpRequest{ChannelID: channel.ID, Start: at, Duration: duration}
 	admission := frontend.PlanRequest{Viewer: l.viewer, Device: device, Protocol: "xtream", Channel: "archive/" + channel.ID, Caps: client}
-	if !i.admit(w, r.WithContext(ctx), l, admission) {
+	if primary := !xtreamplayback.ArchiveHLS(r) || !r.URL.Query().Has("session"); primary && !i.admit(w, r.WithContext(ctx), l, admission) {
 		return
 	}
 	xtreamplayback.ServeArchive(w, r.WithContext(ctx), i.host, host, l.credential, req, admission)

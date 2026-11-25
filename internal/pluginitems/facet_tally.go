@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -950,91 +951,175 @@ func addFieldTallyChange(delta map[fieldTallyKey]*fieldTallyChange, level, field
 	}
 }
 
-const recomputeSortProbeMinCount = 512
+// The write path keeps every tally row's representative exact. When a write
+// removes (or demotes) the item that is a value's representative, the new
+// representative is the best remaining holder, found by one of two plans:
+//
+//   - index-first: read the value's holders from plugin_item_fields_lookup and
+//     keep the best. Cost ~ cnt holders.
+//   - window probe: walk plugin_items_released newest-first and stop at the
+//     first holder. Cost ~ library / cnt items when holders are spread out.
+//
+// The probe runs only when the value is common enough for it to win
+// (cnt² ≥ 8·library, the read-side rule in shouldProbeNewestFromSortIndex).
+// It also starts at the removed representative's released, because no
+// remaining holder can rank above it, and it walks at most a bounded window
+// (8·library/cnt, at least repProbeMinWindow, never more than cnt items).
+// If the window holds no holder, the index-first plan answers exactly. A
+// recompute therefore never costs more than about twice the index-first read,
+// however the value's holders are spread across the library (#805).
+const (
+	repProbeMinCount  = 512
+	repProbeMinWindow = 256
+)
 
-func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field, text string, curCnt int64) (tallyItemRank, error) {
-	if curCnt >= recomputeSortProbeMinCount {
-		levelCol := `+i.level`
-		textCond := `f.v_text = ?`
-		textArgs := []any{text}
-		if isPG {
-			levelCol = `i.level`
-			textCond = `md5(f.v_text) = ? AND f.v_text = ?`
-			textArgs = []any{pgTextMD5(text), text}
-		}
-		var (
-			probeSQL  string
-			probeArgs []any
-		)
-		if level != "" {
-			probeSQL = `
+// repRecomputePlan is the plan for recomputing one value's representative.
+type repRecomputePlan struct {
+	// window is how many library items the probe may walk; 0 = index-first.
+	window int64
+	// below bounds the probe to released <= below when bounded is set.
+	below   int64
+	bounded bool
+}
+
+// planRepRecompute chooses the recompute plan for a value held by cnt items
+// in a library of libTotal indexed items. prev is the representative being
+// replaced (its stored rank); the stored representative always ranks at or
+// above every holder, so the probe may start there.
+func planRepRecompute(cnt, libTotal int64, prev tallyItemRank) repRecomputePlan {
+	if cnt < repProbeMinCount || cnt*cnt < 8*libTotal {
+		return repRecomputePlan{}
+	}
+	window := max(int64(repProbeMinWindow), (8*libTotal+cnt-1)/cnt)
+	p := repRecomputePlan{window: window}
+	if prev.valid() {
+		p.bounded = true
+		p.below = prev.released
+	}
+	return p
+}
+
+// libraryItemTotalTx returns the library's indexed item count from
+// plugin_item_tally (0 when the tally is empty).
+func libraryItemTotalTx(ctx context.Context, tx *sql.Tx, libID int64) (int64, error) {
+	var n int64
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(n), 0) FROM plugin_item_tally WHERE library_id = ?`, libID).Scan(&n)
+	return n, err
+}
+
+// repWindowProbeSQL builds the window probe: walk at most plan.window items
+// of the library newest-first (plugin_items_released), keep those at level
+// ("" = every indexed level) holding the value per holdsCond over alias f,
+// and return the first limit of them in released DESC, item_ref ASC order.
+// The level check sits outside the LIMIT so the walk is bounded in index
+// entries, not in matching rows. withFields adds the item's fields JSON,
+// read only for the returned rows.
+func repWindowProbeSQL(libID int64, level string, plan repRecomputePlan, holdsCond string, holdsArgs []any, withFields bool, limit int) (string, []any) {
+	var b strings.Builder
+	args := make([]any, 0, 5+len(holdsArgs))
+	b.WriteString(`
+SELECT w.item_ref, w.released, w.added_at, w.year`)
+	if withFields {
+		b.WriteString(`, (SELECT x.fields FROM plugin_items x WHERE x.item_ref = w.item_ref)`)
+	}
+	b.WriteString(`
+FROM (
+	SELECT i.item_ref, i.released, i.added_at, i.year, i.level
+	FROM plugin_items i
+	WHERE i.library_id = ?`)
+	args = append(args, libID)
+	if plan.bounded {
+		b.WriteString(` AND i.released <= ?`)
+		args = append(args, plan.below)
+	}
+	b.WriteString(`
+	ORDER BY i.released DESC, i.item_ref ASC
+	LIMIT ?
+) w
+WHERE `)
+	args = append(args, plan.window)
+	if level != "" {
+		b.WriteString(`w.level = ?`)
+		args = append(args, level)
+	} else {
+		b.WriteString(`w.level <> ''`)
+	}
+	b.WriteString(`
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = w.item_ref AND ` + holdsCond + `)
+ORDER BY w.released DESC, w.item_ref ASC
+LIMIT ` + strconv.Itoa(limit))
+	args = append(args, holdsArgs...)
+	return b.String(), args
+}
+
+// probeRepTx resolves the representative with the window probe. ok is false
+// when the probe cannot answer exactly (no holder inside the window, or a
+// released tie too wide to break cheaply); the caller then runs index-first.
+func probeRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level string, plan repRecomputePlan, holdsCond string, holdsArgs []any) (tallyItemRank, bool, error) {
+	if plan.window <= 0 {
+		return tallyItemRank{}, false, nil
+	}
+	q, args := repWindowProbeSQL(libID, level, plan, holdsCond, holdsArgs, false, 1)
+	var cand tallyItemRank
+	err := tx.QueryRowContext(ctx, q, args...).Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tallyItemRank{}, false, nil
+	}
+	if err != nil {
+		return tallyItemRank{}, false, err
+	}
+	// cand has the highest released of any holder. Break ties on
+	// (added_at DESC, year DESC, item_ref ASC) when other library items share
+	// cand.released; the tie query reads every such item, inside the window
+	// or not.
+	var tieCnt int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items WHERE library_id = ? AND released = ? LIMIT 257) s`,
+		libID, cand.released).Scan(&tieCnt); err != nil {
+		return tallyItemRank{}, false, err
+	}
+	if tieCnt <= 1 {
+		return cand, true, nil
+	}
+	if tieCnt > 256 {
+		return tallyItemRank{}, false, nil
+	}
+	levelCond := `+i.level <> ''`
+	tieArgs := []any{libID, cand.released}
+	if level != "" {
+		levelCond = `+i.level = ?`
+		tieArgs = append(tieArgs, level)
+	}
+	if isPG {
+		levelCond = strings.TrimPrefix(levelCond, "+")
+	}
+	tieArgs = append(tieArgs, holdsArgs...)
+	var exact tallyItemRank
+	err = tx.QueryRowContext(ctx, `
 SELECT i.item_ref, i.released, i.added_at, i.year
 FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 1`
-			probeArgs = append([]any{libID, level, field}, textArgs...)
-		} else {
-			probeSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 1`
-			probeArgs = append([]any{libID, field}, textArgs...)
-		}
-		var cand tallyItemRank
-		err := tx.QueryRowContext(ctx, probeSQL, probeArgs...).Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year)
-		if errors.Is(err, sql.ErrNoRows) {
-			return tallyItemRank{}, nil
-		}
-		if err != nil {
-			return tallyItemRank{}, err
-		}
-		// Confirm exact tie-breaking on (added_at DESC, year DESC, item_ref ASC)
-		// when more than one item in the library shares cand.released.
-		var tieCnt int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items WHERE library_id = ? AND released = ? LIMIT 257) s`,
-			libID, cand.released).Scan(&tieCnt); err != nil {
-			return tallyItemRank{}, err
-		}
-		if tieCnt <= 1 {
-			return cand, nil
-		}
-		if tieCnt <= 256 {
-			var (
-				tieSQL  string
-				tieArgs []any
-			)
-			if level != "" {
-				tieSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
+WHERE i.library_id = ? AND i.released = ? AND `+levelCond+`
+  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND `+holdsCond+`)
 ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
-LIMIT 1`
-				tieArgs = append([]any{libID, cand.released, level, field}, textArgs...)
-			} else {
-				tieSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + textCond + `)
-ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
-LIMIT 1`
-				tieArgs = append([]any{libID, cand.released, field}, textArgs...)
-			}
-			var exact tallyItemRank
-			err := tx.QueryRowContext(ctx, tieSQL, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.year)
-			if errors.Is(err, sql.ErrNoRows) {
-				return tallyItemRank{}, nil
-			}
-			return exact, err
-		}
+LIMIT 1`, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.year)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tallyItemRank{}, false, nil
+	}
+	if err != nil {
+		return tallyItemRank{}, false, err
+	}
+	return exact, true, nil
+}
+
+func recomputeFieldRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field, text string, plan repRecomputePlan) (tallyItemRank, error) {
+	holdsCond := `f.field = ? AND f.v_text = ?`
+	holdsArgs := []any{field, text}
+	if isPG {
+		holdsCond = `f.field = ? AND md5(f.v_text) = ? AND f.v_text = ?`
+		holdsArgs = []any{field, pgTextMD5(text), text}
+	}
+	if rep, ok, err := probeRepTx(ctx, tx, isPG, libID, level, plan, holdsCond, holdsArgs); err != nil || ok {
+		return rep, err
 	}
 
 	libCheck := `i.library_id + 0 = ?`
@@ -1114,6 +1199,7 @@ func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, isPG bool, libraryI
 		return []any{libID, k.level, k.field, k.text}
 	}
 	var emptied map[fieldTallyKey]bool
+	libTotal := int64(-1) // read on the first recompute
 	for _, k := range keys {
 		ch := delta[k]
 		deleted := false
@@ -1175,24 +1261,29 @@ WHERE `+keyCond+` AND `+repParamBeats, pArgs...); err != nil {
 		}
 
 		if len(ch.removedRefs) > 0 {
-			var curRep string
+			var cur tallyItemRank
 			var curCnt int64
 			err := tx.QueryRowContext(ctx, `
-SELECT rep_ref, cnt
+SELECT rep_ref, rep_released, rep_added, rep_year, cnt
 FROM plugin_item_field_tally
-WHERE `+keyCond, keyArgs(k)...).Scan(&curRep, &curCnt)
+WHERE `+keyCond, keyArgs(k)...).Scan(&cur.ref, &cur.released, &cur.addedAt, &cur.year, &curCnt)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 			if err != nil {
 				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
-			if curRep != "" {
-				if _, hit := ch.removedRefs[curRep]; !hit {
+			if cur.ref != "" {
+				if _, hit := ch.removedRefs[cur.ref]; !hit {
 					continue
 				}
 			}
-			winner, err := recomputeFieldRepTx(ctx, tx, isPG, libID, k.level, k.field, k.text, curCnt)
+			if libTotal < 0 {
+				if libTotal, err = libraryItemTotalTx(ctx, tx, libID); err != nil {
+					return nil, err
+				}
+			}
+			winner, err := recomputeFieldRepTx(ctx, tx, isPG, libID, k.level, k.field, k.text, planRepRecompute(curCnt, libTotal, cur))
 			if err != nil {
 				return nil, wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
@@ -1292,83 +1383,11 @@ func addPersonTallyChange(
 	}
 }
 
-func recomputePersonRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt, curCnt int64) (tallyItemRank, error) {
-	if curCnt >= recomputeSortProbeMinCount {
-		levelCol := `+i.level`
-		if isPG {
-			levelCol = `i.level`
-		}
-		var (
-			probeSQL  string
-			probeArgs []any
-		)
-		if level != "" {
-			probeSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 1`
-			probeArgs = []any{libID, level, field, vInt}
-		} else {
-			probeSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 1`
-			probeArgs = []any{libID, field, vInt}
-		}
-		var cand tallyItemRank
-		err := tx.QueryRowContext(ctx, probeSQL, probeArgs...).Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year)
-		if errors.Is(err, sql.ErrNoRows) {
-			return tallyItemRank{}, nil
-		}
-		if err != nil {
-			return tallyItemRank{}, err
-		}
-		var tieCnt int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items WHERE library_id = ? AND released = ? LIMIT 257) s`,
-			libID, cand.released).Scan(&tieCnt); err != nil {
-			return tallyItemRank{}, err
-		}
-		if tieCnt <= 1 {
-			return cand, nil
-		}
-		if tieCnt <= 256 {
-			var (
-				tieSQL  string
-				tieArgs []any
-			)
-			if level != "" {
-				tieSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
-LIMIT 1`
-				tieArgs = []any{libID, cand.released, level, field, vInt}
-			} else {
-				tieSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year
-FROM plugin_items i
-WHERE i.library_id = ? AND i.released = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.added_at DESC, i.year DESC, i.item_ref ASC
-LIMIT 1`
-				tieArgs = []any{libID, cand.released, field, vInt}
-			}
-			var exact tallyItemRank
-			err := tx.QueryRowContext(ctx, tieSQL, tieArgs...).Scan(&exact.ref, &exact.released, &exact.addedAt, &exact.year)
-			if errors.Is(err, sql.ErrNoRows) {
-				return tallyItemRank{}, nil
-			}
-			return exact, err
-		}
+func recomputePersonRepTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan) (tallyItemRank, error) {
+	holdsCond := `f.field = ? AND f.v_int <> 0 AND f.v_int = ? AND f.v_text <> ''`
+	holdsArgs := []any{field, vInt}
+	if rep, ok, err := probeRepTx(ctx, tx, isPG, libID, level, plan, holdsCond, holdsArgs); err != nil || ok {
+		return rep, err
 	}
 
 	libCheck := `i.library_id + 0 = ?`
@@ -1406,83 +1425,62 @@ LIMIT 1`
 	return out, err
 }
 
-func recomputePersonThumbTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt, curCnt int64, peopleFields []string) (tallyItemRank, error) {
+// probePersonThumbTx resolves a person's thumb representative with the window
+// probe: the best holder whose credit carries a portrait. ok is false when
+// the window cannot prove the answer exact.
+func probePersonThumbTx(ctx context.Context, tx *sql.Tx, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, bool, error) {
+	if plan.window <= 0 {
+		return tallyItemRank{}, false, nil
+	}
+	const probeRows = 16
+	q, args := repWindowProbeSQL(libID, level, plan,
+		`f.field = ? AND f.v_int <> 0 AND f.v_int = ?`, []any{field, vInt}, true, probeRows)
+	rows, err := tx.QueryContext(ctx, q, args...)
+	if err != nil {
+		return tallyItemRank{}, false, err
+	}
+	defer rows.Close()
+	var (
+		best    tallyItemRank
+		lastRel int64
+	)
+	for rows.Next() {
+		var cand tallyItemRank
+		var fieldsJSON sql.NullString
+		if err := rows.Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year, &fieldsJSON); err != nil {
+			return tallyItemRank{}, false, err
+		}
+		lastRel = cand.released
+		if best.valid() && cand.released < best.released {
+			// Every later holder, in the window or past it, has a strictly
+			// smaller released, so best is the exact winner.
+			return best, true, nil
+		}
+		if strings.Contains(strings.ToLower(fieldsJSON.String), "thumb") && itemHasPersonThumb(fieldsJSON.String, peopleFields, vInt) && cand.beats(best) {
+			best = cand
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return tallyItemRank{}, false, err
+	}
+	// Holders not returned (later rows, or past the window) have released at
+	// most lastRel, so a winner strictly above it is exact.
+	if best.valid() && best.released > lastRel {
+		return best, true, nil
+	}
+	return tallyItemRank{}, false, nil
+}
+
+func recomputePersonThumbTx(ctx context.Context, tx *sql.Tx, isPG bool, libID int64, level, field string, vInt int64, plan repRecomputePlan, peopleFields []string) (tallyItemRank, error) {
 	if len(peopleFields) == 0 {
 		return tallyItemRank{}, nil
+	}
+	if th, ok, err := probePersonThumbTx(ctx, tx, libID, level, field, vInt, plan, peopleFields); err != nil || ok {
+		return th, err
 	}
 	likeOp := `LIKE`
 	if isPG {
 		likeOp = `ILIKE`
-	}
-	if curCnt >= recomputeSortProbeMinCount {
-		levelCol := `+i.level`
-		if isPG {
-			levelCol = `i.level`
-		}
-		var (
-			probeSQL  string
-			probeArgs []any
-		)
-		if level != "" {
-			probeSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year, i.fields
-FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` = ?
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 16`
-			probeArgs = []any{libID, level, field, vInt}
-		} else {
-			probeSQL = `
-SELECT i.item_ref, i.released, i.added_at, i.year, i.fields
-FROM plugin_items i
-WHERE i.library_id = ? AND ` + levelCol + ` <> ''
-  AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int = ?)
-ORDER BY i.released DESC, i.item_ref ASC
-LIMIT 16`
-			probeArgs = []any{libID, field, vInt}
-		}
-		rows, err := tx.QueryContext(ctx, probeSQL, probeArgs...)
-		if err != nil {
-			return tallyItemRank{}, err
-		}
-		var (
-			best     tallyItemRank
-			lastRel  int64
-			rowCount int
-			probeErr error
-		)
-		for rows.Next() {
-			var cand tallyItemRank
-			var fieldsJSON string
-			if err := rows.Scan(&cand.ref, &cand.released, &cand.addedAt, &cand.year, &fieldsJSON); err != nil {
-				probeErr = err
-				break
-			}
-			rowCount++
-			lastRel = cand.released
-			if best.valid() && cand.released < best.released {
-				// All remaining rows have strictly smaller released, so best is
-				// provably the exact global winner.
-				rows.Close()
-				return best, nil
-			}
-			if strings.Contains(strings.ToLower(fieldsJSON), "thumb") && itemHasPersonThumb(fieldsJSON, peopleFields, vInt) && cand.beats(best) {
-				best = cand
-			}
-		}
-		if probeErr == nil {
-			probeErr = rows.Err()
-		}
-		rows.Close()
-		if probeErr != nil {
-			return tallyItemRank{}, probeErr
-		}
-		// If fewer than 16 rows exist in the bucket or we found a thumb whose
-		// released strictly exceeds the 16th row's released, best is exact.
-		if rowCount < 16 || (best.valid() && best.released > lastRel) {
-			return best, nil
-		}
 	}
 
 	libCheck := `i.library_id + 0 = ?`
@@ -1570,6 +1568,7 @@ func applyPersonTallyDeltaTx(ctx context.Context, tx *sql.Tx, isPG bool, library
 	repParamBeats := paramBeatsStoredSQL("rep")
 	thumbParamBeats := paramBeatsStoredSQL("thumb")
 	peopleFields := declaredPeopleFields(decl)
+	libTotal := int64(-1) // read on the first recompute
 
 	for _, k := range keys {
 		ch := delta[k]
@@ -1709,23 +1708,28 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ? AND `+thumbParamB
 		}
 
 		if len(ch.removedRepRefs) > 0 || len(ch.removedThumbRefs) > 0 {
-			var curRep, curThumb string
+			var curRep, curThumb tallyItemRank
 			var curCnt int64
 			err := tx.QueryRowContext(ctx, `
-SELECT rep_ref, thumb_ref, cnt
+SELECT rep_ref, rep_released, thumb_ref, thumb_released, cnt
 FROM plugin_item_person_tally
 WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
-				libID, k.level, k.field, k.vInt).Scan(&curRep, &curThumb, &curCnt)
+				libID, k.level, k.field, k.vInt).Scan(&curRep.ref, &curRep.released, &curThumb.ref, &curThumb.released, &curCnt)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 			if err != nil {
 				return wrapTallyItemErr(ch.sampleRef, k.field, err)
 			}
-			needRep := len(ch.removedRepRefs) > 0 && (curRep == "" || func() bool { _, hit := ch.removedRepRefs[curRep]; return hit }())
-			needThumb := len(ch.removedThumbRefs) > 0 && curThumb != "" && func() bool { _, hit := ch.removedThumbRefs[curThumb]; return hit }()
+			needRep := len(ch.removedRepRefs) > 0 && (curRep.ref == "" || func() bool { _, hit := ch.removedRepRefs[curRep.ref]; return hit }())
+			needThumb := len(ch.removedThumbRefs) > 0 && curThumb.ref != "" && func() bool { _, hit := ch.removedThumbRefs[curThumb.ref]; return hit }()
+			if (needRep || needThumb) && libTotal < 0 {
+				if libTotal, err = libraryItemTotalTx(ctx, tx, libID); err != nil {
+					return err
+				}
+			}
 			if needRep {
-				winner, err := recomputePersonRepTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, curCnt)
+				winner, err := recomputePersonRepTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curRep))
 				if err != nil {
 					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}
@@ -1739,7 +1743,7 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_int = ?`,
 				}
 			}
 			if needThumb {
-				winner, err := recomputePersonThumbTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, curCnt, peopleFields)
+				winner, err := recomputePersonThumbTx(ctx, tx, isPG, libID, k.level, k.field, k.vInt, planRepRecompute(curCnt, libTotal, curThumb), peopleFields)
 				if err != nil {
 					return wrapTallyItemErr(ch.sampleRef, k.field, err)
 				}

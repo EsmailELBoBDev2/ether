@@ -56,6 +56,8 @@ type qualityDeviceApp struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Protocol string `json:"protocol"`
+	// Devices are the registry device types the app runs on.
+	Devices []string `json:"devices,omitempty"`
 	// Aliases are the devices the app runs on and their other names, so
 	// searching "iPad" or "Shield" finds the app.
 	Aliases []string `json:"aliases,omitempty"`
@@ -129,6 +131,7 @@ func (a *App) handleQualityDevices(w http.ResponseWriter, r *http.Request) {
 			ID:       clientreg.AppID(item),
 			Name:     item.Name,
 			Protocol: item.Protocol,
+			Devices:  slices.Clone(item.Devices),
 			Aliases:  qualityAppAliases(item),
 		})
 	}
@@ -246,7 +249,84 @@ func (a *App) handleQualitySummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cfg := a.cfg.Read()
-	writeQualityJSON(w, http.StatusOK, resolver.SummarizeQuality(cfg.Quality, sumLibs, viewerID, device))
+	sum := resolver.SummarizeQuality(cfg.Quality, sumLibs, viewerID, device)
+	a.addSummaryDeviceCaps(r.Context(), cfg, &sum, sumLibs, viewerID, q.Get("device"))
+	writeQualityJSON(w, http.StatusOK, sum)
+}
+
+// addSummaryDeviceCaps fills each cell's device ceiling when the summary is
+// filtered to one device or app, evaluated exactly as Check one play does
+// (including a rule lifting an Android phone's 1080p ceiling), so a cell
+// never says 4K for a browser that tops out at 1080p. A kind of device
+// ("Phones & tablets") covers several and gets none.
+func (a *App) addSummaryDeviceCaps(ctx context.Context, cfg config.Config, sum *resolver.QualitySummary, libs []resolver.SummaryLibrary, viewerID int64, rawDevice string) {
+	field, _, _ := strings.Cut(strings.TrimSpace(rawDevice), ":")
+	if field != "type" && field != "app" && field != "client" {
+		return
+	}
+	client, exactID, ok := a.qualityClientByID(ctx, strings.TrimSpace(rawDevice))
+	if !ok {
+		return
+	}
+	var u *core.User
+	if viewerID > 0 && a.users != nil {
+		if loaded, err := a.users.ActiveUser(ctx, viewerID); err == nil {
+			u = loaded
+		}
+	}
+	var where [2]core.ClientCaps // at home, away
+	for i, remote := range []bool{false, true} {
+		declared, _, err := qualityClientCaps(ctx, cfg, client, exactID, remote, u)
+		if err != nil {
+			return
+		}
+		where[i] = declared
+	}
+	for ri := range sum.Rows {
+		row := &sum.Rows[ri]
+		var lib resolver.SummaryLibrary
+		for _, l := range libs {
+			if l.ID == row.LibraryID {
+				lib = l
+				break
+			}
+		}
+		kindOf := func(kind string) string {
+			if kind != "" {
+				return kind
+			}
+			if lib.MediaType == core.TypeShow {
+				return config.KindEpisode
+			}
+			return config.KindMovie
+		}
+		libID := core.LibraryID(row.LibraryID)
+		plugin := ""
+		if lib.ChosenByPlugin {
+			plugin = lib.Plugin
+		}
+		for ci := range row.Cells {
+			cells := &row.Cells[ci]
+			for i, cell := range []*resolver.QualitySummaryCell{&cells.Home, &cells.Away} {
+				ans := resolver.ExplainQuality(resolver.QualityQuestion{
+					Quality:        cfg.Quality,
+					Caps:           where[i],
+					User:           u,
+					Kind:           kindOf(cells.Kind),
+					InLibrary:      func(id core.LibraryID) bool { return id == libID },
+					ChosenByPlugin: plugin,
+				})
+				height := where[i].MaxHeight
+				for _, l := range ans.Layers {
+					if l.Kind == resolver.LayerAndroidLift && l.MaxHeight > 0 {
+						height = l.MaxHeight
+					}
+				}
+				cell.DeviceMaxHeight = height
+				cell.DeviceMaxBitrateKbps = where[i].MaxBitrateKbps
+			}
+		}
+	}
 }
 
 func (a *App) handleQualityExplain(w http.ResponseWriter, r *http.Request) {
@@ -266,63 +346,7 @@ func (a *App) handleQualityExplain(w http.ResponseWriter, r *http.Request) {
 		// Generic client with no assumed app.
 	case in.ClientID != "":
 		found := false
-		// First check seen devices (exact device id from /quality/devices).
-		if a.db != nil {
-			if seen, err := a.seenPlaybackDevices(r.Context()); err == nil {
-				for _, d := range seen {
-					if d.ClientIdentifier == in.ClientID {
-						exactClientID = d.ClientIdentifier
-						client = qualityClient{
-							ID:       d.ClientIdentifier,
-							Name:     d.Name,
-							Product:  d.App,
-							Platform: d.Platform,
-							Device:   d.Device,
-						}
-						found = true
-						break
-					}
-				}
-			}
-		}
-		if !found {
-			for _, c := range qualityClients() {
-				if c.ID == in.ClientID {
-					client, found = c, true
-					break
-				}
-			}
-		}
-		if !found {
-			// Accept "<field>:<id>" from /quality/devices as well.
-			if dev, ok := resolver.ParseSummaryDevice(in.ClientID); ok && dev.Field != "" {
-				switch dev.Field {
-				case "type":
-					for _, d := range clientreg.Devices() {
-						if d.Name == dev.Value {
-							client = qualityClient{ID: in.ClientID, Name: d.Name, Product: d.Identity.Product, Platform: d.Identity.Platform, Device: d.Identity.Device}
-							found = true
-							break
-						}
-					}
-				case "app":
-					for _, appItem := range clientreg.Apps() {
-						if clientreg.AppID(appItem) == dev.Value {
-							prod := appItem.Identity.Product
-							if prod == "" {
-								prod = appItem.Product
-							}
-							if prod == "" {
-								prod = appItem.Name
-							}
-							client = qualityClient{ID: in.ClientID, Name: appItem.Name, Product: prod, Platform: appItem.Identity.Platform, Device: appItem.Identity.Device, Protocol: core.Protocol(appItem.Protocol)}
-							found = true
-							break
-						}
-					}
-				}
-			}
-		}
+		client, exactClientID, found = a.qualityClientByID(r.Context(), in.ClientID)
 		if !found {
 			writeQualityError(w, http.StatusBadRequest, "unknown_client", "no such device or app")
 			return
@@ -393,25 +417,10 @@ func (a *App) handleQualityExplain(w http.ResponseWriter, r *http.Request) {
 	cfg := a.cfg.Read()
 	// The Plex request path: registry, owner App compatibility edits and request
 	// headers (remote bitrate caps now live in quality rules).
-	devName := client.Name
-	if devName == "" {
-		devName = client.Device
-	}
-	pr := &plex.Request{ClientID: exactClientID, Product: client.Product, Platform: client.Platform, Device: client.Device, DeviceName: devName, Remote: in.Remote, User: u}
-	declared := pr.ClientCapsWith(0, cfg.Clients.Overrides)
-	builtin := pr.ClientCapsWith(0, nil)
-	if frontendHostPolicy(client.Protocol).ProfileQualityEvaluation {
-		info := caps.DeviceInfo{Protocol: client.Protocol, ClientID: exactClientID, Product: client.Product, Platform: client.Platform, Device: client.Device, Remote: in.Remote}
-		neutral, err := (caps.Builder{}).Build(r.Context(), info, caps.DeviceProfile{}, nil, "")
-		if err != nil {
-			writeQualityError(w, http.StatusBadRequest, "bad_client", "cannot evaluate app")
-			return
-		}
-		builtin = playbackFloor(neutral, nil)
-		declared = playbackFloor(neutral, cfg.Clients.Overrides)
-	} else if client.Product == "" {
-		declared = core.ClientCaps{ClientID: exactClientID, Remote: in.Remote, HDR10: true, DolbyVision: true}
-		builtin = declared
+	declared, builtin, err := qualityClientCaps(r.Context(), cfg, client, exactClientID, in.Remote, u)
+	if err != nil {
+		writeQualityError(w, http.StatusBadRequest, "bad_client", "cannot evaluate app")
+		return
 	}
 
 	q := resolver.QualityQuestion{
@@ -429,6 +438,73 @@ func (a *App) handleQualityExplain(w http.ResponseWriter, r *http.Request) {
 		q.RemoteDisabled = policy.RemoteDisabled
 	}
 	writeQualityJSON(w, http.StatusOK, resolver.ExplainQuality(q))
+}
+
+// qualityClientByID resolves a Check one play / summary device id: a seen
+// device id (bare or "client:<id>"), a built-in client id, or a
+// "type:<name>" / "app:<id>" from /quality/devices. exact is the seen
+// device id when it is one.
+func (a *App) qualityClientByID(ctx context.Context, id string) (client qualityClient, exact string, found bool) {
+	if a.db != nil {
+		if seen, err := a.seenPlaybackDevices(ctx); err == nil {
+			want := strings.TrimPrefix(id, "client:")
+			for _, d := range seen {
+				if d.ClientIdentifier == want {
+					return qualityClient{ID: d.ClientIdentifier, Name: d.Name, Product: d.App, Platform: d.Platform, Device: d.Device}, d.ClientIdentifier, true
+				}
+			}
+		}
+	}
+	for _, c := range qualityClients() {
+		if c.ID == id {
+			return c, "", true
+		}
+	}
+	dev, ok := resolver.ParseSummaryDevice(id)
+	if !ok {
+		return qualityClient{}, "", false
+	}
+	switch dev.Field {
+	case "type":
+		for _, d := range clientreg.Devices() {
+			if d.Name == dev.Value {
+				return qualityClient{ID: id, Name: d.Name, Product: d.Identity.Product, Platform: d.Identity.Platform, Device: d.Identity.Device}, "", true
+			}
+		}
+	case "app":
+		for _, appItem := range clientreg.Apps() {
+			if clientreg.AppID(appItem) == dev.Value {
+				prod := firstNonEmptyStr(appItem.Identity.Product, appItem.Product, appItem.Name)
+				return qualityClient{ID: id, Name: appItem.Name, Product: prod, Platform: appItem.Identity.Platform, Device: appItem.Identity.Device, Protocol: core.Protocol(appItem.Protocol)}, "", true
+			}
+		}
+	}
+	return qualityClient{}, "", false
+}
+
+// qualityClientCaps is the client as playback declares it (registry, the
+// owner's App compatibility edits, request headers) and as built in.
+func qualityClientCaps(ctx context.Context, cfg config.Config, client qualityClient, exactClientID string, remote bool, u *core.User) (declared, builtin core.ClientCaps, err error) {
+	devName := client.Name
+	if devName == "" {
+		devName = client.Device
+	}
+	pr := &plex.Request{ClientID: exactClientID, Product: client.Product, Platform: client.Platform, Device: client.Device, DeviceName: devName, Remote: remote, User: u}
+	declared = pr.ClientCapsWith(0, cfg.Clients.Overrides)
+	builtin = pr.ClientCapsWith(0, nil)
+	if frontendHostPolicy(client.Protocol).ProfileQualityEvaluation {
+		info := caps.DeviceInfo{Protocol: client.Protocol, ClientID: exactClientID, Product: client.Product, Platform: client.Platform, Device: client.Device, Remote: remote}
+		neutral, err := (caps.Builder{}).Build(ctx, info, caps.DeviceProfile{}, nil, "")
+		if err != nil {
+			return core.ClientCaps{}, core.ClientCaps{}, err
+		}
+		builtin = playbackFloor(neutral, nil)
+		declared = playbackFloor(neutral, cfg.Clients.Overrides)
+	} else if client.Product == "" {
+		declared = core.ClientCaps{ClientID: exactClientID, Remote: remote, HDR10: true, DolbyVision: true}
+		builtin = declared
+	}
+	return declared, builtin, nil
 }
 
 func writeQualityJSON(w http.ResponseWriter, code int, v any) {

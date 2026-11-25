@@ -1236,7 +1236,10 @@ export interface QualityDevices {
   /** Kinds of device: "tv", "mobile", "computer". `aliases` are extra search words ("iPad", "Shield"). */
   groups: { id: string; name: string; aliases?: string[] }[] | null;
   types: { id: string; name: string; group: string; aliases?: string[] }[] | null;
-  /** devices: the device types the app runs on; `aliases`: its other names. */
+  /**
+   * devices: the device types the app runs on. aliases: those devices and
+   * their other names, for search ("iPad" finds Swiftfin).
+   */
   apps:
     | { id: string; name: string; protocol?: string; devices?: string[]; aliases?: string[] }[]
     | null;
@@ -1265,6 +1268,13 @@ export interface QualitySummaryCell {
   stereo: boolean;
   limitRuleIds: string[];
   partialRuleIds: string[];
+  /**
+   * The filtered device's own ceiling (after a rule lifts an Android phone's
+   * 1080p), only when the summary is filtered to one device or app; absent =
+   * none. The play gets the lower of this and maxHeight / maxBitrateKbps.
+   */
+  deviceMaxHeight?: number;
+  deviceMaxBitrateKbps?: number;
 }
 
 export interface QualitySummaryCellPair {

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -50,11 +51,25 @@ func TestValidateProxyEntryAcceptsAddressesRangesAndNames(t *testing.T) {
 
 func TestProxyPrefixesResolvesContainerNames(t *testing.T) {
 	fakeProxyDNS(t, map[string][]netip.Addr{
-		"nginx-proxy-manager": {netip.MustParseAddr("172.18.0.2")},
+		"nginx-proxy-manager": {
+			netip.MustParseAddr("::ffff:172.18.0.2"),
+			netip.MustParseAddr("172.18.0.2"),
+			netip.MustParseAddr("fd00::2"),
+			netip.MustParseAddr("fe80::1"),
+			netip.MustParseAddr("::ffff:203.0.113.1"),
+			netip.MustParseAddr("2001:db8::1"),
+			netip.MustParseAddr("100.64.1.2"),
+		},
+		"public-only": {netip.MustParseAddr("203.0.113.1")},
 	})
-	got := ProxyPrefixes([]string{"192.168.1.5", "nginx-proxy-manager", "gone-container"})
-	want := []netip.Prefix{netip.MustParsePrefix("192.168.1.5/32"), netip.MustParsePrefix("172.18.0.2/32")}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	got := ProxyPrefixes([]string{"192.168.1.5", "nginx-proxy-manager", "gone-container", "public-only"})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("192.168.1.5/32"),
+		netip.MustParsePrefix("172.18.0.2/32"),
+		netip.MustParsePrefix("fd00::2/128"),
+		netip.MustParsePrefix("fe80::1/128"),
+	}
+	if !slices.Equal(got, want) {
 		t.Fatalf("ProxyPrefixes = %v, want %v", got, want)
 	}
 
@@ -70,45 +85,68 @@ func TestProxyPrefixesResolvesContainerNames(t *testing.T) {
 func TestProxyNameFollowsTheContainerToANewAddress(t *testing.T) {
 	table := map[string][]netip.Addr{"npm": {netip.MustParseAddr("172.18.0.2")}}
 	mu := fakeProxyDNS(t, table)
-	if got := proxyHostPrefixes("npm"); len(got) != 1 || got[0].Addr() != netip.MustParseAddr("172.18.0.2") {
+	entries := []string{"npm"}
+	if got := ProxyPrefixes(entries); len(got) != 1 || got[0].Addr() != netip.MustParseAddr("172.18.0.2") {
 		t.Fatalf("first lookup = %v", got)
 	}
 
-	// The container is recreated with a new address. Once the cached answer
-	// expires, the next read starts a refresh and a later read sees it.
+	refresh := func() {
+		t.Helper()
+		proxyHosts.mu.Lock()
+		proxyHosts.entries["npm"].expires = time.Unix(1, 0)
+		proxyHosts.mu.Unlock()
+		_ = ProxyPrefixes(entries)
+		proxyHosts.mu.Lock()
+		ready := proxyHosts.entries["npm"].ready
+		proxyHosts.mu.Unlock()
+		<-ready
+	}
+
 	mu.Lock()
 	table["npm"] = []netip.Addr{netip.MustParseAddr("172.18.0.9")}
 	mu.Unlock()
-	proxyHosts.mu.Lock()
-	proxyHosts.entries["npm"].expires = time.Now().Add(-time.Second)
-	proxyHosts.mu.Unlock()
-	_ = proxyHostPrefixes("npm")
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		got := proxyHostPrefixes("npm")
-		if len(got) == 1 && got[0].Addr() == netip.MustParseAddr("172.18.0.9") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the container moved, prefixes = %v", got)
-		}
-		time.Sleep(5 * time.Millisecond)
+	refresh()
+	if got := ProxyPrefixes(entries); len(got) != 1 || got[0].Addr() != netip.MustParseAddr("172.18.0.9") {
+		t.Fatalf("after the container moved, prefixes = %v", got)
 	}
 
-	// The container is removed: its name must stop granting trust.
 	mu.Lock()
 	delete(table, "npm")
 	mu.Unlock()
-	proxyHosts.mu.Lock()
-	proxyHosts.entries["npm"].expires = time.Now().Add(-time.Second)
-	proxyHosts.mu.Unlock()
-	_ = proxyHostPrefixes("npm")
-	deadline = time.Now().Add(2 * time.Second)
-	for len(proxyHostPrefixes("npm")) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("a removed container is still trusted")
-		}
-		time.Sleep(5 * time.Millisecond)
+	refresh()
+	if got := ProxyPrefixes(entries); len(got) != 0 {
+		t.Fatalf("a removed container is still trusted: %v", got)
+	}
+}
+
+func TestProxyNameTimeoutCannotExtendLastGoodAnswer(t *testing.T) {
+	fakeProxyDNS(t, map[string][]netip.Addr{"npm": {netip.MustParseAddr("172.18.0.2")}})
+	entries := []string{"npm"}
+	good := ProxyPrefixes(entries)
+	if len(good) != 1 {
+		t.Fatalf("initial lookup = %v", good)
+	}
+	entry := proxyHosts.entries["npm"]
+	refresh := func() {
+		t.Helper()
+		entry.ready = make(chan struct{})
+		resolveProxyHost("npm", entry, func(context.Context, string) ([]netip.Addr, error) {
+			return nil, &net.DNSError{IsTimeout: true}
+		})
+	}
+	lastGoodDeadline := entry.staleUntil
+	refresh()
+	if got := ProxyPrefixes(entries); !slices.Equal(got, good) || entry.staleUntil != lastGoodDeadline {
+		t.Fatalf("timeout changed the last good answer or its deadline: %v", got)
+	}
+
+	entry.staleUntil = time.Time{}
+	if got := ProxyPrefixes(entries); len(got) != 0 {
+		t.Fatalf("a stale answer is still trusted between retries: %v", got)
+	}
+	refresh()
+	if len(entry.prefixes) != 0 {
+		t.Fatal("timeout retained an expired answer")
 	}
 }
 

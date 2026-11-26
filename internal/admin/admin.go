@@ -378,6 +378,7 @@ type Handler struct {
 	linkPins       *pinHandles
 	authLimit      *authLimiter
 	loginBodySlots chan struct{}
+	proxyHintNames proxyHintCache
 }
 
 // NewHandler builds the admin handler. It panics when Deps.Config is nil.

@@ -27,10 +27,12 @@ var lookupProxyHost = func(ctx context.Context, host string) ([]netip.Addr, erro
 }
 
 type proxyHostEntry struct {
-	prefixes   []netip.Prefix
-	expires    time.Time
-	refreshing bool
-	ready      chan struct{}
+	prefixes     []netip.Prefix
+	expires      time.Time
+	staleUntil   time.Time
+	initialUntil time.Time
+	refreshing   bool
+	ready        chan struct{}
 }
 
 var proxyHosts struct {
@@ -44,8 +46,9 @@ var errProxyEntry = errors.New("enter an IP address, a CIDR range or a host or c
 // an address: letters, digits, '.', '-' and '_', starting with a letter or
 // digit and containing at least one letter.
 func proxyHostName(raw string) (string, bool) {
-	s := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
-	if s == "" || len(s) > 253 || strings.Contains(s, "..") {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	s := strings.TrimSuffix(name, ".")
+	if s == "" || len(s) > 253 || strings.Contains(name, "..") {
 		return "", false
 	}
 	letter := false
@@ -65,7 +68,7 @@ func proxyHostName(raw string) (string, bool) {
 	if _, err := netip.ParseAddr(s); err == nil {
 		return "", false
 	}
-	return s, true
+	return name, true
 }
 
 // ValidateProxyEntry accepts what ProxyPrefixes can trust: an IP address, a
@@ -96,73 +99,79 @@ func HasProxyHostNames(entries []string) bool {
 	return false
 }
 
-// proxyHostPrefixes returns the addresses a proxy name resolves to, as
-// single-address prefixes. The first lookup of a name waits up to
-// proxyLookupBudget; afterwards the last answer is served while a refresh
-// runs. A name that does not resolve grants no trust.
-func proxyHostPrefixes(name string) []netip.Prefix {
-	now := time.Now()
+// startProxyHost starts a lookup on first use or refreshes an expired entry.
+// Only callers sharing the initial lookup may wait for it.
+func startProxyHost(name string) (*proxyHostEntry, <-chan struct{}) {
 	proxyHosts.mu.Lock()
+	defer proxyHosts.mu.Unlock()
 	if proxyHosts.entries == nil {
 		proxyHosts.entries = make(map[string]*proxyHostEntry)
 	}
 	e := proxyHosts.entries[name]
+	now := time.Now()
 	if e == nil {
-		e = &proxyHostEntry{refreshing: true, ready: make(chan struct{})}
+		e = &proxyHostEntry{initialUntil: now.Add(proxyLookupBudget)}
 		proxyHosts.entries[name] = e
-		proxyHosts.mu.Unlock()
-		go resolveProxyHost(name, e)
-		select {
-		case <-e.ready:
-		case <-time.After(proxyLookupBudget):
-		}
-		proxyHosts.mu.Lock()
-		out := e.prefixes
-		proxyHosts.mu.Unlock()
-		return out
 	}
-	out := e.prefixes
-	if now.After(e.expires) && !e.refreshing {
+	if !e.refreshing && !now.Before(e.expires) {
 		e.refreshing = true
 		e.ready = make(chan struct{})
-		go resolveProxyHost(name, e)
+		go resolveProxyHost(name, e, lookupProxyHost)
 	}
-	proxyHosts.mu.Unlock()
-	return out
+	if e.expires.IsZero() && now.Before(e.initialUntil) {
+		return e, e.ready
+	}
+	return e, nil
 }
 
-func resolveProxyHost(name string, e *proxyHostEntry) {
+// localProxyIP is deliberately narrower than LAN: directly attached public
+// subnets and CGNAT do not qualify for trust based on a DNS answer.
+func localProxyIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
+func resolveProxyHost(name string, e *proxyHostEntry, lookup func(context.Context, string) ([]netip.Addr, error)) {
 	ctx, cancel := context.WithTimeout(context.Background(), proxyLookupBudget)
-	addrs, err := lookupProxyHost(ctx, name)
-	cancel()
+	defer cancel()
+	addrs, err := lookup(ctx, name)
 	var prefixes []netip.Prefix
-	seen := make(map[netip.Addr]struct{})
-	for _, a := range addrs {
-		a = a.Unmap().WithZone("")
-		if !a.IsValid() || a.IsUnspecified() {
-			continue
+	if err == nil && ctx.Err() == nil {
+		seen := make(map[netip.Addr]struct{})
+		for _, a := range addrs {
+			a = a.Unmap().WithZone("")
+			if !localProxyIP(a) {
+				continue
+			}
+			if _, dup := seen[a]; dup {
+				continue
+			}
+			seen[a] = struct{}{}
+			prefixes = append(prefixes, netip.PrefixFrom(a, a.BitLen()))
 		}
-		if _, dup := seen[a]; dup {
-			continue
-		}
-		seen[a] = struct{}{}
-		prefixes = append(prefixes, netip.PrefixFrom(a, a.BitLen()))
 	}
-	proxyHosts.mu.Lock()
-	ttl := proxyHostTTL
-	if err != nil || len(prefixes) == 0 {
-		ttl = proxyHostRetry
-	}
-	// A name that no longer exists stops being trusted at once. A lookup
-	// that merely timed out keeps the last answer until the retry.
 	var dnsErr *net.DNSError
-	if err == nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound) || len(e.prefixes) == 0 {
+	notFound := errors.As(err, &dnsErr) && dnsErr.IsNotFound
+	timedOut := !notFound && (errors.Is(err, context.DeadlineExceeded) ||
+		(dnsErr != nil && dnsErr.IsTimeout))
+
+	proxyHosts.mu.Lock()
+	defer proxyHosts.mu.Unlock()
+	now := time.Now()
+	e.expires = now.Add(proxyHostRetry)
+	switch {
+	case len(prefixes) > 0:
 		e.prefixes = prefixes
+		e.expires = now.Add(proxyHostTTL)
+		// Permit one retry window and the time for that lookup. Further
+		// failures cannot move this deadline past the last good answer.
+		e.staleUntil = e.expires.Add(proxyHostRetry + proxyLookupBudget)
+	case !timedOut || !now.Before(e.staleUntil):
+		e.prefixes = nil
+		e.staleUntil = time.Time{}
 	}
-	e.expires = time.Now().Add(ttl)
 	e.refreshing = false
 	close(e.ready)
-	proxyHosts.mu.Unlock()
 }
 
 // resetProxyHosts forgets every resolved name. Intended for tests.

@@ -276,7 +276,12 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
         ? rawErr
         : (errObj?.message ?? t("Request failed ({status})", { status: res.status }));
     const errCode = errObj?.code ?? body?.code ?? "http";
-    const error = new ApiError(res.status, errCode, errMsg, errObj?.fields);
+    const fields = errObj?.fields?.map((field) =>
+      field.field === "server.trustedProxyCIDRs"
+        ? { ...field, message: t("Enter a specific proxy IP address, subnet, or host name.") }
+        : field,
+    );
+    const error = new ApiError(res.status, errCode, errMsg, fields);
     error.phase = errObj?.phase;
     error.body = data;
     throw error;

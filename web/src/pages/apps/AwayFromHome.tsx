@@ -61,7 +61,10 @@ export function AwayFromHome() {
   }, [config.data, plexKeys, serverKeys]);
   const { draft, setDraft, dirty, reset } = useDraft(saved);
   const hint = useAsync(
-    () => apiFetch<{ proxies: UntrustedProxy[] }>("/server/proxy-hint"),
+    (signal) =>
+      config.data
+        ? apiFetch<{ proxies: UntrustedProxy[] }>("/server/proxy-hint", { signal })
+        : Promise.resolve({ proxies: [] }),
     [config.data],
   );
   const [errors, setErrors] = useState<Record<string, string>>({});

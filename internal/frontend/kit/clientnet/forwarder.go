@@ -35,7 +35,7 @@ var forwarders struct {
 // noteUntrustedForwarder records peer when r names a public client address in
 // a forwarding header. The header is not believed; it only suggests a proxy.
 func noteUntrustedForwarder(r *http.Request, peer netip.Addr) {
-	if peer.IsLoopback() || !LAN(peer) || !forwardsPublicClient(r) {
+	if peer.IsLoopback() || !localProxyIP(peer) || !forwardsPublicClient(r) {
 		return
 	}
 	now := time.Now()
@@ -85,7 +85,7 @@ func forwardsPublicClient(r *http.Request) bool {
 	}
 	for _, hop := range hops {
 		ip, err := netip.ParseAddr(strings.TrimSpace(hop))
-		if err == nil && !LAN(ip.Unmap()) {
+		if err == nil && ip.Unmap().IsGlobalUnicast() && !LAN(ip.Unmap()) {
 			return true
 		}
 	}

@@ -61,7 +61,7 @@ func (h *Handler) ownerAccess(r *http.Request, token string) (bool, int64) {
 // isLocalOrLAN classifies the real client behind a trusted proxy.
 func isLocalOrLAN(r *http.Request, trusted ...netip.Prefix) bool {
 	ip, _ := identity.ClientNet(r, trusted...)
-	return ip.IsValid() && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified())
+	return ip.IsValid() && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 // localSetupHosts are DNS suffixes that only resolve on the local network.
@@ -104,7 +104,19 @@ func SetupOpen(setupComplete bool, r *http.Request, trusted ...netip.Prefix) boo
 // and the browser is on the local network, addressing this server by a
 // local name.
 func setupOpen(cfgSetupComplete bool, r *http.Request, trusted ...netip.Prefix) bool {
-	return !cfgSetupComplete && isLocalOrLAN(r, trusted...) && localHost(r)
+	if cfgSetupComplete || !localHost(r) {
+		return false
+	}
+	// If a forwarding peer loses trust (including during DNS refresh), its
+	// own LAN address is not evidence that the visitor is local.
+	if !identity.TrustedPeer(r, trusted...) {
+		for _, name := range []string{"X-Forwarded-For", "Forwarded", "X-Real-IP"} {
+			if len(r.Header.Values(name)) > 0 {
+				return false
+			}
+		}
+	}
+	return isLocalOrLAN(r, trusted...)
 }
 
 // requireAuth implements the admin access policy:
@@ -128,11 +140,12 @@ func (h *Handler) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !h.setupClosed(r) {
-			if setupOpen(false, r, h.proxyPrefixes()...) {
+			trusted := h.proxyPrefixes()
+			if setupOpen(false, r, trusted...) {
 				next.ServeHTTP(w, withAccess(r, Access{SetupPlayback: setupPlaybackHost(r)}))
 				return
 			}
-			if isLocalOrLAN(r, h.proxyPrefixes()...) {
+			if !localHost(r) && isLocalOrLAN(r, trusted...) {
 				writeError(w, http.StatusForbidden, "setup_local_host", "open setup at this server's IP address or local hostname (for example http://192.168.1.10:32400/ether/) until it is complete")
 				return
 			}
@@ -200,7 +213,7 @@ func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) proxyPrefixes() []netip.Prefix {
-	return identity.ProxyPrefixes(h.deps.Config.Get().Server.TrustedProxyCIDRs)
+	return identity.ProxyPrefixes(h.deps.Config.TrustedProxyCIDRs())
 }
 
 // setupClosed closes tokenless access immediately once a local owner exists,

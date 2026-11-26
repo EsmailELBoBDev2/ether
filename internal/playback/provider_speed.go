@@ -31,7 +31,15 @@ func (m *Manager) observeThroughput(key core.RatingKey, protocol string, at time
 	if len(*set) == maxSamples {
 		*set = slices.Delete(*set, 0, 1)
 	}
-	*set = append(*set, throughputSample{key, protocol, speedtest.Observation{at, int64(readBps), int64(mediaBps)}})
+	*set = append(*set, throughputSample{
+		key:      key,
+		protocol: protocol,
+		Observation: speedtest.Observation{
+			At:            at,
+			SourceReadBps: int64(readBps),
+			MediaBps:      int64(mediaBps),
+		},
+	})
 }
 
 // ProviderSpeedEvidence reuses the playback rate estimator's bounded window

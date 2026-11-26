@@ -647,7 +647,8 @@ describe("Source routing", () => {
     });
     // Wait for the saved draft to reload before making another edit.
     await waitFor(
-      () => expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
+      () =>
+        expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
       WAIT,
     );
     // "Always cached debrid" saves debrid with the always flag.

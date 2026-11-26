@@ -3,7 +3,6 @@ package catalog
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"math"
 	"math/bits"
 	"slices"
@@ -370,12 +369,9 @@ func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 	}
 	var titles []*entry
 	at := map[int64]*entry{}
-	for lo, done := int64(-1<<63), false; !done; {
-		var hi int64
-		err := c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE key>? ORDER BY key LIMIT 1 OFFSET ?`, lo, mirrorSnapshotChunk-1).Scan(&hi)
-		if errors.Is(err, sql.ErrNoRows) {
-			hi, done = 1<<63-1, true
-		} else if err != nil {
+	for lo := int64(core.MovieKey(0)) - 1; ; {
+		hi, done, err := titleChunkEnd(ctx, c.db, lo)
+		if err != nil {
 			return nil, err
 		}
 		rows, err := c.db.QueryContext(ctx, `SELECT key, type, title, original_title, popularity, vote_count, year, collection_id, collection_name FROM catalog_titles
@@ -434,6 +430,9 @@ func (c *Catalog) loadTitleIndex(ctx context.Context) (*titleIndex, error) {
 		alts.Close()
 		if err != nil {
 			return nil, err
+		}
+		if done {
+			break
 		}
 		lo = hi
 	}

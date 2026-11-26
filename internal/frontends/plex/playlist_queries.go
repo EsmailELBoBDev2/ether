@@ -406,19 +406,24 @@ func (s *Server) playlistItemRows(ctx context.Context, pr *Request, pl *frontend
 	if len(selected) > 0 {
 		// As the full render was: an empty window of a non-empty list is an
 		// empty, not absent, row list.
-		out.rows = make([]model.Metadata, 0, len(page))
+		out.rows = make([]model.Metadata, len(page))
 	}
 	state := s.stateFor(ctx, pr, page)
 	// Each row's Playable check (resumed tracks) reads its series from one
 	// batch of rows.
 	ctx = s.withSeriesRows(ctx, pr.User, page)
+	var slotPage *slotMediaPage
+	if len(page) > 1 {
+		slotPage = &slotMediaPage{}
+	}
 	for i := range page {
-		md := s.metadata(ctx, pr, &page[i], renderOpts{media: true, state: state})
+		md := &out.rows[i]
+		s.metadataInto(ctx, pr, &page[i], renderOpts{media: true, state: state, slotPage: slotPage}, md)
 		if id := itemIDs[lo+i]; id != 0 {
 			md.PlaylistItemID = id
 		}
-		out.rows = append(out.rows, md)
 	}
+	s.finishSlotPage(ctx, pr, slotPage)
 	// The container's duration covers every item. A title with a runtime
 	// renders it as its duration; only one without needs its media.
 	for i := range selected {
@@ -426,8 +431,12 @@ func (s *Server) playlistItemRows(ctx context.Context, pr *Request, pl *frontend
 			out.durationSec += out.rows[i-lo].Duration / 1000
 		} else if selected[i].Runtime > 0 {
 			out.durationSec += ms(selected[i].Runtime) / 1000
-		} else {
-			out.durationSec += s.metadata(ctx, pr, &selected[i], renderOpts{media: true, state: state}).Duration / 1000
+		} else if isPlayable(selected[i].Type) {
+			// Off-page items contribute known duration without issuing Media IDs.
+			info, _ := s.mediaInfoFor(ctx, pr, &selected[i])
+			if !info.Estimated && info.Duration > 0 {
+				out.durationSec += ms(info.Duration) / 1000
+			}
 		}
 	}
 	return out, nil

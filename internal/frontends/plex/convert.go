@@ -21,6 +21,7 @@ import (
 type renderOpts struct {
 	detail      bool // full tags, Guid children, streams
 	batchDetail bool // multi-key metadata batch: keep list season counts for ungrouped shows
+	slotPage    *slotMediaPage
 	listRender  bool // multi-item render: never trigger plugin /resolve per row
 	media       bool // Media/Part for playable items
 	// inSection: the container already carries the section attributes
@@ -289,6 +290,12 @@ func seasonTitle(t *frontend.Title) string {
 
 // metadata renders one title.
 func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o renderOpts) model.Metadata {
+	var m model.Metadata
+	s.metadataInto(ctx, pr, t, o, &m)
+	return m
+}
+
+func (s *Server) metadataInto(ctx context.Context, pr *Request, t *frontend.Title, o renderOpts, m *model.Metadata) {
 	if !o.storedOnly {
 		t = s.enrich(t)
 	}
@@ -313,7 +320,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	thumbStamp := overlayThumbStamp(t, ov, hasPlex)
 	artStamp := overlayArtStamp(t, ov, hasPlex)
 	show := s.showOfOpts(t, o.storedOnly)
-	m := model.Metadata{
+	*m = model.Metadata{
 		RatingKey:     t.Key.String(),
 		Key:           metadataKey(t.Key, t.Type),
 		GUID:          guidFor(t),
@@ -502,7 +509,7 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		}
 	}
 	if hasPlex {
-		applyPlexMetaDates(t, &m, ov.Overlay)
+		applyPlexMetaDates(t, m, ov.Overlay)
 		if ov.Rating > 0 && t.Type != frontend.TypeSeason && t.Type != frontend.TypeEpisode {
 			m.Rating = ov.Rating
 			m.RatingImage = ov.RatingImage
@@ -617,25 +624,42 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			// intent, never per row in a list, hub, On Deck, or batch lookup.
 			withVariants = false
 		}
-		m.Media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail)
-		if m.Type == "track" && t.Key.IsPluginKey() {
-			if hint, ok := s.exp().(frontend.TitleLyricsHint); ok {
-				s.addTrackLyrics(ctx, pr.User, m.Media, t.Key, hint.TitleLyricsAvailability(*t))
+		finish := func(media []model.Media) {
+			m.Media = media
+			if m.Type == "track" && t.Key.IsPluginKey() {
+				if hint, ok := s.exp().(frontend.TitleLyricsHint); ok {
+					s.addTrackLyrics(ctx, pr.User, m.Media, t.Key, hint.TitleLyricsAvailability(*t))
+				}
+			}
+			applyEditionTitle(m, editionTitle)
+			if s.downloadsAllowed(pr.User) {
+				m.AllowSync = model.Ptr(true)
+			}
+			if detail {
+				s.addProbedStreamFeatures(ctx, t.Key, info, m)
+			}
+			if m.Duration == 0 && len(m.Media) > 0 {
+				m.Duration = m.Media[0].Duration
 			}
 		}
-		applyEditionTitle(&m, editionTitle)
-		if s.downloadsAllowed(pr.User) {
-			m.AllowSync = model.Ptr(true)
+		var deferSlots func([]frontend.VariantRef, slotMediaRender)
+		deferred := false
+		if o.slotPage != nil {
+			deferSlots = func(refs []frontend.VariantRef, render slotMediaRender) {
+				deferred = true
+				o.slotPage.refs = append(o.slotPage.refs, refs...)
+				o.slotPage.finish = append(o.slotPage.finish, func(ids map[frontend.VariantRef]int64) {
+					finish(render(ids))
+				})
+			}
 		}
-		if detail {
-			s.addProbedStreamFeatures(ctx, t.Key, info, &m)
-		}
-		if m.Duration == 0 && len(m.Media) > 0 {
-			m.Duration = m.Media[0].Duration
+		var media []model.Media
+		media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail, deferSlots)
+		if !deferred {
+			finish(media)
 		}
 	}
-	s.decorateDiscoveryMetadata(ctx, pr, t, show, &m, o.detail)
-	return m
+	s.decorateDiscoveryMetadata(ctx, pr, t, show, m, o.detail)
 }
 
 // imageTags are an item's <Image> children, composed like PMS's:
@@ -860,11 +884,11 @@ func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Ti
 // pages. The second result is editionTitle; session monitoring projects only
 // the admitted source. withVariants permits cached labels on detail/queue.
 func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia bool) ([]model.Media, string) {
-	media, edition, _ := s.mediaForWithInfo(ctx, pr, t, withStreams, withVariants, sessionMedia, false)
+	media, edition, _ := s.mediaForWithInfo(ctx, pr, t, withStreams, withVariants, sessionMedia, false, nil)
 	return media, edition
 }
 
-func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia, batchDetail bool) ([]model.Media, string, frontend.MediaInfo) {
+func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.Title, withStreams, withVariants, sessionMedia, batchDetail bool, deferSlots func([]frontend.VariantRef, slotMediaRender)) ([]model.Media, string, frontend.MediaInfo) {
 	info, ps, resumed, probedSource := s.mediaInfoWithResumed(ctx, pr, t)
 	stamp := unixOrZero(t.UpdatedAt)
 	if ps != nil && !ps.StartedAt.IsZero() {
@@ -901,7 +925,20 @@ func (s *Server) mediaForWithInfo(ctx context.Context, pr *Request, t *frontend.
 		}
 		if len(versions) > 0 {
 			pr.configuredSlots = true
-			return s.slotMedia(ctx, pr, t, versions, info, ps, resumed, stamp, withStreams, batchDetail), versions[0].Edition, info
+			refs := s.variantRefs(t, versions)
+			render := func(ids map[frontend.VariantRef]int64) []model.Media {
+				return s.slotMedia(ctx, pr, t, versions, ids, info, ps, resumed, stamp, withStreams, batchDetail)
+			}
+			if deferSlots != nil && len(refs) != 0 {
+				deferSlots(refs, render)
+				return nil, versions[0].Edition, info
+			}
+			ids, err := s.variantIDsFor(ctx, refs)
+			if err != nil {
+				pr.versionErr = err
+				return nil, "", info
+			}
+			return render(ids), versions[0].Edition, info
 		}
 	}
 	if withVariants && withStreams && !sessionMedia {
@@ -1852,11 +1889,15 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	if !o.storedOnly {
 		order = s.episodeOrderList(ctx, pr, ts, o.detail && !o.batchDetail)
 	}
-	out := make([]model.Metadata, 0, len(ts))
+	if len(ts) > 1 {
+		o.slotPage = &slotMediaPage{}
+	}
+	out := make([]model.Metadata, len(ts))
 	for i := range ts {
-		m := s.metadata(ctx, pr, &ts[i], o)
+		m := &out[i]
+		s.metadataInto(ctx, pr, &ts[i], o, m)
 		if !o.storedOnly {
-			s.applyEpisodeOrder(ctx, pr, &ts[i], &m, order)
+			s.applyEpisodeOrder(ctx, pr, &ts[i], m, order)
 		}
 		if guidSrc != nil {
 			k := ts[i].Key
@@ -1885,8 +1926,8 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 				}
 			}
 		}
-		out = append(out, m)
 	}
+	s.finishSlotPage(ctx, pr, o.slotPage)
 	if guidSrc != nil && len(missingGUIDs) > 0 && !o.storedOnly {
 		guidSrc.Schedule(missingGUIDs...)
 	}

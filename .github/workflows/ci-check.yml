@@ -1,0 +1,19 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-lyrics]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: gofmt -l internal/ | tee /tmp/fmt; gofmt -d internal/ || true; test ! -s /tmp/fmt
+      - name: vet
+        run: go vet ./internal/frontends/... ./internal/experience/... ./internal/plugins/adapters/...
+      - name: test
+        run: go test ./internal/frontends/... ./internal/experience/... ./internal/plugins/adapters/... 2>&1 | tail -150
+        shell: bash -o pipefail {0}

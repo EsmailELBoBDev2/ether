@@ -114,6 +114,18 @@ func TestEmbyLyricStream(t *testing.T) {
 	if source["Id"] != "v1" || source["DefaultSubtitleStreamIndex"] != 4 || len(source["MediaStreams"].([]any)) != 2 {
 		t.Fatalf("existing source = %v", source)
 	}
+	if top := dto["MediaStreams"].([]any); top[len(top)-1].(map[string]any)["Index"] != 4 {
+		t.Fatalf("top-level lyric index = %v, want the source's 4", top[len(top)-1])
+	}
+
+	// A source that lists no streams still uses the item's next index.
+	dto = newDTO()
+	dto["MediaSources"] = []any{map[string]any{"Id": "abc", "MediaStreams": []any{}}}
+	(&instance{protocol: "emby", host: frontend.Host{Experience: lyricsHintExperience{likely: true}}}).embyLyricStream(dto, track)
+	source = dto["MediaSources"].([]any)[0].(map[string]any)
+	if source["DefaultSubtitleStreamIndex"] != 1 {
+		t.Fatalf("empty source lyric index = %v, want 1", source["DefaultSubtitleStreamIndex"])
+	}
 
 	for name, tc := range map[string]struct {
 		protocol frontend.Protocol

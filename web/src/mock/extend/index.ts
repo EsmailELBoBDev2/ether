@@ -45,11 +45,11 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-export function createExtendMock(): ExtendHandler {
+export function createExtendMock() {
   const plugins = createPluginsMock();
   const agent = createAgentMock();
   const stream = createStreamMock();
-  return (method, seg, q, body) => {
+  const handle: ExtendHandler = (method, seg, q, body) => {
     if (method === "GET" && seg[0] === "extend" && seg[1] === "registry") {
       const kinds = (q.get("kinds") ?? "").split(",").filter(Boolean);
       const all = [...builtinDescriptors(), ...plugins.descriptors(), ...mockOnAirSegments];
@@ -62,4 +62,5 @@ export function createExtendMock(): ExtendHandler {
       stream.handle(method, seg, q, body)
     );
   };
+  return { handle, pluginEnabled: plugins.pluginEnabled };
 }

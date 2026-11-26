@@ -1156,12 +1156,12 @@ function descriptorsFromManifest(
 export function createPluginsMock(): {
   handle: ExtendHandler;
   descriptors: () => Descriptor[];
+  pluginEnabled: (id: string) => boolean | undefined;
   version: () => number;
 } {
   let version = 1;
   const fixtures = fixturePlugins();
   const books = addonDetail("demo", "Open Library", "books.example", []);
-  books.stremioOnly = false;
   books.manifest = {
     id: "demo",
     name: "Open Library",
@@ -1196,16 +1196,45 @@ export function createPluginsMock(): {
     ],
     resources: ["catalog"],
   };
-  fixtures.push({
-    detail: books,
-    settings: {},
-    schema: {},
-    descriptors: [],
-    journal: [],
-    shadowJournal: [],
-    logs: [],
-    calls: [],
-  });
+  const clips = addonDetail("demo-clips", "Studio Clips", "clips.example", []);
+  clips.manifest = {
+    id: clips.id,
+    name: clips.name,
+    version: clips.version,
+    ether: {
+      protocol: 1,
+      kind: "integration",
+      contributes: {
+        mediaKinds: [
+          {
+            key: "clip",
+            label: "Clips",
+            library: { name: "Studio Clips" },
+            levels: [{ key: "clip", label: "Clip", playable: true }],
+            present: {},
+            browse: { search: true },
+            sync: { mode: "push" },
+          },
+        ],
+      },
+    },
+  };
+  for (const detail of [books, clips]) {
+    detail.stremioOnly = false;
+    detail.sourceKind = "studio";
+    delete detail.host;
+    delete detail.roles;
+    fixtures.push({
+      detail,
+      settings: {},
+      schema: {},
+      descriptors: [],
+      journal: [],
+      shadowJournal: [],
+      logs: [],
+      calls: [],
+    });
+  }
   fixtures.push({
     detail: cinema,
     settings: {},
@@ -1938,6 +1967,7 @@ export function createPluginsMock(): {
 
   return {
     handle,
+    pluginEnabled: (id) => byId(id)?.detail.enabled,
     descriptors: () =>
       fixtures
         .filter((f) => f.detail.enabled)

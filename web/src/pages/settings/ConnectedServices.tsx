@@ -7,7 +7,8 @@ import {
   catalogueGroups,
 } from "../libraries/CatalogueSources";
 import { useStreamEvent } from "../../lib/stream";
-import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
+import { isPluginDescriptor, setPluginEnabled, textOf, useRegistry } from "../../lib/extend";
+import { InstalledPluginDrawer } from "../plugins/InstalledPluginDrawer";
 import { AddSubtitleProvider } from "./AddSubtitleProvider";
 import { SubtitleCheck } from "./SubtitleCheck";
 import { IntegrationSetupFooter } from "../../components/IntegrationSetupFooter";
@@ -1190,8 +1191,13 @@ function ServiceOverview({
   locked: boolean;
   onToggle: (service: Service, next: boolean) => void;
 }) {
-  const catalogue = useAsync((signal) => librariesApi.catalogueSources(signal), []);
+  const catalogue = useAsync(
+    (signal) => librariesApi.catalogueSources(signal, { includeDisabled: true }),
+    [],
+  );
   const [addingSource, setAddingSource] = useState(false);
+  const [managingCatalogue, setManagingCatalogue] = useState<string | null>(null);
+  const [togglingCatalogue, setTogglingCatalogue] = useState<string | null>(null);
   const subtitlePlugins = useRegistry("subtitleProvider").descriptors.filter(isPluginDescriptor);
   const [addingSubtitles, setAddingSubtitles] = useState(false);
   const [checkingSubtitles, setCheckingSubtitles] = useState<{ id: string; name: string } | null>(
@@ -1205,6 +1211,17 @@ function ServiceOverview({
   const saved = (tab: Service["tab"]) => stored?.[service(tab).configKey] ?? {};
   const on = (tab: Service["tab"]) => flagOf(saved(tab), service(tab).flag);
   const switchesHeld = locked || busyId !== null;
+  async function toggleCatalogue(id: string, enabled: boolean) {
+    setTogglingCatalogue(id);
+    try {
+      await setPluginEnabled(id, enabled);
+      await catalogue.reload();
+    } catch (error) {
+      toast.error(t("Couldn't save the change"), { description: errorMessage(error) });
+    } finally {
+      setTogglingCatalogue(null);
+    }
+  }
   return (
     <>
       <IntegrationGroup
@@ -1229,7 +1246,9 @@ function ServiceOverview({
                 : secretConfigured(stored?.catalog?.tvdbKey)
             }
             onSetEnabled={async (enabled) => {
-              await onMetadataSave(source === "tmdb" ? { tmdbDisabled: !enabled } : { tvdbKey: "" });
+              await onMetadataSave(
+                source === "tmdb" ? { tmdbDisabled: !enabled } : { tvdbKey: "" },
+              );
               void catalogue.reload();
             }}
             locked={switchesHeld}
@@ -1242,7 +1261,7 @@ function ServiceOverview({
             }}
           />
         ))}
-        {catalogueGroups((catalogue.data ?? []).filter((source) => source.group !== "builtin")).map(
+        {catalogueGroups((catalogue.data ?? []).filter((source) => source.pluginId)).map(
           (source) => (
             <IntegrationAppCard
               key={source.id}
@@ -1254,53 +1273,71 @@ function ServiceOverview({
                   <SourceIcon source={source} />
                 )
               }
-              description={tn(source.entries.length, "{count} catalogue", "{count} catalogues")}
+              description={[
+                tn(source.entries.length, "{count} catalogue", "{count} catalogues"),
+                ...source.entries.map(sourceName),
+                source.libraries.length
+                  ? t("Used by: {libraries}", {
+                      libraries: source.libraries.map((lib) => lib.name).join(", "),
+                    })
+                  : t("No libraries use this source yet."),
+              ].join(" · ")}
+              enabled={source.enabled}
+              busy={togglingCatalogue === source.id}
+              disabled={switchesHeld || togglingCatalogue !== null}
+              onToggle={(enabled) => void toggleCatalogue(source.id, enabled)}
               status={
-                <LevelBadge
-                  level={
-                    source.health === "unknown" ? "unknown" : source.health === "ok" ? "ok" : "warn"
-                  }
-                  label={
-                    source.health === "unknown"
-                      ? t("Not loaded yet")
-                      : source.health === "ok"
-                        ? t("Healthy")
-                        : source.lastError || t("Needs attention")
-                  }
-                />
-              }
-              configureHref={
-                source.pluginId
-                  ? `/plugins/installed?plugin=${encodeURIComponent(source.pluginId)}&tab=setup`
-                  : undefined
-              }
-              details={
                 <>
-                  <div className="w-full space-y-1 text-sm text-fg-muted">
-                    <p>{source.entries.map(sourceName).join(" · ")}</p>
-                    {source.entries
-                      .filter((entry) => entry.lastError)
-                      .map((entry) => (
-                        <p key={entry.id} className="text-danger">
-                          {sourceName(entry)}: {entry.lastError}
-                        </p>
-                      ))}
-                    <p>
-                      {source.libraries.length
-                        ? t("Used by: {libraries}", {
-                            libraries: source.libraries.map((lib) => lib.name).join(", "),
-                          })
-                        : t("No libraries use this source yet.")}
-                    </p>
-                  </div>
+                  {!source.enabled ? <Badge variant="secondary">{t("Off")}</Badge> : null}
+                  <LevelBadge
+                    level={
+                      source.health === "unknown"
+                        ? "unknown"
+                        : source.health === "ok"
+                          ? "ok"
+                          : "warn"
+                    }
+                    label={
+                      source.health === "unknown"
+                        ? t("Not loaded yet")
+                        : source.health === "ok"
+                          ? t("Healthy")
+                          : source.lastError || t("Needs attention")
+                    }
+                  />
                 </>
               }
+              configureLabel={
+                source.enabled
+                  ? t("Manage {app}", { app: source.name })
+                  : t("Set up {app}", { app: source.name })
+              }
+              onConfigure={() => setManagingCatalogue(source.id)}
+              details={source.entries
+                .filter((entry) => entry.lastError)
+                .map((entry) => (
+                  <p key={entry.id} className="text-danger">
+                    {sourceName(entry)}: {entry.lastError}
+                  </p>
+                ))}
             />
           ),
         )}
       </IntegrationGroup>
       {catalogue.error ? (
         <ErrorPanel error={catalogue.error} onRetry={() => void catalogue.reload()} />
+      ) : null}
+      {managingCatalogue ? (
+        <InstalledPluginDrawer
+          pluginId={managingCatalogue}
+          initialTab="setup"
+          onClose={() => setManagingCatalogue(null)}
+          onChanged={() => void catalogue.reload()}
+          onRemoved={() => {
+            setManagingCatalogue(null);
+            void catalogue.reload();
+          }}
+        />
       ) : null}
       {addingSource ? (
         <AddCatalogueSource

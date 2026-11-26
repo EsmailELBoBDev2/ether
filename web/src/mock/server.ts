@@ -2709,6 +2709,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
             })),
         ]
           .filter((source) => {
+            if (source.pluginId) {
+              const enabled = extendMock.pluginEnabled(source.pluginId);
+              return (
+                enabled === true ||
+                (enabled === false && url.searchParams.get("includeDisabled") === "true")
+              );
+            }
             if (source.id === "tvdb")
               return metadataSources().some((entry) => entry.id === "tvdb" && entry.configured);
             if (source.id.startsWith("tmdb-"))
@@ -2717,8 +2724,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
           })
           .map((source) => ({
             ...source,
+            enabled: source.pluginId ? extendMock.pluginEnabled(source.pluginId) === true : true,
             libraries: mockLibs
-              .filter((lib) => ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id))
+              .filter(
+                (lib) =>
+                  (source.group === "plugin" &&
+                    "kindKey" in source &&
+                    lib.pluginId === source.pluginId &&
+                    lib.kindKey === source.kindKey) ||
+                  ((hydrateLib(lib).sources ?? []) as string[]).includes(source.id),
+              )
               .map((lib) => ({ id: lib.id, name: lib.name })),
           })),
       });
@@ -3457,7 +3472,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const site = sites.handle(method, seg, body, state.config);
     if (site) return json(site.body, site.status);
 
-    const ext = await extendMock(method, seg, q, body);
+    const ext = await extendMock.handle(method, seg, q, body);
     if (ext) return ext;
 
     const cal = calendar.handle(method, seg, q);

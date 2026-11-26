@@ -298,6 +298,7 @@ export interface CatalogueSource {
   group: "builtin" | "plugin" | "stremio";
   mediaTypes: string[];
   health: string;
+  enabled: boolean;
   itemCount?: number;
   /** Items the last sync read from the list. */
   listed?: number;
@@ -442,10 +443,13 @@ export const librariesApi = {
         method: "POST",
       },
     ),
-  catalogueSources: (signal?: AbortSignal) =>
-    apiFetch<{ sources: CatalogueSource[] }>("/libraries/catalogue-sources", { signal }).then(
-      (r) => r.sources,
-    ),
+  catalogueSources: (signal?: AbortSignal, options?: { includeDisabled: boolean }) =>
+    apiFetch<{ sources: CatalogueSource[] }>(
+      options?.includeDisabled
+        ? "/libraries/catalogue-sources?includeDisabled=true"
+        : "/libraries/catalogue-sources",
+      { signal },
+    ).then((r) => r.sources),
   list: (signal?: AbortSignal) =>
     apiFetch<{ libraries: Library[] }>("/libraries", { signal }).then((r) => r.libraries),
   get: (id: number, signal?: AbortSignal) => apiFetch<Library>(`/libraries/${id}`, { signal }),

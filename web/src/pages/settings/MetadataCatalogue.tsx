@@ -1,4 +1,4 @@
-import { Badge, Button } from "@braedonsaunders/appkit-ui";
+import { Badge } from "@braedonsaunders/appkit-ui";
 import { Tv } from "lucide-react";
 import { useState } from "react";
 import { Drawer } from "../../components/Drawer";
@@ -106,17 +106,14 @@ export function MetadataCatalogue({
             {enabled ? (ready ? t("On") : t("Needs an API key")) : t("Off")}
           </Badge>
         }
-        action={
-          <>
-            <Button size="sm" variant="outline" disabled={locked || busy} onClick={openDrawer}>
-              {actionLabel}
-            </Button>
-            {saveFailed && key === null ? (
-              <p role="alert" className="w-full text-sm text-danger">
-                {t("Couldn't save the change")}
-              </p>
-            ) : null}
-          </>
+        configureLabel={actionLabel}
+        onConfigure={openDrawer}
+        details={
+          saveFailed && key === null ? (
+            <p role="alert" className="text-danger">
+              {t("Couldn't save the change")}
+            </p>
+          ) : null
         }
       />
       {key !== null ? (

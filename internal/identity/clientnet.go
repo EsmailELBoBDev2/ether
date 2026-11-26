@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
 	"net/http"
 	"net/netip"
@@ -50,4 +51,14 @@ type UntrustedForwarderSighting = clientnet.UntrustedForwarderSighting
 // UntrustedForwarders lists recent untrusted forwarding peers not covered by trusted.
 func UntrustedForwarders(trusted ...netip.Prefix) []UntrustedForwarderSighting {
 	return clientnet.UntrustedForwarders(trusted...)
+}
+
+// LookupProxyHost resolves a proxy name, falling back to Docker's embedded DNS.
+func LookupProxyHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	return clientnet.LookupProxyHost(ctx, host)
+}
+
+// LookupProxyAddr reverse-resolves a proxy address, falling back to Docker's embedded DNS.
+func LookupProxyAddr(ctx context.Context, addr string) ([]string, error) {
+	return clientnet.LookupProxyAddr(ctx, addr)
 }

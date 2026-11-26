@@ -989,6 +989,7 @@
   },
   "m_02db68d520f1b2": "Programming",
   "m_02dd0f5151d961": "Describe it in your own words, start from a template, or add a trigger from the palette.",
+  "m_02de682e3e75a4": "This update changes how a library of this plugin is organised. Ether rebuilds that library from the plugin; its watch or reading progress starts over. The plugin's other libraries are not touched.",
   "m_02dfe071ac84d2": "Edited by you",
   "m_02e00bae7dec74": "Good readability",
   "m_02e02fcf5a6bd7": "Shared upload budget ({cap} cap)",
@@ -8385,6 +8386,7 @@
   },
   "m_1896095e6f5bf2": "It is health-checked afresh the next time it is a candidate.",
   "m_18969be245c683": "Unpin {title}?",
+  "m_1897e9736cf4c7": "Rebuild and install",
   "m_189a21208e55a9": "Live events will appear here when the feed recovers.",
   "m_189a38f201f485": "Cancel restart",
   "m_189a59134a29dd": {
@@ -8469,6 +8471,7 @@
   "m_18cb5aae13b5b6": "Cooling down",
   "m_18cc2c92567fa5": "No fields match.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Rebuild the changed library?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Claim this server to turn this on.",
   "m_18cf943a2b12c6": "How much of the next episode to pull ahead.",

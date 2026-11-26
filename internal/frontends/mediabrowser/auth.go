@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -485,7 +486,7 @@ func (i *instance) baseUserDTO(v *frontend.Viewer) (user, policy, configuration 
 	}
 	// Presentation defaults mirror Jellyfin's UserConfiguration constructor.
 	configuration = map[string]any{"PlayDefaultAudioTrack": true, "DisplayMissingEpisodes": false, "GroupedFolders": []string{}, "SubtitleMode": "Default", "DisplayCollectionsView": false, "EnableLocalPassword": false, "OrderedViews": []string{}, "LatestItemsExcludes": []string{}, "MyMediaExcludes": []string{}, "HidePlayedInLatest": true, "RememberAudioSelections": true, "RememberSubtitleSelections": true, "EnableNextEpisodeAutoPlay": true}
-	user = map[string]any{"Id": id, "Name": v.Username, "ServerId": i.info.ID, "HasPassword": true, "Policy": policy, "Configuration": configuration}
+	user = map[string]any{"Id": id, "Name": userName(v), "ServerId": i.info.ID, "HasPassword": true, "Policy": policy, "Configuration": configuration}
 	switch i.protocol {
 	case "emby":
 		for _, key := range []string{"AllowedTags", "EnableCollectionManagement", "EnableLyricManagement", "ForceRemoteSourceTranscoding", "LoginAttemptsBeforeLockout", "MaxActiveSessions", "PasswordResetProviderId", "SyncPlayAccess"} {
@@ -518,7 +519,7 @@ func (i *instance) authSessionDTO(r *http.Request, v *frontend.Viewer) map[strin
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s", i.protocol, v.ID, d.ID)))
 	now := time.Now().UTC()
 	state := map[string]any{"CanSeek": false, "IsPaused": false, "IsMuted": false, "RepeatMode": "RepeatNone"}
-	session := map[string]any{"Id": hex.EncodeToString(sum[:16]), "UserId": userID, "UserName": v.Username, "ServerId": i.info.ID, "Client": d.Client, "DeviceId": d.ID, "DeviceName": d.DeviceName, "ApplicationVersion": d.Version, "LastActivityDate": wireTime(now), "RemoteEndPoint": "", "AdditionalUsers": []any{}, "PlayableMediaTypes": []any{}, "SupportedCommands": []any{}, "SupportsRemoteControl": false, "PlayState": state}
+	session := map[string]any{"Id": hex.EncodeToString(sum[:16]), "UserId": userID, "UserName": userName(v), "ServerId": i.info.ID, "Client": d.Client, "DeviceId": d.ID, "DeviceName": d.DeviceName, "ApplicationVersion": d.Version, "LastActivityDate": wireTime(now), "RemoteEndPoint": "", "AdditionalUsers": []any{}, "PlayableMediaTypes": []any{}, "SupportedCommands": []any{}, "SupportsRemoteControl": false, "PlayState": state}
 	if i.protocol == "jellyfin" {
 		session["LastPlaybackCheckIn"] = wireTime(time.Time{})
 		state["PlaybackOrder"] = "Default"
@@ -813,4 +814,41 @@ func (i *instance) publicViewers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	jsonReply(w, items)
+}
+
+// userName is the name Jellyfin and Emby show for a viewer. A viewer made from
+// an invite link has no username until they choose one, and Jellyfin Web
+// refuses to open its profile page for a user without a name, so the display
+// name (or a stable "Viewer N") stands in.
+func userName(v *frontend.Viewer) string {
+	if v == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(v.Username); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(v.Title); name != "" {
+		return name
+	}
+	return "Viewer " + strconv.FormatInt(v.ID, 10)
+}
+
+// loginHint is the text under the login form (Branding LoginDisclaimer).
+// Jellyfin: Quick Connect codes are approved on Ether's viewer page, which the
+// apps never mention. Emby: its apps' code sign-in goes through Emby's own
+// cloud accounts, which Ether cannot take part in, so viewers sign in with the
+// username and password they chose there. No address is given: the page often
+// lives on another host name than this app (a dashboard domain behind a
+// reverse proxy), and a wrong link is worse than none.
+func (i *instance) loginHint(_ *http.Request) string {
+	if i.host.ViewerPortalURL == nil {
+		return ""
+	}
+	if i.protocol == "emby" {
+		return "Sign in with the username and password you chose on your Ether viewer page (the link from your invite)."
+	}
+	if !i.quickEnabled() {
+		return ""
+	}
+	return "Using Quick Connect? Open your Ether viewer page (the link from your invite) on your phone or computer, sign in, and type the code shown here."
 }

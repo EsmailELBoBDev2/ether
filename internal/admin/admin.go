@@ -514,6 +514,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("PUT /api/config/{section}", h.handlePutSection)
 	api("PATCH /api/config/{section}", h.handlePutSection)
 	api("GET /api/server/console-listener", h.handleConsoleListener)
+	api("GET /api/server/proxy-hint", h.handleProxyHint)
 
 	api("GET /api/setup/status", h.handleSetupStatus)
 	api("POST /api/setup/complete", h.handleSetupComplete)

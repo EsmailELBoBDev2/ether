@@ -652,6 +652,24 @@ describe("Settings", () => {
     expect(screen.queryByRole("tab", { name: "Secure connections" })).toBeNull();
   });
 
+  it("offers to trust a reverse proxy that forwards visitor addresses, saving only on Save", async () => {
+    const { fake } = renderApp("/apps/overview", { untrustedProxy: true });
+    expect(
+      await screen.findByText("A reverse proxy is not trusted yet", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/npm \(172\.18\.0\.2\) is forwarding visitor addresses/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Trust npm" }));
+    await waitFor(() =>
+      expect(screen.queryByText("A reverse proxy is not trusted yet")).toBeNull(),
+    );
+    expect(calls(fake, "PUT", "/config/server")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/server")).toHaveLength(1), WAIT);
+    expect(calls(fake, "PUT", "/config/server")[0]!.body).toMatchObject({
+      trustedProxyCIDRs: ["npm"],
+    });
+  });
+
   it("rejects non-URL junk in Custom server URLs with a translated message while accepting Tailscale CGNAT URLs", async () => {
     const { fake } = renderApp("/apps/overview");
     fireEvent.click(

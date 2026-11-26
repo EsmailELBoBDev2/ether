@@ -3605,6 +3605,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, status)
 		return
 	}
+	if binding.Info.Type == "lyrics" {
+		s.serveLyricStream(w, r, pr.User, binding.Key)
+		return
+	}
 	// Embedded tracks cannot be removed from the media bytes. PMS accepts
 	// stream PUTs without changing the track; reads still use Ether's
 	// extraction and sidecar paths.

@@ -889,9 +889,25 @@ type TitleContinuations interface {
 // TitleLyrics reads a playable title's lyrics from its source (a kind
 // plugin that declares them). Asked when a viewer opens the lyrics.
 type TitleLyrics interface {
-	TitleLyrics(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (core.Lyrics, error)
+	TitleLyrics(ctx context.Context, viewer *core.Viewer, key RatingKey) (Lyrics, error)
 	// LyricsAvailable reports whether any source can answer at all.
 	LyricsAvailable(ctx context.Context) bool
+}
+
+// LyricAvailability describes what is already known about a title's lyrics.
+type LyricAvailability uint8
+
+const (
+	LyricsAbsent LyricAvailability = iota
+	LyricsPossible
+	LyricsPlain
+	LyricsTimed
+)
+
+// TitleLyricsHint reports availability from the projected title and in-memory
+// answers. It performs no I/O and is safe to call for each title in a page.
+type TitleLyricsHint interface {
+	TitleLyricsAvailability(t Title) LyricAvailability
 }
 
 // FavoriteTitles lists a viewer's liked titles of one role (tracks for Liked

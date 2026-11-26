@@ -174,6 +174,16 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 				return nil, err
 			}
 		}
+		if protocol == "emby" {
+			if err := r.Handle(method, "/Items/{id}/{source}/Subtitles/{index}/{name}", http.HandlerFunc(inst.embyItemSubtitle)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if protocol == "jellyfin" {
+		if err := r.Handle(http.MethodGet, "/Audio/{id}/Lyrics", http.HandlerFunc(inst.audioLyrics)); err != nil {
+			return nil, err
+		}
 	}
 	if err := inst.playbackRoutes(); err != nil {
 		return nil, err

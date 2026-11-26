@@ -283,6 +283,7 @@ type instance struct {
 	warmPending     map[string]bool
 	readMu          sync.Mutex
 	readTickets     map[string]*readTicket
+	downloads       downloadTickets
 }
 
 func (i *instance) cursorNonce(domain string, plain []byte) ([]byte, error) {
@@ -350,6 +351,7 @@ func (i *instance) Close(context.Context) error {
 	}
 	i.mu.Unlock()
 	i.closeReadTickets()
+	i.downloads.close()
 	return nil
 }
 func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
@@ -658,7 +660,18 @@ func (i *instance) resolvedRedirectPrefix(r *http.Request) string {
 	}
 	return ""
 }
+
+type requestReceivedKey struct{}
+
+func (i *instance) serverNow() time.Time {
+	if i.host.Now != nil {
+		return i.host.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
+	received := i.serverNow()
 	if (strings.HasPrefix(r.URL.Path, "/vela/v0/") || strings.HasPrefix(r.URL.Path, "/sessions/media/")) && cors(w, r) {
 		return
 	}
@@ -696,6 +709,9 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
+	if r.Pattern == "POST /vela/v0/titles/{id}/watch" {
+		r = r.WithContext(context.WithValue(r.Context(), requestReceivedKey{}, received))
+	}
 	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") {
 		i.mux.ServeHTTP(w, r)
 		return
@@ -717,11 +733,13 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_json")
 		return
 	}
-	if r.Method == "POST" && (r.URL.Path == "/vela/v0/live/guide/window" || r.URL.Path == "/vela/v0/search") {
+	if r.Pattern == "POST /vela/v0/titles/{id}/download" ||
+		(r.Method == "POST" && (r.URL.Path == "/vela/v0/live/guide/window" || r.URL.Path == "/vela/v0/search")) {
 		// Bulk guide window is a pure read with optional idempotencyKey and
 		// ETag revalidation rather than a persisted mutation. So is a
 		// search, sent per keystroke: persisting a replay would make every
 		// keystroke queue for the database writer behind background writes.
+		// A download POST deduplicates quota usage, but issues a fresh ticket.
 		var trailing any
 		if dec.Decode(&trailing) != io.EOF {
 			problem(w, 400, "request", "invalid_json")
@@ -1032,6 +1050,9 @@ func (i *instance) routes() {
 	i.route("POST", "/playlists/import/{id}/save", i.savePlaylistImport)
 	i.route("GET", "/recent", i.recentPlayContexts)
 	i.route("POST", "/titles/{id}/watch", i.watch)
+	i.route("POST", "/titles/{id}/download", i.grantDownload)
+	i.route("GET", "/download/{ticket}", i.downloadFile)
+	i.route("HEAD", "/download/{ticket}", i.downloadFile)
 	i.route("POST", "/titles/{id}/read", i.read)
 	i.route("GET", "/read/{ticket}", i.readFile)
 	i.route("HEAD", "/read/{ticket}", i.readFile)
@@ -1166,6 +1187,11 @@ func (i *instance) requestCapabilities(r *http.Request) object {
 func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) object {
 	c := i.capabilities()
 	c["features"].(object)["liveCatchUp"] = i.catchUpFeature(r, v)
+	downloads, ok := r.Context().Value(downloadCapabilityKey{}).(downloadCapability)
+	if !ok {
+		downloads = i.downloadsFeature(r.Context(), v)
+	}
+	c["features"].(object)["downloads"] = downloads
 	if v != nil {
 		c["searchKinds"], _ = i.searchKinds(r, v)
 		if features, ok := c["features"].(object); ok {

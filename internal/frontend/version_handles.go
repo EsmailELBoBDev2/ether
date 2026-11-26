@@ -89,3 +89,9 @@ type ListedVersionHandles interface {
 	ListedHandle(VersionScope, core.RatingKey, string) string
 	ResolveListed(context.Context, VersionScope, core.RatingKey, string) (VersionTarget, error)
 }
+
+// OfflineVersionHandles validates the listed identity without following a
+// live playback session's replacement release.
+type OfflineVersionHandles interface {
+	ResolveOfflineVersion(context.Context, VersionScope, core.RatingKey, string) (VersionTarget, error)
+}

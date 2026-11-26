@@ -194,7 +194,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	}()
 	rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
 		info := g.infoSnapshot()
-		if m.videoOff(s.caps) {
+		if s.offlineOriginal == nil && m.videoOff(s.caps) {
 			if _, needs := m.probedNeedsVideoTranscode(info, s.caps); needs {
 				return false
 			}
@@ -219,16 +219,20 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	})
 	defer rt.close(m)
 	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
-		if alt := m.copySourceAtCapacity(ctx, s, profile, g, tried); alt != nil {
-			m.dropGeneration(g)
-			g = alt
+		if s.offlineOriginal == nil {
+			if alt := m.copySourceAtCapacity(ctx, s, profile, g, tried); alt != nil {
+				m.dropGeneration(g)
+				g = alt
+			}
 		}
 		rt.commitPendingRejections(m.ctx, m, s)
 		s.mu.Lock()
 		s.tried = append(s.tried, tried...)
 		s.tried = append(s.tried, extraTried...)
 		s.mu.Unlock()
-		m.startGenerationFills(g)
+		if s.offlineOriginal == nil {
+			m.startGenerationFills(g)
+		}
 		return g, nil
 	}
 	adoptRuntimeFallback := func(extraTried ...string) (*generation, error) {
@@ -271,7 +275,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 	const maxMoreCandidatePasses = 8
 	morePasses := 0
 	for attempt := 0; m.attemptAllowed(attempt) && ctx.Err() == nil; attempt++ {
-		if res == nil && attempt > 0 && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
+		if res == nil && attempt > 0 && s.offlineOriginal == nil && !s.exact && (s.prefer == "" || isSlot) && m.deps.FetchNZB != nil &&
 			s.caps.BroadcastReadyRelease == "" && !s.isKind() && fallbackGen == nil && len(alternates) >= 2 {
 			maxBudget := 0
 			if m.opts.MaxAttempts > 0 {
@@ -424,7 +428,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			}
 		}
 		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
-		if err == nil && m.videoOff(s.caps) {
+		if err == nil && s.offlineOriginal == nil && m.videoOff(s.caps) {
 			if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
 				reason := core.ErrVideoTranscodingDisabled.Error()
 				if dec.Reason != "" {
@@ -543,6 +547,16 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			return nil, ctx.Err()
 		}
 		lastErr = err
+		if s.offlineOriginal != nil && errors.Is(err, frontend.ErrVersionUnavailable) {
+			if s.exact {
+				return nil, err
+			}
+			allUncached = false
+			tried = append(tried, res.Release.ID)
+			alternates = res.Alternates
+			res, cached, fromResume = nil, nil, false
+			continue
+		}
 		// Bound release-level skips separately from actual playback failures.
 		if errors.Is(err, core.ErrWrongContent) && wrongContentSkips < 8 {
 			wrongContentSkips++
@@ -872,7 +886,7 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 			return nil, budgetErr
 		}
 	}
-	if !errors.Is(err, errRuntimeMismatchDeferred) {
+	if !errors.Is(err, errRuntimeMismatchDeferred) && !errors.Is(err, frontend.ErrVersionUnavailable) {
 		m.rememberOpenFailure(s, res.Release, err)
 	}
 	if err != nil {
@@ -986,6 +1000,10 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		m.dropGeneration(g)
 		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)
 	}
+	if s.offlineOriginal != nil && !s.offlineOriginal(mi) {
+		m.dropGeneration(g)
+		return nil, frontend.ErrVersionUnavailable
+	}
 	// Reused persisted probes pass through here too, including a remembered
 	// playback_resume release played from zero with no requested offset.
 	rt := runtimeTrackerFrom(ctx)
@@ -1049,7 +1067,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// rebuilt from the persisted probe had their per-viewer sidecars
 	// stripped before they reached disk, so they augment again.
 	augmentStarted := time.Now()
-	if (facts == nil || facts.needsAugment) && m.deps.AugmentMedia != nil {
+	if s.offlineOriginal == nil && (facts == nil || facts.needsAugment) && m.deps.AugmentMedia != nil {
 		m.deps.AugmentMedia(ctx, s.title, &s.user, res, src, &mi)
 	}
 	m.log.Debug("media preparation completed", "session", s.id, "release", res.Release.ID,

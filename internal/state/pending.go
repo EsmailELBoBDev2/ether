@@ -83,6 +83,12 @@ func (p *pendingWrites) put(k progressKey, w pendingWrite) error {
 	}
 	return nil
 }
+func (p *pendingWrites) latestAt(k progressKey) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.entries[k].progress.at
+}
+
 func (p *pendingWrites) snapshot(user int64, keys []core.RatingKey) map[core.RatingKey]pendingWrite {
 	p.mu.Lock()
 	defer p.mu.Unlock()

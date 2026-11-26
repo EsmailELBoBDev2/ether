@@ -40,6 +40,7 @@ func durationParam(v string, unit time.Duration) time.Duration {
 
 // handleTimeline is /:/timeline: playback progress from the client.
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	received := s.now()
 	if s.handleLiveTimeline(w, r) {
 		return
 	}
@@ -48,13 +49,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	origin := frontend.WatchOrigin{SuppressMetadataRefresh: true, Surface: "plex", SessionID: pr.SessionID, ClientID: pr.ClientID}
 	origin.DeviceID = s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform).ID
 	ctx = frontend.WithWatchOrigin(ctx, origin)
-	unlockOwner, locked := s.lockPlaybackRequest(w, r)
-	if !locked {
-		return
-	}
-	defer unlockOwner()
-
 	q := r.URL.Query()
+	offline := r.Method == http.MethodPost && q.Get("offline") == "1" && q.Has("updated")
+	if !offline {
+		unlockOwner, locked := s.lockPlaybackRequest(w, r)
+		if !locked {
+			return
+		}
+		defer unlockOwner()
+	}
 	key := stateKey(r)
 	if pr.User == nil {
 		writeHTTPError(w, http.StatusBadRequest)
@@ -82,7 +85,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
+	if !offline {
+		key = s.queues.TimelineQueue(pr.User.ID, pr.ClientID, key, q.Get("playQueueItemID"), q.Has("playQueueItemID"))
+	}
 	// Pre-rolls and trailers are synthetic extras, not catalog titles.
 	// Acknowledge their timelines without writing feature watch progress.
 	if key.Kind() == frontend.KindExtra {
@@ -132,6 +137,10 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}
+	}
+	if offline {
+		s.storeOfflineTimeline(w, r.WithContext(ctx), pr, key, title, received)
+		return
 	}
 	// A stopped old encoder can arrive after the next version's decision
 	// within the SAME public player session. Reject it before reporting a

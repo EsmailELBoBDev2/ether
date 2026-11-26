@@ -130,3 +130,19 @@ type WatchMutation struct {
 type WatchMutationWriter interface {
 	ApplyWatchMutation(context.Context, int64, RatingKey, WatchMutation) error
 }
+
+// OfflineProgress is a sessionless playback observation. The caller supplies
+// the request receive time so the device's clock cannot advance server state.
+type OfflineProgress struct {
+	Position, Duration     time.Duration
+	ObservedAt, ReceivedAt time.Time
+	Played                 bool
+}
+
+type OfflineProgressState interface {
+	ApplyOfflineProgress(context.Context, int64, RatingKey, OfflineProgress) (TimelinePersistenceResult, error)
+}
+
+type OfflineProgressWriter interface {
+	SetOfflineProgress(context.Context, *Viewer, RatingKey, OfflineProgress) error
+}

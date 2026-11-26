@@ -5,7 +5,7 @@ import { PasswordInput, Segmented } from "../../components/fields";
 import { EtherLogo } from "../../components/brand";
 import { ConnectApps } from "./ConnectApps";
 import { PortalTrakt } from "./PortalTrakt";
-import SignInMethods from "./SignInMethods";
+import SignInMethods, { MIN_LOCAL_PASSWORD } from "./SignInMethods";
 
 const SESSION_KEY = "ether.viewerPortal";
 const CODE_LENGTH = 6;
@@ -123,6 +123,10 @@ export default function Me() {
   const [busy, setBusy] = useState(false);
   const [pinURL, setPinURL] = useState("");
   const [inviteSecret, setInviteSecret] = useState("");
+  const [serverName, setServerName] = useState("");
+  // Right after an invite is accepted the viewer has no way to sign in again
+  // (the session ends with the tab), so choosing a password comes first.
+  const [setup, setSetup] = useState(false);
   const cancelled = useRef(false);
   const codeRef = useRef<HTMLInputElement>(null);
   const submitted = useRef("");
@@ -150,9 +154,12 @@ export default function Me() {
   useEffect(() => {
     let stop = false;
     fetch("/ether/api/bootstrap")
-      .then((res) => (res.ok ? (res.json() as Promise<{ signInMethods?: string[] }>) : null))
+      .then((res) =>
+        res.ok ? (res.json() as Promise<{ signInMethods?: string[]; serverName?: string }>) : null,
+      )
       .then((boot) => {
         if (stop) return;
+        setServerName(boot?.serverName ?? "");
         const offered = (boot?.signInMethods ?? []).filter(
           (item): item is Method => item === "local" || item === "plex",
         );
@@ -205,11 +212,17 @@ export default function Me() {
         secret: inviteSecret,
       });
       sessionStorage.setItem(SESSION_KEY, result.token);
+      setViewer(null);
+      setApproved(null);
       setToken(result.token);
       setInviteSecret("");
-      setMessage(t("Invite accepted. You can approve a TV now."));
+      setSetup(true);
     } catch {
-      setError(t("This invite could not be accepted."));
+      setError(
+        t(
+          "This invite link has already been used or has expired. Ask the person who sent it for a new one.",
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -292,8 +305,28 @@ export default function Me() {
 
   const localOn = methods?.includes("local") ?? false;
   const plexOn = methods?.includes("plex") ?? false;
-  const signedIn = Boolean(token && viewer);
+  const inviting = Boolean(inviteSecret);
+  const settingUp = !inviting && setup && Boolean(token && viewer);
+  const signedIn = !inviting && !settingUp && Boolean(token && viewer);
   const detail = approved ? approvalDetail(approved.device ?? "", approved.app ?? "") : "";
+  const heading = inviting
+    ? t("You're invited")
+    : settingUp
+      ? t("Choose your password")
+      : t("Approve a TV");
+  const subheading = inviting
+    ? serverName
+      ? t("{server} invited you to watch with them. Accept to create your account.", {
+          server: serverName,
+        })
+      : t("You were invited to watch on this server. Accept to create your account.")
+    : settingUp
+      ? t("You'll use it to sign in here and in the Jellyfin and Emby apps.")
+      : approved
+        ? ""
+        : signedIn
+          ? t("Enter the code shown on your TV.")
+          : t("Sign in, then enter the code shown on your TV.");
 
   return (
     <main className="grid min-h-screen place-items-center bg-bg-subtle p-4">
@@ -301,14 +334,8 @@ export default function Me() {
         <Card className="mx-auto w-full max-w-md space-y-6 p-7 shadow-lg">
           <EtherLogo className="mx-auto w-40" />
           <div className="space-y-1 text-center">
-            <h1 className="text-xl font-semibold text-fg">{t("Approve a TV")}</h1>
-            {approved ? null : (
-              <p className="text-sm text-fg-muted">
-                {signedIn
-                  ? t("Enter the code shown on your TV.")
-                  : t("Sign in, then enter the code shown on your TV.")}
-              </p>
-            )}
+            <h1 className="text-xl font-semibold text-fg">{heading}</h1>
+            {subheading ? <p className="text-sm text-fg-muted">{subheading}</p> : null}
           </div>
           {error ? (
             <Alert variant="destructive" role="alert">
@@ -320,17 +347,41 @@ export default function Me() {
               {message}
             </p>
           ) : null}
-          {inviteSecret ? (
-            <Button
-              type="button"
-              className="w-full"
-              disabled={busy}
-              onClick={() => void redeemInvite()}
-            >
-              {t("Accept invite")}
-            </Button>
-          ) : null}
-          {!token ? (
+          {inviting ? (
+            <div className="space-y-4">
+              <Button
+                type="button"
+                className="w-full"
+                disabled={busy}
+                onClick={() => void redeemInvite()}
+              >
+                {busy ? t("Accepting…") : t("Accept invite")}
+              </Button>
+              <p className="text-center text-sm text-fg-muted">
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-fg"
+                  onClick={() => {
+                    setInviteSecret("");
+                    setError("");
+                  }}
+                >
+                  {t("Already have an account? Sign in")}
+                </button>
+              </p>
+            </div>
+          ) : settingUp && viewer ? (
+            <FirstPassword
+              token={token}
+              viewer={viewer}
+              localOn={localOn}
+              plexOn={plexOn}
+              onDone={(text) => {
+                setSetup(false);
+                setMessage(text);
+              }}
+            />
+          ) : !token ? (
             methods == null ? (
               <p role="status" className="text-center text-sm text-fg-muted">
                 {t("Loading…")}
@@ -450,7 +501,7 @@ export default function Me() {
                 }}
               >
                 <p className="text-center text-sm text-fg-muted">
-                  {viewer.title || viewer.username}
+                  {t("Signed in as {name}", { name: viewer.title || viewer.username || "" })}
                 </p>
                 <div className="space-y-2">
                   <Label htmlFor="me-code" className="sr-only">
@@ -477,12 +528,17 @@ export default function Me() {
                 >
                   {t("Approve device")}
                 </Button>
+                <p className="text-center text-xs text-fg-muted">
+                  {t(
+                    "On the TV, choose Quick Connect (Jellyfin or Emby) or sign in with a code, then type the 6-character code here.",
+                  )}
+                </p>
               </form>
             )
           ) : (
             <p role="status">{t("Loading…")}</p>
           )}
-          {token ? (
+          {token && !inviting && !settingUp ? (
             <Button
               variant="ghost"
               type="button"
@@ -494,6 +550,7 @@ export default function Me() {
                 setApproved(null);
                 setMessage("");
                 setCode("");
+                setSetup(false);
               }}
             >
               {t("Sign out")}
@@ -510,4 +567,223 @@ export default function Me() {
       </div>
     </main>
   );
+}
+
+type Identity = { provider: string; display: string };
+
+/**
+ * The first step after an invite is accepted: choose a username and password
+ * (or link Plex) so the viewer can sign in again once this tab is closed.
+ * A viewer who already has a password skips it.
+ */
+function FirstPassword({
+  token,
+  viewer,
+  localOn,
+  plexOn,
+  onDone,
+}: {
+  token: string;
+  viewer: Viewer;
+  localOn: boolean;
+  plexOn: boolean;
+  onDone: (message: string) => void;
+}) {
+  const [checked, setChecked] = useState(false);
+  const [username, setUsername] = useState(() => suggestUsername(viewer));
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [pinURL, setPinURL] = useState("");
+  const cancelled = useRef(false);
+  const done = useRef(onDone);
+  done.current = onDone;
+
+  useEffect(() => {
+    cancelled.current = false;
+    let stop = false;
+    request<{ identities?: Identity[] }>("/identities", token)
+      .then((res) => {
+        if (stop) return;
+        const ids = res?.identities ?? [];
+        const local = ids.find((i) => i.provider === "local");
+        if (local || (!localOn && !plexOn)) {
+          done.current(t("Invite accepted. You can approve a TV now."));
+          return;
+        }
+        setChecked(true);
+      })
+      .catch(() => {
+        if (!stop) setChecked(true);
+      });
+    return () => {
+      stop = true;
+      cancelled.current = true;
+    };
+  }, [token, localOn, plexOn]);
+
+  const tooShort = password !== "" && password.length < MIN_LOCAL_PASSWORD;
+  const mismatch = confirm !== "" && confirm !== password;
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (password.length < MIN_LOCAL_PASSWORD) {
+      setError(t("Password must be at least 12 characters."));
+      return;
+    }
+    if (password !== confirm) {
+      setError(t("Passwords do not match."));
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await request("/password", token, { username: username.trim(), password });
+      done.current(
+        t("All set. Next time, sign in with {username} and your password.", {
+          username: username.trim(),
+        }),
+      );
+    } catch {
+      setError(t("That password could not be saved. Try a different username."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function linkPlex() {
+    setBusy(true);
+    setError("");
+    const popup = window.open("", "plex-link", "width=560,height=720");
+    try {
+      const pin = await request<{ handle: string; authUrl: string }>("/link/plex", token, {});
+      setPinURL(pin.authUrl);
+      if (popup) popup.location.href = pin.authUrl;
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (!cancelled.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (cancelled.current) return;
+        const result = await request<{ done: boolean }>(
+          `/link/plex/${encodeURIComponent(pin.handle)}`,
+          token,
+        );
+        if (result.done) {
+          done.current(t("All set. Next time, choose Sign in with Plex."));
+          return;
+        }
+      }
+      if (!cancelled.current) setError(t("Sign-in timed out. Try again."));
+    } catch {
+      if (!cancelled.current) setError(t("The Plex account could not be linked."));
+    } finally {
+      popup?.close();
+      if (!cancelled.current) {
+        setBusy(false);
+        setPinURL("");
+      }
+    }
+  }
+
+  if (!checked) {
+    return (
+      <p role="status" className="text-center text-sm text-fg-muted">
+        {t("Loading…")}
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-5">
+      {error ? (
+        <Alert variant="destructive" role="alert">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+      {localOn ? (
+        <form className="space-y-4" onSubmit={(e) => void save(e)}>
+          <div className="space-y-2">
+            <Label htmlFor="setup-username">{t("Username")}</Label>
+            <Input
+              id="setup-username"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.currentTarget.value)}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="setup-password">{t("New password")}</Label>
+            <PasswordInput
+              id="setup-password"
+              autoComplete="new-password"
+              aria-invalid={tooShort || undefined}
+              value={password}
+              onChange={(e) => setPassword(e.currentTarget.value)}
+              autoFocus
+              required
+            />
+            <p className={tooShort ? "text-xs text-danger" : "text-xs text-fg-muted"}>
+              {t("Use at least 12 characters.")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="setup-confirm">{t("Confirm new password")}</Label>
+            <PasswordInput
+              id="setup-confirm"
+              autoComplete="new-password"
+              aria-invalid={mismatch || undefined}
+              value={confirm}
+              onChange={(e) => setConfirm(e.currentTarget.value)}
+              required
+            />
+            {mismatch ? (
+              <p role="alert" className="text-xs text-danger">
+                {t("Passwords do not match.")}
+              </p>
+            ) : null}
+          </div>
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={busy || !username.trim() || tooShort || !password || password !== confirm}
+          >
+            {t("Save and continue")}
+          </Button>
+        </form>
+      ) : null}
+      {plexOn ? (
+        <div className="space-y-3">
+          {localOn ? (
+            <p className="text-center text-xs uppercase tracking-wide text-fg-muted">{t("or")}</p>
+          ) : null}
+          <Button
+            type="button"
+            variant={localOn ? "outline" : undefined}
+            className="w-full"
+            disabled={busy}
+            onClick={() => void linkPlex()}
+          >
+            {t("Use my Plex account instead")}
+          </Button>
+          {pinURL ? (
+            <p className="text-center text-sm">
+              <a href={pinURL} target="_blank" rel="noreferrer">
+                {t("Open Plex sign-in")}
+              </a>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A starting username from the viewer's name: lower case, letters and digits. */
+function suggestUsername(viewer: Viewer): string {
+  if (viewer.username) return viewer.username;
+  return (viewer.title ?? "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9._-]+/g, "")
+    .slice(0, 32);
 }

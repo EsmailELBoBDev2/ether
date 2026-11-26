@@ -681,16 +681,23 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	// credits snapshot so per-row metadata() calls never hit plexguid_mappings
 	// or plexguid_title_credits one row at a time.
 	ctx = s.withPlexCredits(ctx, nil, nil, false)
-	for _, row := range rows {
-		var md model.Metadata
+	var slotPage *slotMediaPage
+	if len(rows) > 1 {
+		slotPage = &slotMediaPage{}
+	}
+	if len(rows) > 0 {
+		mc.Metadata = make([]model.Metadata, len(rows))
+	}
+	for i, row := range rows {
+		md := &mc.Metadata[i]
 		if row.extra != nil {
-			md = *row.extra
+			*md = *row.extra
 		} else {
-			md = s.metadata(ctx, pr, row.t, renderOpts{detail: true, media: true, listRender: len(rows) > 1 && row.it.ID != selItem.ID, state: state})
+			s.metadataInto(ctx, pr, row.t, renderOpts{detail: true, media: true, listRender: len(rows) > 1 && row.it.ID != selItem.ID, state: state, slotPage: slotPage}, md)
 		}
 		md.PlayQueueItemID = row.it.ID
-		mc.Metadata = append(mc.Metadata, md)
 	}
+	s.finishSlotPage(ctx, pr, slotPage)
 	applyExcludedElements(mc.Metadata, excludedElements(q))
 	mc.Size = len(mc.Metadata)
 	s.write(w, r, mc)

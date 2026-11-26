@@ -975,6 +975,7 @@ type DownloadQueueStore interface {
 // VariantIDs assigns stable ids to release variants.
 type VariantIDs interface {
 	IDFor(key core.RatingKey, releaseID string) int64
+	IDsFor(ctx context.Context, refs []VariantRef) (map[VariantRef]int64, error)
 	Lookup(id int64) (VariantRef, bool)
 	Start(ctx context.Context, wg *sync.WaitGroup)
 	Flush(ctx context.Context) error

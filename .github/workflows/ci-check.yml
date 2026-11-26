@@ -1,0 +1,19 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-iptv]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: gofmt -l internal/ | tee /tmp/fmt; gofmt -d internal/ || true; test ! -s /tmp/fmt
+      - name: vet
+        run: go vet ./internal/livetv/... ./internal/resolver/... ./internal/app/...
+      - name: test
+        run: go test ./internal/livetv/... ./internal/resolver/... 2>&1 | tail -150
+        shell: bash -o pipefail {0}

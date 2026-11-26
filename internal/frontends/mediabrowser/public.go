@@ -91,8 +91,23 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 			jsonReply(w, getInfo().ProductName)
 		}},
 	}
+	// Real Emby sends the bare root to its web app. Ether does too, but only
+	// when the owner set ETHER_EMBY_WEB_SOURCE; otherwise it keeps the 404.
+	if getInfo().ProductName == "Emby Server" {
+		handlers = append(handlers, struct {
+			method, path string
+			handler      http.HandlerFunc
+		}{"GET", "/", func(w http.ResponseWriter, r *http.Request) {
+			if embyWebSource() == "" {
+				http.NotFound(w, r)
+				return
+			}
+			target := clientnet.RedirectPath(requestRedirectPrefix(r, originFn), "", "/web/")
+			http.Redirect(w, r, target, http.StatusFound)
+		}})
+	}
 	// Real Jellyfin sends the bare root to the web client once it is
-	// installed. Emby never registers this route and keeps its 404.
+	// installed.
 	if getInfo().ProductName != "Emby Server" {
 		handlers = append(handlers, struct {
 			method, path string

@@ -24,6 +24,10 @@ var errNotAFile = errors.New("not a regular file")
 func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, originFn originResolver, client *webclient.Installer) {
 	rel := r.PathValue("path")
 	if emby {
+		if source := embyWebSource(); source != "" {
+			serveEmbyWebFrom(w, r, source, rel, originFn)
+			return
+		}
 		if rel != "" {
 			http.NotFound(w, r)
 			return

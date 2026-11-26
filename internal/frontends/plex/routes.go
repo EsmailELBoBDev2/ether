@@ -101,6 +101,11 @@ func (s *Server) routes() chi.Router {
 
 	pubGet, _ := bind(r)
 	pubGet("/identity", s.handleIdentity)
+	// Plex Web is Plex's own app, hosted at app.plex.tv, where it reaches this
+	// server through the owner's plex.tv account. A browser opening /web here
+	// (as on a real Plex Media Server) is sent there instead of a 404.
+	pubGet("/web", redirectPlexWeb)
+	pubGet("/web/*", redirectPlexWeb)
 	pubGet("/:/resources/*", func(w http.ResponseWriter, r *http.Request) { writeHTTPError(w, http.StatusNotFound) })
 
 	r.Group(func(r chi.Router) {

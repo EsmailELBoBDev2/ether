@@ -406,7 +406,8 @@ describe("Server › Plugins (WS10a)", () => {
           return Response.json(
             {
               error: {
-                code: "validation",
+                code: "library_levels_changed",
+                confirmation: "reviewed-manifest",
                 message: "Some fields need attention.",
                 fields: [
                   {
@@ -416,7 +417,7 @@ describe("Server › Plugins (WS10a)", () => {
                 ],
               },
             },
-            { status: 400 },
+            { status: 409 },
           );
         }
       }
@@ -440,7 +441,10 @@ describe("Server › Plugins (WS10a)", () => {
     expect(await screen.findByRole("tablist", { name: "Plugin sections" })).toBeTruthy();
     expect(installBodies).toHaveLength(2);
     expect(installBodies[0]!.replaceLibraries).toBeUndefined();
-    expect(installBodies[1]).toMatchObject({ replaceLibraries: true });
+    expect(installBodies[1]).toMatchObject({
+      replaceLibraries: true,
+      rebuildConfirmation: "reviewed-manifest",
+    });
   });
 
   it("pairs and revokes a remote sidecar", async () => {

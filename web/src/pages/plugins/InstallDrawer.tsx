@@ -1,4 +1,4 @@
-import { Badge, Button, Input, Switch, confirmDialog, toast } from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, Switch, toast } from "@braedonsaunders/appkit-ui";
 import { AlertTriangle, ArrowLeft, Link2, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Artwork } from "../../components/Artwork";
@@ -7,9 +7,10 @@ import { MutationError } from "../../components/feedback";
 import { Field } from "../../components/fields";
 import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
-import { ApiError, apiFetch } from "../../lib/api";
+import { apiFetch } from "../../lib/api";
 import { invalidateRegistry } from "../../lib/extend";
 import { PermissionSheet, RuntimeLimitsCard } from "./PermissionSheet";
+import { confirmLibraryRebuild } from "./rebuildLibrary";
 import {
   isPrivateUrl,
   kindIcon,
@@ -96,7 +97,7 @@ export function InstallDrawer({
     }
   };
 
-  const runInstall = async (replaceLibraries = false) => {
+  const runInstall = async (rebuildConfirmation?: string) => {
     if (!preview) return;
     setBusy(true);
     setError(null);
@@ -115,7 +116,8 @@ export function InstallDrawer({
             },
             shadow,
             acceptAddedPermissions: !!preview.addedPermissions?.length,
-            replaceLibraries: replaceLibraries || undefined,
+            replaceLibraries: rebuildConfirmation ? true : undefined,
+            rebuildConfirmation,
           }),
         );
         installed = await apiFetch<PluginSummary>("/plugins/install", {
@@ -137,7 +139,8 @@ export function InstallDrawer({
             shadow,
             acceptAddedPermissions:
               preview.addedPermissions && preview.addedPermissions.length > 0 ? true : undefined,
-            replaceLibraries: replaceLibraries || undefined,
+            replaceLibraries: rebuildConfirmation ? true : undefined,
+            rebuildConfirmation,
           }),
         });
       }
@@ -147,19 +150,9 @@ export function InstallDrawer({
       reset();
       onInstalled(targetId);
     } catch (e) {
-      // An update that changes a library's levels cannot keep its items:
-      // offer to rebuild that library (the plugin's other libraries stay).
-      if (!replaceLibraries && isLibraryShapeChange(e)) {
-        setBusy(false);
-        const ok = await confirmDialog({
-          title: t("Rebuild the changed library?"),
-          message: t(
-            "This update changes how a library of this plugin is organised. Ether rebuilds that library from the plugin; its watch or reading progress starts over. The plugin's other libraries are not touched.",
-          ),
-          confirmLabel: t("Rebuild and install"),
-          tone: "danger",
-        });
-        if (ok) return runInstall(true);
+      if (!rebuildConfirmation) {
+        const confirmation = await confirmLibraryRebuild(e);
+        if (confirmation) return runInstall(confirmation);
       }
       setError(e);
     } finally {
@@ -405,15 +398,5 @@ export function InstallDrawer({
         )}
       </div>
     </Drawer>
-  );
-}
-
-/** Whether an install failed only because a library's levels changed. */
-function isLibraryShapeChange(e: unknown): boolean {
-  if (!(e instanceof ApiError) || !e.fields?.length) return false;
-  return e.fields.every(
-    (f) =>
-      /\.levels\[\d+\]/.test(f.field) &&
-      /levels cannot be removed|playable or container flag|was removed/.test(f.message),
   );
 }

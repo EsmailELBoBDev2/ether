@@ -138,6 +138,23 @@ export default function Me() {
     };
   }, []);
 
+  // A TV's sign-in link can carry its code (?code=…). It only fills the box:
+  // approving still takes a press, so a link from someone else cannot sign
+  // their TV into this account.
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const fromLink = normalizeCode(query.get("code") ?? "");
+    if (!fromLink) return;
+    setCode(fromLink);
+    query.delete("code");
+    const rest = query.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      window.location.pathname + (rest ? `?${rest}` : "") + window.location.hash,
+    );
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
     const secret = params.get("invite");

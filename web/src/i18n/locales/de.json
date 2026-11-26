@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} wird von Ether verwaltet und kann nicht bearbeitet werden.",
   "m_07c7a1f3c5bb7f": "Kleinkinder",
   "m_07c8a3f615112d": "Durch die Cache-Aufbewahrung freigegeben",
+  "m_07ca9e78406340": "Optional. Wo Zuschauer ihre Ether-Seite öffnen, z. B. https://dashboard.example.com. Anmeldecodes auf Fernsehern und Anmeldeseiten von Apps verlinken hierher. Leer lassen, um sie aus jeder Anfrage abzuleiten – hinter einem Reverse-Proxy kann das falsch sein.",
   "m_07cc52af7da1ed": "Die Altersfreigabe des Titels liegt innerhalb der Grenze.",
   "m_07cca1160d7b16": {
     "one": "{count} Kanal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Dieser Anbieter ist vorübergehend pausiert. Versuche es später erneut.",
   "m_0bd21cbf4177c6": "Fehlende Untertitel werden von den Untertitelanbietern heruntergeladen, die du unter {link} einrichtest.",
   "m_0bd3f27410638a": "Filme, vollständige Serien und Episoden, die dieser Server bereits hat, in Plex-Apps ausblenden.",
+  "m_0bd4533164e355": "Adresse der Zuschauerseite",
   "m_0bd4c613cb55fc": "Nächste Episode vorab laden",
   "m_0bd5b0326e3ce6": "Eine Startseiten-Reihe aus einer externen Filmliste erstellen",
   "m_0bd75230df6f9e": "Variable: {key}",

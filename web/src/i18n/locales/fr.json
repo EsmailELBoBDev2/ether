@@ -2705,6 +2705,7 @@
   "m_07c79bc350bda3": "{name} est géré par Ether et ne peut pas être modifié.",
   "m_07c7a1f3c5bb7f": "Jeunes enfants",
   "m_07c8a3f615112d": "Libéré par la rétention du cache",
+  "m_07ca9e78406340": "Facultatif. L'adresse où les spectateurs ouvrent leur page Ether, par exemple https://dashboard.example.com. Les codes de connexion des télés et les écrans de connexion des applis y renvoient. Laissez vide pour la déduire de chaque requête, ce qui peut être faux derrière un proxy inverse.",
   "m_07cc52af7da1ed": "Le titre respecte sa limite de classification.",
   "m_07cca1160d7b16": {
     "many": "{count} de chaînes",
@@ -4099,6 +4100,7 @@
   "m_0bd1d1b76abc5b": "Ce fournisseur est temporairement en pause. Réessayez plus tard.",
   "m_0bd21cbf4177c6": "Les sous-titres manquants sont téléchargés auprès des fournisseurs de sous-titres que vous configurez dans {link}.",
   "m_0bd3f27410638a": "Masquer dans les applications Plex les films, séries complètes et épisodes que ce serveur possède déjà.",
+  "m_0bd4533164e355": "Adresse de la page spectateur",
   "m_0bd4c613cb55fc": "Précharger l’épisode suivant",
   "m_0bd5b0326e3ce6": "Créer une rangée d'accueil à partir d'une liste de films externe",
   "m_0bd75230df6f9e": "Variable : {key}",

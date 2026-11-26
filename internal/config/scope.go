@@ -67,6 +67,7 @@ var sectionScopes = map[string]Scope{
 var mixedSections = map[string]map[string]Scope{
 	"server": {
 		"trustedProxyCIDRs":        Local,
+		"viewerPortalURL":          Shared,
 		"port":                     Local,
 		"consolePort":              Local,
 		"disableConsoleOnMainPort": Local,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
 )
@@ -84,6 +85,40 @@ func TestBrandingPointsViewersAtThePortal(t *testing.T) {
 			// A derived address can be a host that does not serve the page.
 			if strings.Contains(got, "http") {
 				t.Fatalf("hint %q names an address", got)
+			}
+		})
+	}
+}
+
+func TestBrandingNamesTheOwnerSetViewerPage(t *testing.T) {
+	for _, protocol := range []string{"jellyfin", "emby"} {
+		t.Run(protocol, func(t *testing.T) {
+			cfg := config.Config{}
+			cfg.Server.ViewerPortalURL = "https://dashboard.example.com"
+			host := frontend.Host{
+				Identity: frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) {
+					return &frontend.Viewer{ID: 1}, nil
+				}},
+				Experience: frontendtest.Experience{},
+				HostConfig: func() frontend.HostConfig { return cfg },
+				ViewerPortalURL: func(context.Context, *http.Request) (string, error) {
+					return "https://dashboard.example.com/ether/me", nil
+				},
+			}
+			var front frontend.Frontend = Jellyfin{MachineID: "test"}
+			if protocol == "emby" {
+				front = Emby{MachineID: "test"}
+			}
+			inst, err := front.Mount(context.Background(), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			inst.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/Branding/Configuration", nil))
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			if got, _ := body["LoginDisclaimer"].(string); !strings.Contains(got, "https://dashboard.example.com/ether/me") {
+				t.Fatalf("hint %q does not name the owner-set viewer page", got)
 			}
 		})
 	}

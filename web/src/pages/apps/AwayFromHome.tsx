@@ -49,16 +49,17 @@ export function AwayFromHome() {
     () => [...(address.more ?? []), ...(certificate.more ?? [])].map((f) => f.key),
     [address, certificate],
   );
-  const serverKeys = useMemo(() => (proxy.more ?? []).map((f) => f.key), [proxy]);
   const saved = useMemo<AwayDraft | null>(() => {
     const plex = config.data?.plex as Obj | undefined;
     if (!plex) return null;
     const server = (config.data?.server as Obj | undefined) ?? {};
     return {
       plex: Object.fromEntries(plexKeys.map((key) => [key, plex[key]])),
-      server: Object.fromEntries(serverKeys.map((key) => [key, server[key] ?? []])),
+      server: Object.fromEntries(
+        (proxy.more ?? []).map((f) => [f.key, server[f.key] ?? (f.kind === "list" ? [] : "")]),
+      ),
     };
-  }, [config.data, plexKeys, serverKeys]);
+  }, [config.data, plexKeys, proxy]);
   const { draft, setDraft, dirty, reset } = useDraft(saved);
   const hint = useAsync(
     (signal) =>

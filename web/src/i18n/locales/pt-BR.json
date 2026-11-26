@@ -2705,6 +2705,7 @@
   "m_07c79bc350bda3": "{name} é gerenciado pelo Ether e não pode ser editado.",
   "m_07c7a1f3c5bb7f": "Crianças pequenas",
   "m_07c8a3f615112d": "Liberado pela retenção do cache",
+  "m_07ca9e78406340": "Opcional. Onde os espectadores abrem a página do Ether, como https://dashboard.example.com. Os códigos de login da TV e as telas de login dos apps apontam para cá. Deixe vazio para deduzir de cada solicitação, o que pode dar errado atrás de um proxy reverso.",
   "m_07cc52af7da1ed": "O título está dentro do limite de classificação.",
   "m_07cca1160d7b16": {
     "many": "{count} canais",
@@ -4099,6 +4100,7 @@
   "m_0bd1d1b76abc5b": "Este provedor está temporariamente pausado. Tente novamente mais tarde.",
   "m_0bd21cbf4177c6": "As legendas ausentes são baixadas dos provedores de legendas que você configura em {link}.",
   "m_0bd3f27410638a": "Oculta nos apps do Plex os filmes, séries completas e episódios que este servidor já possui.",
+  "m_0bd4533164e355": "Endereço da página do espectador",
   "m_0bd4c613cb55fc": "Pré-buscar o próximo episódio",
   "m_0bd5b0326e3ce6": "Criar uma fileira da Início a partir de uma lista externa de filmes",
   "m_0bd75230df6f9e": "Variável: {key}",

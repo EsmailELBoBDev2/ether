@@ -116,7 +116,7 @@ func TestEmbyLyricStream(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		protocol string
+		protocol frontend.Protocol
 		likely   bool
 		title    frontend.Title
 	}{

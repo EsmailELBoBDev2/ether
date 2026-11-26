@@ -14,6 +14,11 @@ const stageSpaceInterval = 4 << 20
 // refused a restore while hundreds of gigabytes are free.
 var stageFloor = func(total int64) int64 { return max(2<<30, min(total/20, 20<<30)) }
 
+// DisableStageFloorForTests turns the free-space floor off for the rest of
+// the process. Tests in other packages stage tiny bundles on whatever volume
+// the machine has; real servers never call it.
+func DisableStageFloorForTests() { stageFloor = func(int64) int64 { return 0 } }
+
 // stageSpace shares one disk budget across all files in a staging operation.
 type stageSpace struct {
 	path, operation string

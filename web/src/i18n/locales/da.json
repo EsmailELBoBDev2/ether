@@ -989,6 +989,7 @@
   },
   "m_02db68d520f1b2": "Programlægning",
   "m_02dd0f5151d961": "Beskriv det med dine egne ord, start fra en skabelon, eller tilføj en trigger fra paletten.",
+  "m_02de682e3e75a4": "Denne opdatering ændrer, hvordan et bibliotek i dette plugin er organiseret. Ether genopbygger biblioteket fra pluginet; dets afspilnings- eller læsefremskridt starter forfra. Pluginets andre biblioteker berøres ikke.",
   "m_02dfe071ac84d2": "Redigeret af dig",
   "m_02e00bae7dec74": "God læsbarhed",
   "m_02e02fcf5a6bd7": "Delt uploadbudget ({cap}-grænse)",
@@ -8372,6 +8373,7 @@
   },
   "m_1896095e6f5bf2": "Den tilstandstjekkes på ny, næste gang den er en kandidat.",
   "m_18969be245c683": "Frigør {title}?",
+  "m_1897e9736cf4c7": "Genopbyg og installér",
   "m_189a21208e55a9": "Livebegivenheder vises her, når feedet fungerer igen.",
   "m_189a38f201f485": "Annuller genstart",
   "m_189a59134a29dd": {
@@ -8456,6 +8458,7 @@
   "m_18cb5aae13b5b6": "Køler af",
   "m_18cc2c92567fa5": "Ingen felter matcher.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Genopbyg det ændrede bibliotek?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Gør krav på serveren for at slå dette til.",
   "m_18cf943a2b12c6": "Hvor meget af næste episode der hentes forud.",

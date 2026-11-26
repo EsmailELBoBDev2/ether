@@ -989,6 +989,7 @@
   },
   "m_02db68d520f1b2": "Programmering",
   "m_02dd0f5151d961": "Beskriv det med egna ord, börja från en mall eller lägg till en utlösare från paletten.",
+  "m_02de682e3e75a4": "Den här uppdateringen ändrar hur ett bibliotek i tillägget är ordnat. Ether bygger om det biblioteket från tillägget; tittar- eller läsförloppet börjar om. Tilläggets andra bibliotek påverkas inte.",
   "m_02dfe071ac84d2": "Redigerad av dig",
   "m_02e00bae7dec74": "God läsbarhet",
   "m_02e02fcf5a6bd7": "Delad uppladdningsbudget ({cap}-gräns)",
@@ -8372,6 +8373,7 @@
   },
   "m_1896095e6f5bf2": "Den hälsokontrolleras på nytt nästa gång den är en kandidat.",
   "m_18969be245c683": "Lossa {title}?",
+  "m_1897e9736cf4c7": "Bygg om och installera",
   "m_189a21208e55a9": "Livehändelser visas här när flödet återhämtar sig.",
   "m_189a38f201f485": "Avbryt omstart",
   "m_189a59134a29dd": {
@@ -8456,6 +8458,7 @@
   "m_18cb5aae13b5b6": "Vilar",
   "m_18cc2c92567fa5": "Inga fält matchar.",
   "m_18cce9c74cc9f4": "Pilot",
+  "m_18cd6d66255241": "Bygga om det ändrade biblioteket?",
   "m_18cdd2a9b00054": "{role} · {name}",
   "m_18ce6fc7682991": "Kräv den här servern för att slå på det.",
   "m_18cf943a2b12c6": "Hur mycket av nästa avsnitt som hämtas i förväg.",

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -17,10 +16,10 @@ var proxyHintLookups = struct {
 	addr func(ctx context.Context, addr string) ([]string, error)
 	host func(ctx context.Context, host string) ([]netip.Addr, error)
 }{
-	addr: net.DefaultResolver.LookupAddr,
-	host: func(ctx context.Context, host string) ([]netip.Addr, error) {
-		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	},
+	// Both fall back to Docker's embedded DNS, which a container sharing a
+	// VPN container's network (network_mode: service:x) cannot otherwise see.
+	addr: identity.LookupProxyAddr,
+	host: identity.LookupProxyHost,
 }
 
 // untrustedProxy is one reverse proxy Ether sees but does not trust yet.

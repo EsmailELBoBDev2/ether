@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,7 @@ const (
 
 // lookupProxyHost resolves a proxy name. Tests replace it.
 var lookupProxyHost = func(ctx context.Context, host string) ([]netip.Addr, error) {
-	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	return LookupProxyHost(ctx, host)
 }
 
 type proxyHostEntry struct {
@@ -74,6 +75,7 @@ func proxyHostName(raw string) (string, bool) {
 // ValidateProxyEntry accepts what ProxyPrefixes can trust: an IP address, a
 // CIDR range or a host or container name.
 func ValidateProxyEntry(raw string) error {
+	raw = proxyEntryHost(raw)
 	if _, err := ParseProxyEntry(raw); err == nil {
 		return nil
 	} else if strings.Contains(raw, "/") {
@@ -89,6 +91,7 @@ func ValidateProxyEntry(raw string) error {
 // cache ProxyPrefixes know the result can change without a config change.
 func HasProxyHostNames(entries []string) bool {
 	for _, raw := range entries {
+		raw = proxyEntryHost(raw)
 		if _, err := ParseProxyEntry(raw); err == nil {
 			continue
 		}
@@ -179,4 +182,30 @@ func resetProxyHosts() {
 	proxyHosts.mu.Lock()
 	proxyHosts.entries = nil
 	proxyHosts.mu.Unlock()
+}
+
+// proxyEntryHost reduces an entry written as an address to its host, so
+// "http://nginx-proxy-manager:81" or "nginx-proxy-manager:81" (how a reverse
+// proxy's own config names an upstream) means the container nginx-proxy-manager.
+// Trust is about which host the request came from; scheme and port do not
+// matter. CIDR ranges and plain names pass through unchanged.
+func proxyEntryHost(raw string) string {
+	s := strings.TrimSpace(raw)
+	if i := strings.Index(s, "://"); i > 0 {
+		if u, err := url.Parse(s); err == nil && u.Hostname() != "" {
+			return u.Hostname()
+		}
+		return s
+	}
+	if strings.Count(s, ":") == 1 && !strings.Contains(s, "/") {
+		if host, _, err := net.SplitHostPort(s); err == nil && host != "" {
+			return host
+		}
+	}
+	if strings.HasPrefix(s, "[") {
+		if host, _, err := net.SplitHostPort(s); err == nil {
+			return host
+		}
+	}
+	return s
 }

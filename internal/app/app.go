@@ -185,6 +185,8 @@ type App struct {
 	proxyGen       uint64
 	proxyReady     bool
 	proxyPrefixes  []netip.Prefix
+	proxyEntries   []string
+	proxyNamed     bool
 	// seenFamilies records a client family policy once per process. Playback
 	// does not take a write lock to refresh last_seen.
 	seenFamilies sync.Map

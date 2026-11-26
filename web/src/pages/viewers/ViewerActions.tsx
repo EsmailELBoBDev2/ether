@@ -350,6 +350,7 @@ function ResetPasswordPanel({
   onClose: () => void;
 }) {
   const [username, setUsername] = useState(viewer.username);
+  const [usernameEdited, setUsernameEdited] = useState(false);
   const [confirm, setConfirm] = useState("");
   const identities = useAsync(
     () =>
@@ -360,12 +361,28 @@ function ResetPasswordPanel({
         : Promise.resolve({ identities: [] }),
     [open, viewer.id],
   );
+  // The viewer's existing local sign-in names. A reset keeps one of them;
+  // only a viewer without any gets to type a new one.
+  const localNames = [
+    ...new Set(
+      (identities.data?.identities ?? [])
+        .filter((i) => i.provider === "local")
+        .map((i) => i.display)
+        .filter(Boolean),
+    ),
+  ];
+  const defaultUsername = localNames.includes(viewer.username)
+    ? viewer.username
+    : (localNames[0] ?? viewer.username ?? "");
+  useEffect(() => {
+    if (open && !usernameEdited) setUsername(defaultUsername);
+  }, [open, usernameEdited, defaultUsername]);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (open) {
-      setUsername(viewer.username);
+      setUsernameEdited(false);
       setConfirm("");
       setPassword("");
       setError("");
@@ -387,7 +404,7 @@ function ResetPasswordPanel({
     try {
       await apiFetch(`/users/${viewer.id}/password`, {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       toast.success(t("Password saved."));
       onClose();
@@ -402,23 +419,32 @@ function ResetPasswordPanel({
       <form className="space-y-4" onSubmit={(e) => void submit(e)}>
         <div>
           <Label htmlFor="reset-username">{t("Username")}</Label>
-          <SearchSelect
-            ariaLabel={t("Username")}
-            value={username}
-            onChange={setUsername}
-            searchable
-            options={[
-              ...new Set([
-                viewer.username,
-                ...(identities.data?.identities ?? [])
-                  .filter((i) => i.provider === "local")
-                  .map((i) => i.display),
-              ]),
-            ]
-              .filter(Boolean)
-              .map((value) => ({ value, label: value }))}
-            {...searchSelectLabels()}
-          />
+          {localNames.length > 1 ? (
+            <SearchSelect
+              ariaLabel={t("Username")}
+              value={username}
+              onChange={(value) => {
+                setUsernameEdited(true);
+                setUsername(value);
+              }}
+              searchable
+              options={localNames.map((value) => ({ value, label: value }))}
+              {...searchSelectLabels()}
+            />
+          ) : (
+            <Input
+              id="reset-username"
+              aria-label={t("Username")}
+              value={username}
+              readOnly={localNames.length === 1}
+              onChange={(e) => {
+                setUsernameEdited(true);
+                setUsername(e.currentTarget.value);
+              }}
+              autoComplete="off"
+              required
+            />
+          )}
         </div>
         <div>
           <Label htmlFor="reset-password">{t("New password")}</Label>
@@ -472,7 +498,10 @@ function ResetPasswordPanel({
           <Button type="button" variant="ghost" onClick={onClose}>
             {t("Cancel")}
           </Button>
-          <Button type="submit" disabled={busy || tooShort || !password || password !== confirm}>
+          <Button
+            type="submit"
+            disabled={busy || tooShort || !username.trim() || !password || password !== confirm}
+          >
             {t("Set or reset password")}
           </Button>
         </div>

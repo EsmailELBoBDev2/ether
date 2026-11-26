@@ -528,12 +528,17 @@ func (a *App) trustedProxyPrefixes() []netip.Prefix {
 	gen := a.cfg.Generation()
 	a.proxyMu.Lock()
 	defer a.proxyMu.Unlock()
-	if a.proxyReady && a.proxyGen == gen {
-		return a.proxyPrefixes
+	if !a.proxyReady || a.proxyGen != gen {
+		a.proxyEntries = a.cfg.TrustedProxyCIDRs()
+		a.proxyNamed = identity.HasProxyHostNames(a.proxyEntries)
+		a.proxyPrefixes = identity.ProxyPrefixes(a.proxyEntries)
+		a.proxyGen = gen
+		a.proxyReady = true
+	} else if a.proxyNamed {
+		// Named proxies (Docker containers) can move without a config
+		// change; ProxyPrefixes serves their cached resolution.
+		a.proxyPrefixes = identity.ProxyPrefixes(a.proxyEntries)
 	}
-	a.proxyPrefixes = identity.ProxyPrefixes(a.cfg.TrustedProxyCIDRs())
-	a.proxyGen = gen
-	a.proxyReady = true
 	return a.proxyPrefixes
 }
 

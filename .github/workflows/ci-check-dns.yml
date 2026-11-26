@@ -1,0 +1,21 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-dns]
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l internal/)" || { gofmt -d internal/; exit 1; }
+      - name: vet
+        run: go vet ./internal/frontend/... ./internal/admin/... ./internal/identity/... ./internal/app/...
+      - name: test
+        shell: bash
+        run: |
+          go test -timeout 25m ./internal/frontend/kit/... ./internal/admin/... ./internal/identity/... ./internal/frontends/plex/... ./internal/app/... 2>&1 | grep -E '^(ok|FAIL|---|panic)|_test.go:[0-9]+' | head -60
+          exit ${PIPESTATUS[0]}

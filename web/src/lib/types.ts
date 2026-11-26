@@ -367,6 +367,8 @@ export interface EtherConfig {
     clusterWeight?: number;
     /** Reverse proxies (IP, CIDR or host/container name) whose forwarded client address is trusted. */
     trustedProxyCIDRs?: string[] | null;
+    /** Where viewers open /ether/me; links shown to viewers use it when set. */
+    viewerPortalURL?: string;
   };
   plex: {
     token: string;

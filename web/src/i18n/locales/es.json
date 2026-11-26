@@ -2705,6 +2705,7 @@
   "m_07c79bc350bda3": "{name} está gestionado por Ether y no se puede editar.",
   "m_07c7a1f3c5bb7f": "Niños pequeños",
   "m_07c8a3f615112d": "Liberado por la retención de caché",
+  "m_07ca9e78406340": "Opcional. Dónde abren los espectadores su página de Ether, por ejemplo https://dashboard.example.com. Los códigos de inicio de sesión de la TV y las pantallas de inicio de las apps enlazan aquí. Déjalo vacío para deducirla de cada solicitud, lo que puede fallar detrás de un proxy inverso.",
   "m_07cc52af7da1ed": "El título está dentro de su límite de clasificación.",
   "m_07cca1160d7b16": {
     "many": "{count} canales",
@@ -4099,6 +4100,7 @@
   "m_0bd1d1b76abc5b": "Este proveedor está en pausa temporalmente. Vuelve a intentarlo más tarde.",
   "m_0bd21cbf4177c6": "Los subtítulos que faltan se descargan de los proveedores de subtítulos que configures en {link}.",
   "m_0bd3f27410638a": "Oculta en las apps de Plex las películas, series completas y episodios que este servidor ya tiene.",
+  "m_0bd4533164e355": "Dirección de la página del espectador",
   "m_0bd4c613cb55fc": "Precargar el siguiente episodio",
   "m_0bd5b0326e3ce6": "Crear una fila de Inicio a partir de una lista externa de películas",
   "m_0bd75230df6f9e": "Variable: {key}",

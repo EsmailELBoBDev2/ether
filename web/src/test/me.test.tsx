@@ -256,3 +256,17 @@ it("lets someone with an account leave an invite link and sign in instead", asyn
   expect(await screen.findByRole("radio", { name: "Sign in with Plex" })).toBeInTheDocument();
   window.history.replaceState(null, "", "/");
 });
+
+it("fills a TV code from the sign-in link but waits for the viewer to approve it", async () => {
+  sessionStorage.setItem("ether.viewerPortal", "viewer-grant");
+  window.history.replaceState(null, "", "/ether/me?code=abc123");
+  const fetchMock = portalFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  render(<Me />);
+  expect(await screen.findByLabelText("Enter the code shown on your TV")).toHaveValue("ABC123");
+  expect(window.location.search).toBe("");
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/quickconnect"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Approve device" }));
+  expect(await screen.findByRole("heading", { name: "Device approved" })).toBeInTheDocument();
+  window.history.replaceState(null, "", "/");
+});

@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} wordt door Ether beheerd en kan niet worden bewerkt.",
   "m_07c7a1f3c5bb7f": "Jonge kinderen",
   "m_07c8a3f615112d": "Vrijgegeven door cachebewaring",
+  "m_07ca9e78406340": "Optioneel. Waar kijkers hun Ether-pagina openen, zoals https://dashboard.example.com. Aanmeldcodes op tv's en aanmeldschermen van apps linken hierheen. Laat leeg om het uit elk verzoek af te leiden, wat achter een reverse proxy fout kan gaan.",
   "m_07cc52af7da1ed": "De titel valt binnen de classificatielimiet.",
   "m_07cca1160d7b16": {
     "one": "{count} kanaal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Deze provider is tijdelijk gepauzeerd. Probeer het later opnieuw.",
   "m_0bd21cbf4177c6": "Ontbrekende ondertitels worden gedownload van de ondertitelaanbieders die je instelt bij {link}.",
   "m_0bd3f27410638a": "Verberg films, volledige series en afleveringen die deze server al heeft in Plex-apps.",
+  "m_0bd4533164e355": "Adres van de kijkerspagina",
   "m_0bd4c613cb55fc": "De volgende aflevering vooraf ophalen",
   "m_0bd5b0326e3ce6": "Een rij op Home maken van een externe lijst met films",
   "m_0bd75230df6f9e": "Variabele: {key}",

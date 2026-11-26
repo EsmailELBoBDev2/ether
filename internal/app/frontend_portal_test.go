@@ -411,3 +411,20 @@ func TestAppAddressVelaDedicatedAndConsolePort(t *testing.T) {
 	}
 	_ = velaPort
 }
+
+func TestPortalUsesTheOwnerSetViewerPage(t *testing.T) {
+	peer := netip.MustParseAddr("198.51.100.25")
+	// An app's own domain behind a proxy: the guess would be this host and
+	// the console port, which does not serve the viewer page.
+	req := httptest.NewRequest(http.MethodGet, "http://jellyfin.example.com/QuickConnect/Initiate", nil)
+	req.RemoteAddr = "198.51.100.25:54321"
+	cfg := config.Config{Server: config.Server{ViewerPortalURL: "https://dashboard.example.com/"}}
+	got, err := portalAddress(context.Background(), req, peer, "0.0.0.0", "32800", cfg, nil, nil, nil)
+	if err != nil || got != "https://dashboard.example.com/ether/me" {
+		t.Fatalf("owner-set viewer page: got %q err %v", got, err)
+	}
+	// Unset keeps the old behaviour.
+	if got, _ = portalAddress(context.Background(), req, peer, "0.0.0.0", "32800", config.Config{}, nil, nil, nil); got == "https://dashboard.example.com/ether/me" {
+		t.Fatalf("unset viewer page still returned it: %q", got)
+	}
+}

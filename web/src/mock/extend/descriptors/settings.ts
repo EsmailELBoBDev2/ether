@@ -106,6 +106,18 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 placeholder: "192.168.1.5, 10.0.0.0/8",
               },
               {
+                key: "viewerPortalURL",
+                label: {
+                  source: "Viewer page address",
+                },
+                help: {
+                  source:
+                    "Optional. Where viewers open their Ether page, such as https://dashboard.example.com. TV sign-in codes and app login screens link here. Leave empty to work it out from each request, which can be wrong behind a reverse proxy.",
+                },
+                kind: "text",
+                placeholder: "https://dashboard.example.com",
+              },
+              {
                 key: "logLevel",
                 label: {
                   source: "Log level",

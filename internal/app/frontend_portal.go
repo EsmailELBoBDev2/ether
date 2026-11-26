@@ -489,6 +489,11 @@ func portalAddress(ctx context.Context, req *http.Request, ip netip.Addr, host, 
 }
 
 func portalAddressWithProxyPolicy(ctx context.Context, req *http.Request, ip netip.Addr, host, port string, cfg config.Config, trusted []netip.Prefix, interfaces []remote.InterfaceAddr, connections []remote.Connection, allowProxy bool) (string, error) {
+	// The owner said where the viewer page lives: a guess from this request
+	// can name a host that does not serve it (an app's own domain).
+	if page := cfg.Server.ViewerPortalPage(); page != "" {
+		return page, nil
+	}
 	if base, ok := requestOriginWithPortPolicy(req, host, port, trusted, allowProxy); ok {
 		return strings.TrimRight(base, "/") + "/ether/me", nil
 	}
@@ -546,6 +551,9 @@ func (r *frontendRuntime) portalSecureURLForAddr(ctx context.Context, req *http.
 	if r.app != nil && r.app.cfg != nil {
 		cfg = r.app.cfg.Get()
 		trusted = r.app.trustedProxyPrefixes()
+	}
+	if page := cfg.Server.ViewerPortalPage(); strings.HasPrefix(page, "https://") {
+		return page, nil
 	}
 	if base, ok := requestOriginWithPortPolicy(req, host, port, trusted, allowProxy); ok && strings.HasPrefix(base, "https://") {
 		return strings.TrimRight(base, "/") + "/ether/me", nil

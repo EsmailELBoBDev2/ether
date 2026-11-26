@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} on Etherin hallinnoima, eikä sitä voi muokata.",
   "m_07c7a1f3c5bb7f": "Pienet lapset",
   "m_07c8a3f615112d": "Vapautettu välimuistin säilytyksen kautta",
+  "m_07ca9e78406340": "Valinnainen. Osoite, josta katsojat avaavat Ether-sivunsa, esimerkiksi https://dashboard.example.com. Televisioiden kirjautumiskoodit ja sovellusten kirjautumisnäkymät linkittävät tänne. Jätä tyhjäksi, niin osoite päätellään kustakin pyynnöstä – käänteisvälityspalvelimen takana se voi mennä väärin.",
   "m_07cc52af7da1ed": "Nimikkeen ikäraja on sallitun rajan sisällä.",
   "m_07cca1160d7b16": {
     "one": "{count} kanava",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Tämä palveluntarjoaja on tilapäisesti tauolla. Yritä myöhemmin uudelleen.",
   "m_0bd21cbf4177c6": "Puuttuvat tekstitykset ladataan tekstityspalveluista, jotka määrität kohdassa {link}.",
   "m_0bd3f27410638a": "Piilota Plex-sovelluksista elokuvat, kokonaiset sarjat ja jaksot, jotka tällä palvelimella jo on.",
+  "m_0bd4533164e355": "Katsojasivun osoite",
   "m_0bd4c613cb55fc": "Esilataa seuraava jakso",
   "m_0bd5b0326e3ce6": "Tee Koti-rivi ulkoisesta elokuvaluettelosta",
   "m_0bd75230df6f9e": "Muuttuja: {key}",

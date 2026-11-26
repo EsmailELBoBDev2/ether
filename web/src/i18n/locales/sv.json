@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} hanteras av Ether och kan inte redigeras.",
   "m_07c7a1f3c5bb7f": "Små barn",
   "m_07c8a3f615112d": "Frigjort av cachebevarande",
+  "m_07ca9e78406340": "Valfritt. Där tittare öppnar sin Ether-sida, till exempel https://dashboard.example.com. Inloggningskoder på tv och appars inloggningsskärmar länkar hit. Lämna tomt för att räkna ut den från varje förfrågan, vilket kan bli fel bakom en omvänd proxy.",
   "m_07cc52af7da1ed": "Titeln ligger inom dess åldersgräns.",
   "m_07cca1160d7b16": {
     "one": "{count} kanal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Den här leverantören är tillfälligt pausad. Försök igen senare.",
   "m_0bd21cbf4177c6": "Saknade undertexter hämtas från de undertextleverantörer du ställer in under {link}.",
   "m_0bd3f27410638a": "Dölj filmer, kompletta serier och avsnitt som den här servern redan har i Plex-appar.",
+  "m_0bd4533164e355": "Adress till tittarsidan",
   "m_0bd4c613cb55fc": "Förhämta nästa avsnitt",
   "m_0bd5b0326e3ce6": "Skapa en rad på Hem från en extern filmlista",
   "m_0bd75230df6f9e": "Variabel: {key}",

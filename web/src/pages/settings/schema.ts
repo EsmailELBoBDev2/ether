@@ -295,6 +295,15 @@ export const AWAY: FieldGroup[] = localized(() => [
     fields: [],
     more: [
       {
+        key: "viewerPortalURL",
+        label: t("Viewer page address"),
+        kind: "text",
+        placeholder: "https://dashboard.example.com",
+        help: t(
+          "Optional. Where viewers open their Ether page, such as https://dashboard.example.com. TV sign-in codes and app login screens link here. Leave empty to work it out from each request, which can be wrong behind a reverse proxy.",
+        ),
+      },
+      {
         key: "trustedProxyCIDRs",
         label: t("Trusted reverse proxies"),
         kind: "list",

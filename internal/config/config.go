@@ -175,6 +175,12 @@ type Server struct {
 	StartupAnimation bool `json:"startupAnimation"`
 	// TrustedProxyCIDRs are proxy peer networks whose forwarding headers are trusted.
 	TrustedProxyCIDRs []string `json:"trustedProxyCIDRs,omitempty"`
+	// ViewerPortalURL is where viewers open Ether's viewer page (/ether/me),
+	// such as https://dashboard.example.com. Optional. When set, every link
+	// Ether shows a viewer (TV sign-in codes, login hints, app connections)
+	// uses it instead of an address guessed from the request, which is wrong
+	// when the page lives on another host name behind a reverse proxy.
+	ViewerPortalURL string `json:"viewerPortalURL,omitempty"`
 	// AllowRemoteConsole lets the owner console (/ether/) answer clients
 	// outside the home network (through a domain or reverse proxy). Off by
 	// default; sign-in still admits only the owner's Plex account.

@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} administreres av Ether og kan ikke redigeres.",
   "m_07c7a1f3c5bb7f": "Små barn",
   "m_07c8a3f615112d": "Frigjort av hurtigbufferoppbevaring",
+  "m_07ca9e78406340": "Valgfritt. Der seere åpner Ether-siden sin, for eksempel https://dashboard.example.com. Påloggingskoder på TV og appers påloggingsskjermer lenker hit. La stå tomt for å utlede den fra hver forespørsel, noe som kan bli feil bak en omvendt proxy.",
   "m_07cc52af7da1ed": "Tittelen er innenfor aldersgrensen dens.",
   "m_07cca1160d7b16": {
     "one": "{count} kanal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Denne leverandøren er midlertidig satt på pause. Prøv igjen senere.",
   "m_0bd21cbf4177c6": "Manglende undertekster lastes ned fra undertekstleverandørene du setter opp under {link}.",
   "m_0bd3f27410638a": "Skjul filmer, komplette serier og episoder som denne serveren allerede har, fra Plex-apper.",
+  "m_0bd4533164e355": "Adresse til seersiden",
   "m_0bd4c613cb55fc": "Forhåndshent neste episode",
   "m_0bd5b0326e3ce6": "Lag en rad på Hjem fra en ekstern filmliste",
   "m_0bd75230df6f9e": "Variabel: {key}",

@@ -837,18 +837,24 @@ func userName(v *frontend.Viewer) string {
 // Jellyfin: Quick Connect codes are approved on Ether's viewer page, which the
 // apps never mention. Emby: its apps' code sign-in goes through Emby's own
 // cloud accounts, which Ether cannot take part in, so viewers sign in with the
-// username and password they chose there. No address is given: the page often
-// lives on another host name than this app (a dashboard domain behind a
-// reverse proxy), and a wrong link is worse than none.
+// username and password they chose there. The page address is named only when
+// the owner set it (server.viewerPortalURL): a guess from this request often
+// names the app's own domain, which does not serve the page.
 func (i *instance) loginHint(_ *http.Request) string {
 	if i.host.ViewerPortalURL == nil {
 		return ""
 	}
+	page := "your Ether viewer page (the link from your invite)"
+	if i.host.HostConfig != nil {
+		if addr := i.host.HostConfig().Server.ViewerPortalPage(); addr != "" {
+			page = "your Ether viewer page at " + addr
+		}
+	}
 	if i.protocol == "emby" {
-		return "Sign in with the username and password you chose on your Ether viewer page (the link from your invite)."
+		return "Sign in with the username and password you chose on " + page + "."
 	}
 	if !i.quickEnabled() {
 		return ""
 	}
-	return "Using Quick Connect? Open your Ether viewer page (the link from your invite) on your phone or computer, sign in, and type the code shown here."
+	return "Using Quick Connect? Open " + page + " on your phone or computer, sign in, and type the code shown here."
 }

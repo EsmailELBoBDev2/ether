@@ -2705,6 +2705,7 @@
   "m_07c79bc350bda3": "{name} è gestito da Ether e non può essere modificato.",
   "m_07c7a1f3c5bb7f": "Bambini piccoli",
   "m_07c8a3f615112d": "Rilasciato dalla conservazione della cache",
+  "m_07ca9e78406340": "Facoltativo. Dove gli spettatori aprono la loro pagina Ether, ad esempio https://dashboard.example.com. I codici di accesso delle TV e le schermate di accesso delle app rimandano qui. Lascia vuoto per ricavarlo da ogni richiesta, cosa che dietro un reverse proxy può essere sbagliata.",
   "m_07cc52af7da1ed": "Il titolo rientra nel limite di classificazione.",
   "m_07cca1160d7b16": {
     "many": "{count} canali",
@@ -4099,6 +4100,7 @@
   "m_0bd1d1b76abc5b": "Questo fornitore è temporaneamente in pausa. Riprova più tardi.",
   "m_0bd21cbf4177c6": "I sottotitoli mancanti vengono scaricati dai fornitori di sottotitoli che configuri in {link}.",
   "m_0bd3f27410638a": "Nasconde dalle app Plex i film, le serie complete e gli episodi già presenti su questo server.",
+  "m_0bd4533164e355": "Indirizzo della pagina spettatore",
   "m_0bd4c613cb55fc": "Precarica l'episodio successivo",
   "m_0bd5b0326e3ce6": "Crea una riga della Home da un elenco esterno di film",
   "m_0bd75230df6f9e": "Variabile: {key}",

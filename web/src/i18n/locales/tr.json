@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} Ether tarafından yönetilir ve düzenlenemez.",
   "m_07c7a1f3c5bb7f": "Küçük çocuklar",
   "m_07c8a3f615112d": "Önbellek saklamasıyla serbest bırakılan",
+  "m_07ca9e78406340": "İsteğe bağlı. İzleyicilerin Ether sayfasını açtığı adres, örneğin https://dashboard.example.com. Televizyondaki oturum açma kodları ve uygulama giriş ekranları buraya bağlantı verir. Her istekten çıkarılması için boş bırakın; bu, ters proxy arkasında yanlış olabilir.",
   "m_07cc52af7da1ed": "İçerik, derecelendirme sınırının içinde.",
   "m_07cca1160d7b16": {
     "one": "{count} kanal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Bu sağlayıcı geçici olarak duraklatıldı. Daha sonra tekrar deneyin.",
   "m_0bd21cbf4177c6": "Eksik altyazılar, {link} bölümünde kurduğunuz altyazı sağlayıcılarından indirilir.",
   "m_0bd3f27410638a": "Bu sunucuda zaten bulunan filmleri, eksiksiz dizileri ve bölümleri Plex uygulamalarında gizler.",
+  "m_0bd4533164e355": "İzleyici sayfası adresi",
   "m_0bd4c613cb55fc": "Sonraki bölümü önceden getir",
   "m_0bd5b0326e3ce6": "Harici bir film listesinden Ana sayfa satırı oluştur",
   "m_0bd75230df6f9e": "Değişken: {key}",

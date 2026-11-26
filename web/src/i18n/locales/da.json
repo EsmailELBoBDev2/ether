@@ -2647,6 +2647,7 @@
   "m_07c79bc350bda3": "{name} administreres af Ether og kan ikke redigeres.",
   "m_07c7a1f3c5bb7f": "Små børn",
   "m_07c8a3f615112d": "Frigivet af cacheopbevaring",
+  "m_07ca9e78406340": "Valgfrit. Hvor seere åbner deres Ether-side, fx https://dashboard.example.com. Login-koder på tv og apps' login-skærme linker hertil. Lad stå tomt for at udlede den fra hver anmodning, hvilket kan være forkert bag en reverse proxy.",
   "m_07cc52af7da1ed": "Titlen er inden for dens aldersgrænse.",
   "m_07cca1160d7b16": {
     "one": "{count} kanal",
@@ -4003,6 +4004,7 @@
   "m_0bd1d1b76abc5b": "Denne udbyder er midlertidigt sat på pause. Prøv igen senere.",
   "m_0bd21cbf4177c6": "Manglende undertekster hentes fra de undertekstleverandører, du sætter op under {link}.",
   "m_0bd3f27410638a": "Skjul film, komplette serier og afsnit, som denne server allerede har, i Plex-apps.",
+  "m_0bd4533164e355": "Adresse til seersiden",
   "m_0bd4c613cb55fc": "Forhåndshent næste episode",
   "m_0bd5b0326e3ce6": "Lav en række på Hjem ud fra en ekstern filmliste",
   "m_0bd75230df6f9e": "Variabel: {key}",

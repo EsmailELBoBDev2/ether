@@ -208,6 +208,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if _, err := frameOrigins(cfg.Server.WebFrameOrigins); err != nil {
 		v.add("server.webFrameOrigins", "%s", err)
 	}
+	if _, err := config.ViewerPortalPage(cfg.Server.ViewerPortalURL); err != nil {
+		v.add("server.viewerPortalURL", "%s", err)
+	}
 	for _, raw := range cfg.Server.TrustedProxyCIDRs {
 		if strings.TrimSpace(raw) == "" {
 			continue

@@ -2650,6 +2650,7 @@
   "m_07c79bc350bda3": "{name} is managed by Ether and cannot be edited.",
   "m_07c7a1f3c5bb7f": "Young children",
   "m_07c8a3f615112d": "Released by cache retention",
+  "m_07ca9e78406340": "Optional. Where viewers open their Ether page, such as https://dashboard.example.com. TV sign-in codes and app login screens link here. Leave empty to work it out from each request, which can be wrong behind a reverse proxy.",
   "m_07cc52af7da1ed": "The title is within its rating limit.",
   "m_07cca1160d7b16": {
     "one": "{count} channel",
@@ -4007,6 +4008,7 @@
   "m_0bd1d1b76abc5b": "This provider is temporarily paused. Try again later.",
   "m_0bd21cbf4177c6": "Missing subtitles are downloaded from the subtitle providers you set up in {link}.",
   "m_0bd3f27410638a": "Hide movies, complete shows, and episodes this server already has from Plex apps.",
+  "m_0bd4533164e355": "Viewer page address",
   "m_0bd4c613cb55fc": "Prefetch the next episode",
   "m_0bd5b0326e3ce6": "Make a Home row from an external list of films",
   "m_0bd75230df6f9e": "Variable: {key}",

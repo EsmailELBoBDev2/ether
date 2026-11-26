@@ -1414,6 +1414,10 @@ func (i *instance) interactions(w http.ResponseWriter, r *http.Request) {
 	send(w, 200, object{"accepted": true})
 }
 func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
+	received, _ := r.Context().Value(requestReceivedKey{}).(time.Time)
+	if received.IsZero() {
+		received = i.serverNow()
+	}
 	v, _, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)
@@ -1430,10 +1434,13 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		Played           *bool `json:"played"`
-		Favorite         *bool `json:"favorite"`
-		Watchlisted      *bool `json:"watchlisted"`
-		ContinueWatching *bool `json:"continueWatching"`
+		Played           *bool    `json:"played"`
+		PositionSeconds  *float64 `json:"positionSeconds"`
+		ObservedAt       string   `json:"observedAt"`
+		Offline          bool     `json:"offline"`
+		Favorite         *bool    `json:"favorite"`
+		Watchlisted      *bool    `json:"watchlisted"`
+		ContinueWatching *bool    `json:"continueWatching"`
 	}
 	if body(r, &b) != nil {
 		problem(w, 400, "request", "invalid_request")
@@ -1443,7 +1450,34 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
-	if b.Played != nil {
+	if b.Offline {
+		observed, err := time.Parse(time.RFC3339Nano, b.ObservedAt)
+		var position time.Duration
+		ok := true
+		if b.PositionSeconds != nil {
+			position, ok = seconds(*b.PositionSeconds)
+		}
+		played := b.PositionSeconds == nil && b.Played != nil && *b.Played
+		if err != nil || !ok || position < 0 || observed.Before(time.Unix(0, 0)) {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		if b.PositionSeconds != nil || played {
+			writer, ok := i.host.Experience.(frontend.OfflineProgressWriter)
+			if !ok {
+				i.unavailable(w, r)
+				return
+			}
+			duration := detail.UserData.Duration
+			if duration <= 0 {
+				duration = detail.Title.Runtime
+			}
+			origin := frontend.WatchOrigin{Surface: "vela", ClientID: requestDevice(r).ID, HistoryTitle: &detail.Title}
+			e = writer.SetOfflineProgress(frontend.WithWatchOrigin(r.Context(), origin), v, k, frontend.OfflineProgress{
+				Position: position, Duration: duration, ObservedAt: observed, ReceivedAt: received, Played: played,
+			})
+		}
+	} else if b.Played != nil {
 		if *b.Played {
 			e = i.host.Experience.SetPlayed(r.Context(), v, k)
 		} else {

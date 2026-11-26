@@ -2690,6 +2690,17 @@ func (s *Service) SetUnplayed(ctx context.Context, v *core.Viewer, k core.Rating
 	return s.setPlayed(ctx, v, k, false)
 }
 
+func (s *Service) SetOfflineProgress(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sample frontend.OfflineProgress) error {
+	writer, ok := s.d.State.(frontend.OfflineProgressState)
+	if !ok {
+		return core.ErrNotAvailable
+	}
+	return s.mutate(ctx, viewer, key, func(u *core.User) error {
+		_, err := writer.ApplyOfflineProgress(ctx, u.ID, key, sample)
+		return err
+	})
+}
+
 var _ frontend.ReadingProgressWriter = (*Service)(nil)
 
 func (s *Service) SetReadingProgress(ctx context.Context, v *core.Viewer, k core.RatingKey, progress frontend.ReadingProgress) error {

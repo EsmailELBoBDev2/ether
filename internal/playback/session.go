@@ -198,6 +198,7 @@ func (g *generation) releaseID() string {
 
 // session is the internal, mutable form of a core.PlaySession.
 type session struct {
+	offlineOriginal func(core.MediaInfo) bool
 	// alias is the identity a promoted preparation also answers for in
 	// byIdent (guarded by Manager.mu); ident itself never changes.
 	alias                 identity

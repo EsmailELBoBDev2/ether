@@ -94,6 +94,8 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
+	downloads := i.downloadsFeature(r.Context(), v)
+	r = r.WithContext(context.WithValue(r.Context(), downloadCapabilityKey{}, downloads))
 	dev := requestDevice(r)
 	avatar := i.viewerAvatar(r, v, token, dev)
 	if local, ok := i.host.Experience.(interface {
@@ -112,7 +114,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		// Credentials scope the image grants and cursor scope includes the complete
 		// viewer policy. Do not reuse wire responses between refresh families/devices,
 		// certificate-region preferences, or viewer spoiler-free preferences.
-		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.extrasAvailable(), i.extraPlaybackAvailable(), i.previewAvailable(), i.themeAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration(), screenClient(r), frontend.ScreenPreviewFrom(r.Context())})
+		scope := hashJSON([]any{v, dev, token, avatar, spoilerFree, downloads, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode(), i.liveEventsAvailable(), i.extrasAvailable(), i.extraPlaybackAvailable(), i.previewAvailable(), i.themeAvailable(), i.capabilitiesRevision(), i.signInMethods(), i.preferredRatingRegions(r), i.screensGeneration(), screenClient(r), frontend.ScreenPreviewFrom(r.Context())})
 		freshness := i.bootstrapFreshness()
 		var before frontend.HomeRevision
 		cacheable := false

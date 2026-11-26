@@ -314,6 +314,25 @@ func (v *versionHandles) Resolve(ctx context.Context, scope frontend.VersionScop
 	return frontend.VersionTarget{Item: item, Release: release}, err
 }
 
+// ResolveOfflineVersion resolves an issued or listed ID against this title's
+// offers without consulting a live session's version substitution.
+func (v *versionHandles) ResolveOfflineVersion(ctx context.Context, scope frontend.VersionScope, item core.RatingKey, handle string) (frontend.VersionTarget, error) {
+	handle = normalizeVersionHandle(handle)
+	if handle == "" {
+		return frontend.VersionTarget{}, core.ErrNotFound
+	}
+	_, offered, err := v.allowedOffers(ctx, scope, item)
+	if err != nil {
+		return frontend.VersionTarget{}, err
+	}
+	for release := range offered {
+		if versionID(v.key, v.protocol, item, release) == handle {
+			return frontend.VersionTarget{Item: item, Release: release}, nil
+		}
+	}
+	return frontend.VersionTarget{}, core.ErrNotFound
+}
+
 // ResolveStaleParent identifies the parent item of a previously issued handle
 // on this surface whose release is no longer offered, while still verifying
 // viewer authorization and item visibility.

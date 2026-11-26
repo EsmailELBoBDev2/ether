@@ -516,6 +516,8 @@ type Host struct {
 	// KindStreams opens byte-addressable media and lists playable leaves for
 	// plugin-provided content kinds. Nil means plugin kind media is unavailable.
 	KindStreams KindStreams
+	// OfflineDownloads opens originals without using playback capacity.
+	OfflineDownloads OfflineDownloadSources
 	// Loudness answers measured loudness for audio titles; nil sends none.
 	Loudness LoudnessReader
 	// SkipMarkers reads cached intro/credits ranges for playback plans; nil

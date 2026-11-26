@@ -22,12 +22,13 @@ var velaCORSHeaders = map[string]bool{
 	"content-type":    true,
 	"idempotency-key": true,
 	"if-none-match":   true,
+	"if-range":        true,
 	"last-event-id":   true,
 	"range":           true,
 }
 
 // velaCORSExpose lists the non-safelisted response headers Vela reads.
-const velaCORSExpose = "ETag, Retry-After, Content-Range, Accept-Ranges, " +
+const velaCORSExpose = "ETag, Retry-After, Content-Range, Accept-Ranges, Content-Disposition, " +
 	mediaCapWaitHeader + ", X-Ether-Media-Error, X-Ether-Trickplay-Fallback"
 
 // cors marks a cross-origin response readable and answers browser preflights.

@@ -45,7 +45,13 @@ func isRatableTraktKey(key core.RatingKey) bool {
 
 func isSyncableTraktEvent(ev state.Event) bool {
 	switch ev.Kind {
-	case state.EventProgress, state.EventScrobble, state.EventUnscrobble:
+	case state.EventCompleted:
+		return ev.Offline && isPlayableTraktKey(ev.Key)
+	case state.EventProgress:
+		// A new offline observation can advance recency while keeping the
+		// same resume point or preserving a completed viewing.
+		return (!ev.Offline || ev.ResumeSet && !ev.Completed) && isPlayableTraktKey(ev.Key)
+	case state.EventScrobble, state.EventUnscrobble:
 		return isPlayableTraktKey(ev.Key)
 	case state.EventRated:
 		return isRatableTraktKey(ev.Key)
@@ -517,7 +523,11 @@ func (c *Client) handleEvent(ctx context.Context, ev state.Event) error {
 			c.invalidateUser(ev.UserID)
 		}
 	case state.EventCompleted:
-		// Already recorded by the scrobble/stop of the progress event.
+		if ev.Offline {
+			err = c.AddHistory(ctx, ev.UserID, ev.Key, ev.At)
+			c.invalidateUser(ev.UserID)
+		}
+		// Live completions are recorded by the progress event's scrobble/stop.
 	case state.EventScrobble:
 		if !ev.Imported {
 			c.cancelStops(ev.UserID, ev.Key)
@@ -754,7 +764,12 @@ func (c *Client) SubscribeTo(src interface {
 		if ev.Account || !isSyncableTraktEvent(ev) {
 			return
 		}
-		if ev.Imported {
+		if ev.Imported || (ev.Offline && ev.Kind == state.EventCompleted) {
+			// Historical writes carry their original observation time and
+			// use the durable history queue.
+			if ev.Offline {
+				ev.Kind = state.EventScrobble
+			}
 			// Bulk history must not compete with disposable timeline updates.
 			// Persist it before returning to the importer, without network I/O.
 			c.enqueueImport(ev)

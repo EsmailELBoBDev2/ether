@@ -961,7 +961,7 @@ export function ConnectedServices({
             <ServiceOverview
               posterCards={posterCards}
               posterSavedNote={posterSavedNote}
-              tmdbBundled={tmdb?.keySource === "built-in" && tmdb.enabled}
+              tmdbBundled={tmdb?.keySource === "built-in"}
               onMetadataSave={(patch) =>
                 enqueue(async () => {
                   const res = await api.putSection("catalog", patch);
@@ -1223,20 +1223,20 @@ function ServiceOverview({
             source={source}
             storedKey={String(stored?.catalog?.[builtinMetadataSources[source].key] ?? "")}
             bundled={source === "tmdb" && tmdbBundled}
-            off={source === "tmdb" && stored?.catalog?.tmdbDisabled === true}
-            onToggle={
+            enabled={
               source === "tmdb"
-                ? async (enabled) => {
-                    await onMetadataSave({ tmdbDisabled: !enabled });
-                    void catalogue.reload();
-                  }
-                : undefined
+                ? stored?.catalog?.tmdbDisabled !== true
+                : secretConfigured(stored?.catalog?.tvdbKey)
             }
+            onSetEnabled={async (enabled) => {
+              await onMetadataSave(source === "tmdb" ? { tmdbDisabled: !enabled } : { tvdbKey: "" });
+              void catalogue.reload();
+            }}
             locked={switchesHeld}
             onSave={async (key) => {
               await onMetadataSave({
                 [builtinMetadataSources[source].key]: key,
-                ...(source === "tmdb" && key ? { tmdbDisabled: false } : {}),
+                ...(source === "tmdb" ? { tmdbDisabled: false } : {}),
               });
               void catalogue.reload();
             }}

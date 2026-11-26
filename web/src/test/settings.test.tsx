@@ -200,8 +200,7 @@ describe("Settings", () => {
     const required = await screen.findByRole("region", { name: "Catalogues" }, WAIT);
     expect(screen.queryByRole("region", { name: "Essentials" })).toBeNull();
     expect(within(required).getByRole("listitem", { name: "TMDB" })).toBeInTheDocument();
-    // The label follows the setup status, which loads after the page.
-    expect(await screen.findByRole("button", { name: "Use your own key" }, WAIT)).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Manage TMDB" }, WAIT)).toBeEnabled();
     const artwork = screen.getByRole("region", { name: "Artwork and ratings" });
     const posters = await within(artwork).findByRole("listitem", { name: "PostersPlus" }, WAIT);
     const ratings = within(artwork).getByRole("listitem", { name: "OMDb and MDBList" });
@@ -233,7 +232,8 @@ describe("Settings", () => {
     expect(screen.getByRole("listitem", { name: "TheIntroDB" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save Simkl settings" })).toBeNull();
     expect(screen.queryByRole("switch", { name: "Prowlarr enabled" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "TMDB enabled" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "TMDB enabled" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "TheTVDB enabled" })).not.toBeChecked();
   });
 
   it("keeps the TheIntroDB key, health and test on its integration tab", async () => {
@@ -253,7 +253,7 @@ describe("Settings", () => {
 
   it("saves and tests the TMDB key from Integrations", async () => {
     const { fake } = renderApp("/services/overview");
-    fireEvent.click(await screen.findByRole("button", { name: "Use your own key" }, WAIT));
+    fireEvent.click(await screen.findByRole("button", { name: "Manage TMDB" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "Manage TMDB" });
     fireEvent.change(within(drawer).getByLabelText("TMDB API key"), {
       target: { value: "tmdb-key" },

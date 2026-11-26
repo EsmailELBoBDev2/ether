@@ -24,6 +24,7 @@ type catalogueSource struct {
 	Listed    int                `json:"listed,omitempty"`
 	Limit     int                `json:"limit,omitempty"`
 	Health    string             `json:"health"`
+	Enabled   bool               `json:"enabled"`
 	PluginID  string             `json:"pluginId,omitempty"`
 	KindKey   string             `json:"kindKey,omitempty"`
 	Libraries []catalogueLibrary `json:"libraries"`
@@ -36,10 +37,11 @@ type catalogueLibrary struct {
 // Registry enumeration reads library and plugin declarations only. It never
 // fetches remote catalogues or counts title rows on the owner request path.
 func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http.Request) {
+	cfg := c.app.cfg.Get().Catalog
 	out := []catalogueSource{
-		{ID: "tmdb-movies", Name: "TMDB Movies", Owner: "Built in", Group: "builtin", MediaTypes: []string{"movie"}, Health: "ok", Libraries: []catalogueLibrary{}},
-		{ID: "tmdb-tv", Name: "TMDB TV shows", Owner: "Built in", Group: "builtin", MediaTypes: []string{"show"}, Health: "ok", Libraries: []catalogueLibrary{}},
-		{ID: "tvdb", Name: "TheTVDB", Owner: "TheTVDB", Group: "builtin", MediaTypes: []string{"show"}, Health: "unknown", Libraries: []catalogueLibrary{}},
+		{ID: "tmdb-movies", Name: "TMDB Movies", Owner: "Built in", Group: "builtin", MediaTypes: []string{"movie"}, Enabled: !cfg.TMDBDisabled, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tmdb-tv", Name: "TMDB TV shows", Owner: "Built in", Group: "builtin", MediaTypes: []string{"show"}, Enabled: !cfg.TMDBDisabled, Health: "ok", Libraries: []catalogueLibrary{}},
+		{ID: "tvdb", Name: "TheTVDB", Owner: "TheTVDB", Group: "builtin", MediaTypes: []string{"show"}, Enabled: strings.TrimSpace(cfg.TVDBKey) != "", Health: "unknown", Libraries: []catalogueLibrary{}},
 	}
 	if c.app.catalog != nil {
 		if stats, err := c.app.catalog.Stats(r.Context()); err == nil {
@@ -57,27 +59,23 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 		}
 	}
 	if c.app.pluginsRT != nil && c.app.pluginsRT.mgr != nil {
+		includeDisabled := r.URL.Query().Get("includeDisabled") == "true"
 		recs, err := c.app.pluginsRT.mgr.List(r.Context())
 		if err != nil {
 			libError(w, 500, "Could not list plugins")
 			return
 		}
 		for _, rec := range recs {
-			health := "unknown"
-			if h, err := c.app.pluginsRT.mgr.HealthOf(r.Context(), rec.ID); err == nil && h.Status != "" {
-				health = h.Status
-			}
-			if !rec.Enabled {
+			if !rec.Enabled && !includeDisabled {
 				continue
 			}
 			if e := rec.Manifest.EffectiveEther(); e != nil {
 				for _, kind := range e.Contributes.MediaKinds {
-					src := catalogueSource{ID: "plugin:" + rec.ID + ":" + kind.Key, Name: c.catalogueLabel(r.Context(), rec.ID, kind.Label, rec.Name), Owner: rec.Name, Group: "plugin", PluginID: rec.ID, KindKey: kind.Key, MediaTypes: []string{kind.Key}, Health: health, Libraries: []catalogueLibrary{}}
+					src := catalogueSource{ID: "plugin:" + rec.ID + ":" + kind.Key, Name: c.catalogueLabel(r.Context(), rec.ID, kind.Label, rec.Name), Owner: rec.Name, Group: "plugin", PluginID: rec.ID, KindKey: kind.Key, MediaTypes: []string{kind.Key}, Enabled: rec.Enabled, Health: "unknown", Libraries: []catalogueLibrary{}}
 					if kind.Library.Name != "" {
 						src.Name = c.catalogueLabel(r.Context(), rec.ID, kind.Library.Name, src.Name)
 					}
 					src.Logo = rec.Manifest.Logo
-					src.Health = "unknown"
 					if c.app.pluginsRT.pluginitems != nil {
 						if state, err := c.app.pluginsRT.pluginitems.SyncStateOf(r.Context(), rec.ID, kind.Key); err == nil {
 							if state.DeleteGuard != nil {
@@ -117,7 +115,7 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 				if name == "" {
 					name = c.catalogueLabel(r.Context(), rec.ID, cl.Label, cat.ID)
 				}
-				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + cl.Key, Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
+				out = append(out, catalogueSource{ID: "stremio:" + rec.ID + ":" + cl.Key, Name: name, Owner: rec.Name, Group: "stremio", PluginID: rec.ID, MediaTypes: []string{typ}, Enabled: rec.Enabled, Logo: rec.Manifest.Logo, Health: "unknown", Libraries: []catalogueLibrary{}})
 			}
 		}
 	}
@@ -137,7 +135,7 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 				}
 			}
 		}
-		if out[i].ID == "tvdb" && strings.TrimSpace(c.app.cfg.Get().Catalog.TVDBKey) == "" {
+		if out[i].ID == "tvdb" && !out[i].Enabled {
 			out[i].Health = "error"
 			out[i].LastError = tvdb.ErrKeyRequired.Error()
 		}

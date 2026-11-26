@@ -525,16 +525,23 @@ func (a *App) frontendClientIP(req *http.Request) (netip.Addr, bool) {
 // trustedProxyPrefixes caches the parsed trusted-proxy list. Reading it
 // used to clone the whole configuration, and a play does that several times.
 func (a *App) trustedProxyPrefixes() []netip.Prefix {
-	gen := a.cfg.Generation()
 	a.proxyMu.Lock()
-	defer a.proxyMu.Unlock()
-	if a.proxyReady && a.proxyGen == gen {
-		return a.proxyPrefixes
+	gen := a.cfg.Generation()
+	if !a.proxyReady || a.proxyGen != gen {
+		a.proxyEntries = a.cfg.TrustedProxyCIDRs()
+		a.proxyNamed = identity.HasProxyHostNames(a.proxyEntries)
+		if !a.proxyNamed {
+			a.proxyPrefixes = identity.ProxyPrefixes(a.proxyEntries)
+		}
+		a.proxyGen = gen
+		a.proxyReady = true
 	}
-	a.proxyPrefixes = identity.ProxyPrefixes(a.cfg.TrustedProxyCIDRs())
-	a.proxyGen = gen
-	a.proxyReady = true
-	return a.proxyPrefixes
+	entries, named, prefixes := a.proxyEntries, a.proxyNamed, a.proxyPrefixes
+	a.proxyMu.Unlock()
+	if named {
+		return identity.ProxyPrefixes(entries)
+	}
+	return prefixes
 }
 
 // plexHandler wires the main protocol mount into the public dispatcher.

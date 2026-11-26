@@ -378,6 +378,7 @@ type Handler struct {
 	linkPins       *pinHandles
 	authLimit      *authLimiter
 	loginBodySlots chan struct{}
+	proxyHintNames proxyHintCache
 }
 
 // NewHandler builds the admin handler. It panics when Deps.Config is nil.
@@ -514,6 +515,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("PUT /api/config/{section}", h.handlePutSection)
 	api("PATCH /api/config/{section}", h.handlePutSection)
 	api("GET /api/server/console-listener", h.handleConsoleListener)
+	api("GET /api/server/proxy-hint", h.handleProxyHint)
 
 	api("GET /api/setup/status", h.handleSetupStatus)
 	api("POST /api/setup/complete", h.handleSetupComplete)

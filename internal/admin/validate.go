@@ -212,7 +212,7 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
-		if _, err := identity.ParseProxyEntry(raw); err != nil {
+		if err := identity.ValidateProxyEntry(raw); err != nil {
 			v.add("server.trustedProxyCIDRs", "%s", err)
 			break
 		}

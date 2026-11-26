@@ -264,6 +264,7 @@ func ClientNet(r *http.Request, trusted ...netip.Prefix) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	if !isTrustedAddr(peer, trusted) {
+		noteUntrustedForwarder(r, peer)
 		return peer, LAN(peer)
 	}
 	var hops []string
@@ -345,12 +346,16 @@ func ParseProxyEntry(raw string) (netip.Prefix, error) {
 	return netip.Prefix{}, errors.New("enter an IP address or CIDR range (for example 192.168.1.5 or 10.0.0.0/8)")
 }
 
-// ProxyPrefixes parses configured proxy IPs and networks. Invalid entries grant no trust.
+// ProxyPrefixes parses configured proxy IPs and networks and resolves proxy
+// host or container names (see proxyHostPrefixes). Invalid entries grant no
+// trust.
 func ProxyPrefixes(cidrs []string) []netip.Prefix {
 	var out []netip.Prefix
 	for _, raw := range cidrs {
 		if p, err := ParseProxyEntry(raw); err == nil {
 			out = append(out, p)
+		} else if name, ok := proxyHostName(raw); ok {
+			out = append(out, proxyHostPrefixes(name)...)
 		}
 	}
 	return out

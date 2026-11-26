@@ -365,6 +365,8 @@ export interface EtherConfig {
     maxStreams: number;
     /** Node-local share weight for account-wide budgets in a cluster; 0/absent = 1. */
     clusterWeight?: number;
+    /** Reverse proxies (IP, CIDR or host/container name) whose forwarded client address is trusted. */
+    trustedProxyCIDRs?: string[] | null;
   };
   plex: {
     token: string;

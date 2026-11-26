@@ -158,6 +158,8 @@ export interface FakeOptions {
   prerolls?: boolean;
   /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
   portConflict?: boolean | string;
+  /** A reverse proxy forwarding visitor addresses without being trusted. */
+  untrustedProxy?: boolean;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -4101,6 +4103,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /bootstrap":
       case "GET /health":
         return json(state.boot);
+      case "GET /server/proxy-hint": {
+        const trusted = state.config.server.trustedProxyCIDRs ?? [];
+        const proxies =
+          opts.untrustedProxy && !trusted.includes("172.18.0.2") && !trusted.includes("npm")
+            ? [
+                {
+                  address: "172.18.0.2",
+                  name: "npm",
+                  requests: 42,
+                  lastSeen: new Date().toISOString(),
+                },
+              ]
+            : [];
+        return json({ proxies });
+      }
       case "GET /server/console-listener": {
         const mainPort = state.config.server.port ?? 32400;
         const configuredPort = state.config.server.consolePort ?? 0;

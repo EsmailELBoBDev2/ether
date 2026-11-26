@@ -124,7 +124,8 @@ it("keeps configured TMDB available and opens its credential drawer", async () =
     f.state.config.catalog.tmdbKey = "[configured]";
   });
   const manage = await screen.findByRole("button", { name: "Manage TMDB" });
-  expect(screen.queryByRole("switch", { name: "TMDB enabled" })).toBeNull();
+  // Catalogue cards use the shared card: a configured TMDB shows its switch on.
+  expect(await screen.findByRole("switch", { name: "TMDB enabled" })).toBeChecked();
   fireEvent.click(manage);
   const drawer = await screen.findByRole("dialog", { name: "Manage TMDB" });
   expect(within(drawer).getByLabelText("TMDB API key")).toHaveValue("[configured]");

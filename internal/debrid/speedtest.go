@@ -185,7 +185,7 @@ func (e *Engine) SpeedTest(ctx context.Context, id string, playback bool) speedt
 		} else if isConnRefused(err) {
 			r.Refused = 1
 		}
-	case resp.StatusCode == http.StatusPartialContent && checkContentRange(resp.Header.Get("Content-Range"), from, size) == nil:
+	case resp.StatusCode == http.StatusPartialContent && checkContentRange(resp.Header.Get("Content-Range"), from, to, size) == nil:
 		r.Bytes, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, to-from+1))
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable:
 		wait := retryAfter(resp.Header.Get("Retry-After"))

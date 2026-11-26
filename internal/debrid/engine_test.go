@@ -302,7 +302,7 @@ func TestEngineHedgesSlowFirstByte(t *testing.T) {
 		defer e.Close()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		resp, _, err := e.get(ctx, "https://example.invalid/media", 0, int64(len(payload)-1), true, make(chan struct{}, 2))
+		resp, _, err := e.get(ctx, "https://example.invalid/media", 0, int64(len(payload)-1), int64(len(payload)), true, make(chan struct{}, 2))
 		if err != nil {
 			t.Fatal(err)
 		}

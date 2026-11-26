@@ -161,6 +161,10 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 				return nil, err
 			}
 		}
+		// Emby Web's lyrics view reads a track's lyric stream here.
+		if err := r.Handle(method, "/Items/{id}/{source}/Subtitles/{index}/{name}", http.HandlerFunc(inst.itemSubtitle)); err != nil {
+			return nil, err
+		}
 	}
 	if err := inst.playbackRoutes(); err != nil {
 		return nil, err

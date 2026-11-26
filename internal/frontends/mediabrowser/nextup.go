@@ -3,29 +3,40 @@ package mediabrowser
 import (
 	"net/http"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
 
-func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) frontend.RatingKey {
+func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) (frontend.RatingKey, bool) {
 	raw := firstQuery(r, "seriesId")
-	if raw == "" {
+	explicit := raw != ""
+	if !explicit {
 		raw = firstQuery(r, "parentId")
-	}
-	if raw == "" {
-		return 0
 	}
 	key, err := ids.ParseRatingKeyGUID(raw)
 	if err != nil {
-		return 0
+		return 0, explicit
+	}
+	if key.IsPluginKey() {
+		title, ok := i.storedListTitle(r, viewer, key)
+		if ok {
+			switch title.Type {
+			case core.TypeShow:
+				return key, true
+			case core.TypeSeason, core.TypeEpisode:
+				return title.ShowKey, true
+			}
+		}
+		return 0, true
 	}
 	switch key.Kind() {
 	case frontend.KindShow:
-		return key
+		return key, true
 	case frontend.KindSeason, frontend.KindEpisode:
-		return i.seriesForItem(r, viewer, key)
+		return i.seriesForItem(r, viewer, key), true
 	default:
-		return 0
+		return 0, explicit
 	}
 }
 
@@ -43,22 +54,4 @@ func (i *instance) seriesNextUp(r *http.Request, v *frontend.Viewer, series fron
 		return nil, err
 	}
 	return []frontend.Title{*title}, nil
-}
-
-// nextUpScoped reports whether a Next Up request names a plugin series or
-// season (seriesId/parentId), such as a sports league. Next Up there is about
-// that one item; Ether has no per-series Next Up for plugin items, so the
-// answer is an empty row, never Next Up from every other show. A library id
-// in parentId (the home row) is not a plugin key and keeps the full row.
-func nextUpScoped(r *http.Request) bool {
-	for _, name := range []string{"seriesId", "parentId"} {
-		raw := firstQuery(r, name)
-		if raw == "" {
-			continue
-		}
-		if key, err := ids.ParseRatingKeyGUID(raw); err == nil && key.IsPluginKey() {
-			return true
-		}
-	}
-	return false
 }

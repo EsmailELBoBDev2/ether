@@ -411,11 +411,12 @@ func (i *instance) browseRoutes() error {
 			spans := []rowSpan{}
 			titles := []frontend.Title{}
 			var series frontend.RatingKey
+			var scoped bool
 			if purpose == frontend.RowNextUp {
-				series = i.nextUpSeries(r, v)
+				series, scoped = i.nextUpSeries(r, v)
 			}
-			if series == 0 && purpose == frontend.RowNextUp && nextUpScoped(r) {
-				// A series page Ether cannot scope (a plugin series): no row.
+			if series == 0 && scoped {
+				// A missing or unsupported series has no episode row.
 				titles = nil
 			} else if series != 0 {
 				titles, err = i.seriesNextUp(r, v, series)

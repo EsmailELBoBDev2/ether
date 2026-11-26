@@ -1390,6 +1390,9 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 	}
 	parentLevelDecl, levelIdx, _ := rec.Decl.Level(parentItem.Level)
 	if parentLevelDecl.Members {
+		if q.ChildScanLimit > 0 {
+			return experience.PluginBrowsePage{}, nil
+		}
 		// A list's children are its members, in its order.
 		offset := 0
 		if cursor != "" {
@@ -1498,7 +1501,7 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 		if e != nil {
 			return experience.PluginBrowsePage{}, e
 		}
-		page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Levels: targetLevels, Cursor: cursor, Limit: limit, Policy: policy, Sort: "index"})
+		page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Levels: targetLevels, NoTotal: q.ChildScanLimit > 0, Cursor: cursor, Limit: limit, Policy: policy, Sort: "index"})
 		if err != nil {
 			return experience.PluginBrowsePage{}, err
 		}
@@ -1539,24 +1542,33 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 
 	// Recursive multi-level expansion (e.g. root -> intermediate -> leaf):
 	// walk descendants breadth-first from the store with bounded pages.
+	policy, err := c.items.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return experience.PluginBrowsePage{}, err
+	}
 	kindMedia := ResolveKindMediaClass(rec.Decl, lib.Present)
 	parentMedia := rec.Decl.EffectiveLevelMedia(parentItem.Level, kindMedia)
 	var leaves []core.KindItem
 	queue := []core.ItemRef{parentItem.Ref}
 	const maxExpanded = 2000
+	scanned := 0
 	for len(queue) > 0 && len(leaves) < maxExpanded {
 		cur := queue[0]
 		queue = queue[1:]
 		childCursor := ""
 		for {
-			policy, e := c.items.LibraryPolicy(ctx, lib)
-			if e != nil {
-				return experience.PluginBrowsePage{}, e
+			scanLimit := 200
+			if q.ChildScanLimit > 0 {
+				scanLimit = min(scanLimit, q.ChildScanLimit-scanned)
+				if scanLimit == 0 {
+					return experience.PluginBrowsePage{}, nil
+				}
 			}
-			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{NoTotal: true, LibraryID: lib.ID, ParentRef: cur, Cursor: childCursor, Limit: 200, Policy: policy, Sort: "index"})
+			page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{NoTotal: true, LibraryID: lib.ID, ParentRef: cur, Cursor: childCursor, Limit: scanLimit, Policy: policy, Sort: "index"})
 			if err != nil {
 				return experience.PluginBrowsePage{}, err
 			}
+			scanned += len(page.Items)
 			for _, it := range page.Items {
 				if !filtering && rec.Decl.EffectiveLevelMedia(it.Level, kindMedia) != parentMedia {
 					// Unfiltered recursive leaf expansion stays within the

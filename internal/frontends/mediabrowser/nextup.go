@@ -3,7 +3,6 @@ package mediabrowser
 import (
 	"net/http"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
@@ -22,9 +21,9 @@ func (i *instance) nextUpSeries(r *http.Request, viewer *frontend.Viewer) (front
 		title, ok := i.storedListTitle(r, viewer, key)
 		if ok {
 			switch title.Type {
-			case core.TypeShow:
+			case frontend.TypeShow:
 				return key, true
-			case core.TypeSeason, core.TypeEpisode:
+			case frontend.TypeSeason, frontend.TypeEpisode:
 				return title.ShowKey, true
 			}
 		}

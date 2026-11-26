@@ -72,7 +72,9 @@ type lyricsHintExperience struct {
 	likely bool
 }
 
-func (e lyricsHintExperience) TitleLyricsLikely(context.Context, frontend.Title) bool { return e.likely }
+func (e lyricsHintExperience) TitleLyricsLikely(context.Context, frontend.Title) bool {
+	return e.likely
+}
 
 // Emby Web shows its lyrics button when the item's first media source lists
 // a Subtitle stream, then reads the stream at DefaultSubtitleStreamIndex. The

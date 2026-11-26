@@ -874,7 +874,8 @@ func (s *Service) VerifyCached(ctx context.Context, hash string) (bool, bool) {
 func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refresh bool) (map[string]bool, map[string][]core.DebridServiceRef, bool) {
 	out := map[string]bool{}
 	by := map[string][]core.DebridServiceRef{}
-	if len(hashes) == 0 {
+	entries := s.active()
+	if len(hashes) == 0 || len(entries) == 0 || ctx.Err() != nil {
 		return out, by, false
 	}
 	addService := func(h string, ref core.DebridServiceRef) {
@@ -886,7 +887,7 @@ func (s *Service) checkCachedDetail(ctx context.Context, hashes []string, refres
 		by[h] = append(by[h], ref)
 	}
 	definitive := true
-	for _, e := range s.active() {
+	for _, e := range entries {
 		if e.blocked(s.now()) != nil {
 			definitive = false
 			continue

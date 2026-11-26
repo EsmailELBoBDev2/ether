@@ -1585,7 +1585,9 @@ func (c *KindCatalog) ChildrenQuery(ctx context.Context, parent core.RatingKey, 
 					// concerts).
 					continue
 				}
-				isContainer := rec.Decl.HasChildLevels(it.Level) && !it.Playable
+				// A playable container can still hold episodes in a stored
+				// subtree probe. Ordinary recursive playback stops at it.
+				isContainer := rec.Decl.HasChildLevels(it.Level) && (!it.Playable || q.ChildScanLimit > 0)
 				if isContainer {
 					queue = append(queue, it.Ref)
 				}

@@ -212,6 +212,9 @@ var tierUntouchedTables = []string{
 	// Download quota ledger: counts a viewer's downloads per day; a removed
 	// title only frees a quota entry and is never a reason to keep it.
 	"safety_download_usage",
+	// Offline download grants pin a file for one device's transfer; a removed
+	// title only ends the grant.
+	"safety_offline_download_grants",
 	"collections_addon_imports",
 	// A derived index of the title references in collections_specs, which
 	// is already a touch source (touchScan); provider speed tests hold no

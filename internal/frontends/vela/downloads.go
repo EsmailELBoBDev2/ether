@@ -13,7 +13,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/mediasafety"
@@ -224,7 +223,7 @@ func (i *instance) grantDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decision, err := quota.AdmitOfflineDownload(ctx, v, k, receipt, binding, source.Size)
-	if errors.Is(err, core.ErrSourceChanged) {
+	if errors.Is(err, frontend.ErrSourceChanged) {
 		unavailable()
 		return
 	}

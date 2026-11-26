@@ -114,6 +114,9 @@ type Title struct {
 	// clients that only play leaf items can play it.
 	SelfChild bool `json:"-"`
 
+	// LyricsDeclared identifies a playable item whose kind declares lyrics.
+	LyricsDeclared bool `json:"-"`
+
 	// Media class, role, and structured non-video presentation metadata
 	// (docs/plugin-kinds.md, additive). Never serialized to catalogue caches.
 	MediaClass   MediaClass    `json:"-"`

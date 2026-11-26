@@ -618,6 +618,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 			withVariants = false
 		}
 		m.Media, editionTitle, info = s.mediaForWithInfo(ctx, pr, t, detail, withVariants, o.session, o.batchDetail)
+		if m.Type == "track" && t.Key.IsPluginKey() {
+			if hint, ok := s.exp().(frontend.TitleLyricsHint); ok {
+				s.addTrackLyrics(ctx, pr.User, m.Media, t.Key, hint.TitleLyricsAvailability(*t))
+			}
+		}
 		applyEditionTitle(&m, editionTitle)
 		if s.downloadsAllowed(pr.User) {
 			m.AllowSync = model.Ptr(true)

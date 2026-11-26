@@ -141,6 +141,9 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 	if i.protocol == "emby" {
 		delete(m, "LocationType")
 	}
+	if i.protocol == "jellyfin" && i.lyricsLikely(t) {
+		m["HasLyrics"] = true
+	}
 	m["ProviderIds"] = nativeProviderIDs(t.IDs)
 	m["ServerId"] = i.info.ID
 	sortName := t.SortTitle
@@ -728,6 +731,7 @@ func (i *instance) browseRoutes() error {
 		if i.protocol == "emby" {
 			i.setVideoCanDownload(v, dto, d.Title)
 			i.embyItemDetailDTO(dto, d)
+			i.embyLyricStream(dto, d.Title)
 		}
 		i.markUnreleased(dto, d.Title)
 		i.applyOpenedDetail(r, v, dto, d.Title)

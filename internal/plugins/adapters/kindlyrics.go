@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
@@ -71,6 +72,21 @@ func (l *lyricsMemos) put(key core.RatingKey, memo lyricsMemo) {
 }
 
 var kindLyrics lyricsMemos
+
+// LyricsAvailability reads the memo for an item with a lyric declaration.
+func (c *KindCatalog) LyricsAvailability(key core.RatingKey) frontend.LyricAvailability {
+	memo, ok := kindLyrics.get(key)
+	switch {
+	case !ok:
+		return frontend.LyricsPossible
+	case !memo.found:
+		return frontend.LyricsAbsent
+	case len(memo.lyrics.Lines) > 0:
+		return frontend.LyricsTimed
+	default:
+		return frontend.LyricsPlain
+	}
+}
 
 // Lyrics asks the item's kind plugin for its words when the kind declares
 // lyrics. The item comes from the store; the plugin is called at most once

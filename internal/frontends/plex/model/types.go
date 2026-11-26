@@ -516,6 +516,8 @@ type Stream struct {
 	DOVIRPUPresent       *bool   `plex:"DOVIRPUPresent"`
 	DOVIVersion          string  `plex:"DOVIVersion,omitempty"`
 	Format               string  `plex:"format,omitempty"`
+	Timed                *bool   `plex:"timed"`
+	Provider             string  `plex:"provider,omitempty"`
 	FrameRate            float64 `plex:"frameRate,omitempty"`
 	HasScalingMatrix     *bool   `plex:"hasScalingMatrix"`
 	Height               int     `plex:"height,omitempty"`

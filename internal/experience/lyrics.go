@@ -25,10 +25,30 @@ func (s *Service) TitleLyrics(ctx context.Context, viewer *core.Viewer, key core
 	if !ok || !key.IsPluginKey() {
 		return core.Lyrics{}, core.ErrNotFound
 	}
-	if _, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key); err != nil {
+	item, err := s.pluginItem(core.WithNoContainerExpand(ctx), v, key)
+	if err != nil {
 		return core.Lyrics{}, err
 	}
+	if !item.Playable || !item.Title.LyricsDeclared {
+		return core.Lyrics{}, core.ErrNotFound
+	}
 	return source.Lyrics(ctx, key)
+}
+
+type pluginLyricsHint interface {
+	LyricsAvailability(key core.RatingKey) frontend.LyricAvailability
+}
+
+var _ frontend.TitleLyricsHint = (*Service)(nil)
+
+func (s *Service) TitleLyricsAvailability(t core.Title) frontend.LyricAvailability {
+	if !t.Key.IsPluginKey() || !t.LyricsDeclared {
+		return frontend.LyricsAbsent
+	}
+	if hint, ok := s.d.PluginLibraries.(pluginLyricsHint); ok {
+		return hint.LyricsAvailability(t.Key)
+	}
+	return frontend.LyricsAbsent
 }
 
 // LyricsAvailable reports whether a lyrics source is wired.

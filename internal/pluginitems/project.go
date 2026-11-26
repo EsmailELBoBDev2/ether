@@ -132,10 +132,12 @@ func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present cor
 		childCount = 0
 	}
 
+	level, _, declared := decl.Level(item.Level)
 	t := core.Title{
 		Key:               item.Key,
 		Type:              mediaType,
 		MBItemType:        mbItemType,
+		LyricsDeclared:    decl.Lyrics && declared && level.Playable && item.Playable && item.Unavailable == nil,
 		RecordingID:       item.Recording,
 		KindLevel:         item.Level,
 		PrimaryChildLevel: primaryChildLevel,

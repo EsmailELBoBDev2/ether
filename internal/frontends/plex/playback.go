@@ -3397,11 +3397,16 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 	cw := s.newCountWriter(w, r)
 	q := parts.Request(r)
 	var recoverOriginal func()
-	if reader, ok := s.broker().(frontend.PlexOriginalRange); ok && !download {
-		request := reader.PlexOriginalRange(q.Context(), s.plexAccess(pr), key, ps.ID, releaseID, q.URL.Query().Get("sourceRevision"))
-		if recover := request.Lost; recover != nil {
-			request.Lost = func() { recoverOriginal = recover }
-			q = q.WithContext(frontend.WithOriginalRange(q.Context(), request))
+	if reader, ok := s.broker().(frontend.OriginalRangeReader); ok && !download {
+		if rt := s.brokerRuntime(); rt != nil {
+			access := s.plexAccess(pr)
+			if id, err := rt.PlexSessionForSource(q.Context(), access, key, ps.ID); err == nil {
+				request := reader.OriginalRange(q.Context(), access, id, releaseID, q.URL.Query().Get("sourceRevision"))
+				if recover := request.Lost; recover != nil {
+					request.Lost = func() { recoverOriginal = recover }
+					q = q.WithContext(frontend.WithOriginalRange(q.Context(), request))
+				}
+			}
 		}
 	}
 	s.plexSources().ServePart(cw, q, ps.ID)

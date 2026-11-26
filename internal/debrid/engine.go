@@ -1730,8 +1730,9 @@ type timing struct{ connect, ttfb time.Duration }
 
 // rangeGet requests bytes [start, end] and returns the body positioned at
 // start, retrying transient failures and refreshing the link on 401, 403,
-// 404, 410 or expiry. Errors wrap core.ErrSourceUnavailable (transient),
-// core.ErrArticleMissing (the link keeps failing) or core.ErrArticleCorrupt
+// 404, 410 or expiry. Native provider CDN failures are transient;
+// provider refresh can confirm core.ErrOriginalLost. Error responses can also
+// report core.ErrArticleMissing (a missing file) or core.ErrArticleCorrupt
 // (the file is not what the payload describes).
 func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool) (result io.ReadCloser, measured timing, served servedBy, resultErr error) {
 	if _, ok := ctx.Value(fetchModeKey{}).(fetchMode); !ok {

@@ -779,8 +779,16 @@ func parseStandardEpisodes(spaced, upper string, info *core.ReleaseInfo) int {
 			info.Episodes = []int{episode}
 			return at
 		}
-		if loc := reSeasonWord.FindStringSubmatchIndex(spaced); loc != nil {
+		for _, loc := range reSeasonWord.FindAllStringSubmatchIndex(spaced, -1) {
 			m := submatches(spaced, loc)
+			// A bare year after a season word can be the release year
+			// ("The Four Seasons 1981"). Explicit episode markers and
+			// S2026 syntax can still identify year-numbered seasons.
+			if m[2] == "" && reYear.MatchString(m[1]) {
+				if _, yearAt := parseYearAt(spaced); yearAt == loc[2] {
+					continue
+				}
+			}
 			info.Seasons = seasonRange(m)
 			info.FullSeason = true
 			return loc[0]

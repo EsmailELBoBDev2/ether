@@ -1544,9 +1544,9 @@ type StreamDecisionReader interface {
 	StreamDecision(context.Context, SessionAccess, string) (core.Decision, error)
 }
 
-// PlexOriginalRange associates a direct part read with its broker session.
-type PlexOriginalRange interface {
-	PlexOriginalRange(context.Context, SessionAccess, core.RatingKey, string, string, string) core.OriginalRange
+// OriginalRangeReader associates a direct byte-range read with its broker session.
+type OriginalRangeReader interface {
+	OriginalRange(ctx context.Context, access SessionAccess, sessionID, releaseID, revision string) core.OriginalRange
 }
 
 func WithOriginalRange(ctx context.Context, request core.OriginalRange) context.Context {

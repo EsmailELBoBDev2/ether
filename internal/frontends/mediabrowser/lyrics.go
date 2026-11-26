@@ -135,18 +135,26 @@ func (i *instance) embyLyricStream(dto map[string]any, t frontend.Title) {
 		sources = []any{source}
 		dto["MediaSources"] = sources
 	}
+	// One index for the lyric stream everywhere: a source may list fewer
+	// streams than the item, and apps read either list.
+	top, _ := dto["MediaStreams"].([]any)
+	index := nextMediaStreamIndex(top)
+	for _, entry := range sources {
+		if source, ok := entry.(map[string]any); ok {
+			streams, _ := source["MediaStreams"].([]any)
+			index = max(index, nextMediaStreamIndex(streams))
+		}
+	}
 	for _, entry := range sources {
 		source, ok := entry.(map[string]any)
 		if !ok {
 			continue
 		}
 		streams, _ := source["MediaStreams"].([]any)
-		index := nextMediaStreamIndex(streams)
 		source["MediaStreams"] = append(append([]any(nil), streams...), embyLyricStreamDTO(index))
 		source["DefaultSubtitleStreamIndex"] = index
 	}
-	top, _ := dto["MediaStreams"].([]any)
-	dto["MediaStreams"] = append(append([]any(nil), top...), embyLyricStreamDTO(nextMediaStreamIndex(top)))
+	dto["MediaStreams"] = append(append([]any(nil), top...), embyLyricStreamDTO(index))
 	dto["HasSubtitles"] = true
 }
 

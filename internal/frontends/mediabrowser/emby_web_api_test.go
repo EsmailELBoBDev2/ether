@@ -35,10 +35,15 @@ func embyWebHost(t *testing.T) (call func(method, path string, body []byte) *htt
 			return []frontend.View{{ID: "1", Name: "Movies", Type: "movie"}, {ID: "2", Name: "TV", Type: "show"}}, nil
 		}, FacetsFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _, kind string) ([]frontend.FacetValue, error) {
 			if kind == "genre" {
-				return []frontend.FacetValue{{ID: "4", Title: "Action"}}, nil
+				return []frontend.FacetValue{{ID: "genre-action", Title: "Action"}}, nil
+			}
+			if kind == "studio" {
+				return []frontend.FacetValue{{ID: "studio-syncopy", Title: "Syncopy"}}, nil
 			}
 			return nil, nil
 		}},
+		// Emby numbers genres and studios from one counter.
+		IDs: ids.Codecs{Allocator: &mapAllocator{ids: map[string]int32{"genre:genre-action": 4, "studio:studio-syncopy": 5}}},
 		Preferences: frontendtest.Preferences{
 			GetFunc: func(_ context.Context, _ *frontend.Viewer, client, key string) (json.RawMessage, error) {
 				mu.Lock()
@@ -160,11 +165,53 @@ func TestEmbyWebLibraryTabsPrefixesAndGenrePages(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &prefixes) != nil || len(prefixes) != 27 || prefixes[1].Name != "A" {
 		t.Fatalf("prefixes: %d %s", w.Code, w.Body)
 	}
-	for _, p := range []string{"/emby/Users/" + uid + "/Items/4", "/emby/Genres/action"} {
-		w = call(http.MethodGet, p, nil)
+	for _, tc := range []struct{ path, id, name, typ string }{
+		{"/emby/Users/" + uid + "/Items/4", "4", "Action", "Genre"},
+		{"/emby/Genres/action", "4", "Action", "Genre"},
+		{"/emby/Users/" + uid + "/Items/5", "5", "Syncopy", "Studio"},
+		{"/emby/Studios/syncopy", "5", "Syncopy", "Studio"},
+	} {
+		w = call(http.MethodGet, tc.path, nil)
 		var g struct{ Id, Name, Type string }
-		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &g) != nil || g.Name != "Action" || g.Type != "Genre" || g.Id != "4" {
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &g) != nil || g.Name != tc.name || g.Type != tc.typ || g.Id != tc.id {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	if w = call(http.MethodGet, "/emby/Users/"+uid+"/Items/6", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("unissued facet number: %d %s", w.Code, w.Body)
+	}
+	w = call(http.MethodGet, "/emby/Localization/Cultures", nil)
+	var cultures []struct{ DisplayName, ThreeLetterISOLanguageName string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &cultures) != nil || len(cultures) < 50 {
+		t.Fatalf("cultures: %d %s", w.Code, w.Body)
+	}
+	found := false
+	for _, c := range cultures {
+		found = found || (c.DisplayName == "English" && c.ThreeLetterISOLanguageName == "eng")
+	}
+	if !found {
+		t.Fatalf("cultures miss English/eng: %s", w.Body)
+	}
+	for _, p := range []string{"/emby/Notifications/Services/Configured", "/emby/Notifications/Types"} {
+		if w = call(http.MethodGet, p, nil); w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
 			t.Fatalf("%s: %d %s", p, w.Code, w.Body)
 		}
 	}
+}
+
+type mapAllocator struct{ ids map[string]int32 }
+
+func (a *mapAllocator) Compact(_ context.Context, surface, kind, ref string) (int32, error) {
+	if n, ok := a.ids[ref]; ok && surface == "emby" && kind == embyNamedFacetKind {
+		return n, nil
+	}
+	return 0, errors.New("unknown")
+}
+func (a *mapAllocator) Resolve(_ context.Context, surface, kind string, id int32) (string, error) {
+	for ref, n := range a.ids {
+		if n == id && surface == "emby" && kind == embyNamedFacetKind {
+			return ref, nil
+		}
+	}
+	return "", errors.New("unknown")
 }

@@ -34,6 +34,10 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Items/{id}/ThemeMedia", i.themeMedia}, {"/Items/{id}/ThemeSongs", i.themeMedia}, {"/Items/{id}/ThemeVideos", i.themeMedia},
 		{"/Items/{id}/PlaybackInfo", i.playbackInfo},
 		{"/Localization/Options", i.emptyOptionalArray},
+		{"/Localization/Cultures", i.cultures},
+		// Emby Web's notification settings; Ether sends no server notifications.
+		{"/Notifications/Services/Configured", i.emptyOptionalArray},
+		{"/Notifications/Types", i.emptyOptionalArray},
 		{"/System/WakeOnLanInfo", i.emptyOptionalArray},
 		{"/Users/{userId}/HomeSections", i.homeSections},
 		{"/Users/{userId}/Sections/{section}/Items", i.homeSectionItems},

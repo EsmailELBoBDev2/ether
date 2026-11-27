@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -47,6 +48,24 @@ type dvrRuntime struct {
 	// watched reports a recording's watch state for retention; nil keeps
 	// "until watched" recordings.
 	watched dvr.WatchedFunc
+	// changed is told when a recording finishes or is deleted, so the
+	// recordings library follows.
+	changed atomic.Pointer[func()]
+}
+
+// SetDVRRecordingsChanged registers the callback the recordings library
+// uses to follow finished and deleted recordings.
+func (s *Service) SetDVRRecordingsChanged(fn func()) {
+	if s == nil || s.dvr == nil {
+		return
+	}
+	s.dvr.changed.Store(&fn)
+}
+
+func (d *dvrRuntime) recordingsChanged() {
+	if fn := d.changed.Load(); fn != nil && *fn != nil {
+		(*fn)()
+	}
 }
 
 func newDVRRuntime(s *Service) *dvrRuntime {

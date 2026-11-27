@@ -2690,6 +2690,9 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 	}
 	return kindstream.Deps{
 		OpenFile: func(ctx context.Context, src core.PlayableSource) (kindstream.ByteSource, error) {
+			if hk := lookupHostKind(rec.PluginID, rec.KindKey); hk != nil {
+				return openHostFile(hk, src)
+			}
 			s := &StreamSources{mgr: r.mgr}
 			resolved, _, err := s.validateLocalFile(ctx, rec.PluginID, src.Path)
 			if err != nil {
@@ -3554,6 +3557,9 @@ func parsePreparingReply(body []byte) error {
 
 func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, source string, accept, exclude []string) (_ []core.PlayableSource, err error) {
 	defer func() { err = logredact.SourceError(err) }()
+	if hk := lookupHostKind(rec.PluginID, rec.KindKey); hk != nil {
+		return hk.Resolve(ctx, item)
+	}
 	pr, err := r.mgr.Get(ctx, rec.PluginID)
 	if err != nil || !pr.Enabled || !pr.Manifest.HasCapability(plugins.CapKindResolver) {
 		return nil, core.ErrSourceUnavailable

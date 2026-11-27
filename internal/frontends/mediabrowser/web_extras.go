@@ -17,7 +17,8 @@ var webExtrasJS []byte
 
 const webExtrasScriptTag = `<script src="ether-extras.js" defer></script>`
 
-// withWebExtras loads Ether's extras script in the served Emby Web page.
+// withWebExtras loads Ether's extras script in the served Emby Web or
+// Jellyfin Web page.
 func withWebExtras(page []byte) []byte {
 	if bytes.Contains(page, []byte("ether-extras.js")) {
 		return page
@@ -49,7 +50,7 @@ func (i *instance) webExtras(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	out := map[string]any{"screensaverMinutes": 0}
+	out := map[string]any{"screensaverMinutes": 0, "app": i.protocol}
 	if i.host.Config != nil {
 		if n, ok := i.host.Config()["screensaverMinutes"].(float64); ok && n > 0 && n <= maxScreensaverMinutes && n == math.Trunc(n) {
 			out["screensaverMinutes"] = n

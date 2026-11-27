@@ -1,4 +1,4 @@
-// Ether extras for the Emby Web app Ether serves. Ether is the server, so
+// Ether extras for the Emby Web and Jellyfin Web apps Ether serves. Ether is the server, so
 // the server's admin pages live in the Ether console: those routes open the
 // matching console page instead. Ether also adds its own screensaver. The
 // app's code is untouched; this file only reacts to route changes and idle
@@ -6,6 +6,16 @@
 (function () {
   "use strict";
   var ADMIN = [
+    // Jellyfin Web: everything under #/dashboard.
+    [/^\/dashboard\/users(\b|$)/, "/viewers"],
+    [/^\/dashboard\/libraries(\b|$)/, "/libraries"],
+    [/^\/dashboard\/playback(\b|$)/, "/playback"],
+    [/^\/dashboard\/livetv(\b|$)/, "/livetv"],
+    [/^\/dashboard\/plugins(\b|$)/, "/plugins"],
+    [/^\/dashboard\/(logs|tasks|backups)(\b|$)/, "/maintenance"],
+    [/^\/dashboard\/(devices|activity)(\b|$)/, "/activity"],
+    [/^\/dashboard\/keys(\b|$)/, "/apps/APP"],
+    // Emby Web.
     [/^\/(dashboard|dashboard\.html|dashboard\/settings|dashboard\/releasenotes\.html|network)(\b|$)/, "/server"],
     [/^\/devices(\b|$)/, "/activity"],
     [/^\/serveractivity(\b|$)/, "/activity"],
@@ -14,7 +24,7 @@
     [/^\/livetvsetup(\b|$)/, "/livetv"],
     [/^\/(logs|log|scheduledtasks|scheduledtask|database)(\b|$)/, "/maintenance"],
     [/^\/(plugins|configurationpage)(\b|$)/, "/plugins"],
-    [/^\/apikeys(\b|$)/, "/apps/emby"],
+    [/^\/apikeys(\b|$)/, "/apps/APP"],
     [/^\/users(\b|$)/, "/viewers"],
   ];
   var config = null;
@@ -35,11 +45,13 @@
     });
   }
 
+  // Emby Web routes are #!/page, Jellyfin Web's #/page.
   function route() {
     var h = location.hash || "";
-    var i = h.indexOf("#!");
-    if (i < 0) return "";
-    return h.slice(i + 2).split("?")[0];
+    if (h.indexOf("#!") === 0) h = h.slice(2);
+    else if (h.indexOf("#") === 0) h = h.slice(1);
+    else return "";
+    return h.split("?")[0];
   }
 
   function checkAdminRoute() {
@@ -49,9 +61,9 @@
         var target = ADMIN[n][1];
         loadConfig().then(function (c) {
           if (!c || !c.console) return;
-          window.open(c.console.replace(/\/$/, "") + target, "_blank", "noopener");
+          window.open(c.console.replace(/\/$/, "") + target.replace("APP", c.app || "emby"), "_blank", "noopener");
           if (history.length > 1) history.back();
-          else location.hash = "#!/home";
+          else location.hash = c.app === "jellyfin" ? "#/home" : "#!/home";
         });
         return;
       }
@@ -147,12 +159,13 @@
     );
   });
 
-  window.addEventListener("hashchange", function () {
+  // Emby Web's router consumes hashchange, so watch the address instead.
+  var lastRoute = null;
+  setInterval(function () {
+    var r = route();
+    if (r === lastRoute) return;
+    lastRoute = r;
     checkAdminRoute();
     if (!config) loadConfig().then(armIdle);
-  });
-  setTimeout(function () {
-    checkAdminRoute();
-    loadConfig().then(armIdle);
-  }, 1500);
+  }, 500);
 })();

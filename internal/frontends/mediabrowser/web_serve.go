@@ -88,6 +88,17 @@ func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, originFn origin
 		http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(raw))
 		return
 	}
+	if rel == "index.html" {
+		raw, err := os.ReadFile(info)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		// Ether's extras script: the dashboard opens the Ether console.
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(withWebExtras(raw)))
+		return
+	}
 	http.ServeFile(w, r, info)
 }
 

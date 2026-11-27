@@ -89,7 +89,7 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 				webSigninPageFor(w, r, getInfo().ProductName == "Emby Server")
 				return
 			}
-			if r.PathValue("path") == "ether-extras.js" && getInfo().ProductName == "Emby Server" {
+			if r.PathValue("path") == "ether-extras.js" {
 				serveWebExtrasJS(w, r)
 				return
 			}

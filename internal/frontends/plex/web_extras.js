@@ -35,6 +35,12 @@
     if (history.length > 1) history.back();
     else location.hash = "#!/";
   }
-  window.addEventListener("hashchange", check);
-  setTimeout(check, 1500);
+  // An app router may consume hashchange, so watch the address instead.
+  var last = null;
+  setInterval(function () {
+    var r = route();
+    if (r === last) return;
+    last = r;
+    check();
+  }, 500);
 })();

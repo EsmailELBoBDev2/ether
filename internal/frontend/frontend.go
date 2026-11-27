@@ -601,8 +601,10 @@ type Host struct {
 	PublicOrigin func() string
 	// RepoFileURL returns an immutable public URL for a committed repository file, or "".
 	RepoFileURL func(path string) string
-	// LANViewer resolves the owner-selected active DLNA viewer only after
-	// trusted-proxy-aware network classification; other surfaces receive nil.
+	// LANViewer resolves the owner-selected active viewer only after
+	// trusted-proxy-aware network classification. DLNA and credential-free
+	// plugin surfaces browse as it; Plex signs a local request without a
+	// token in as it. Other surfaces receive nil.
 	LANViewer func(context.Context, *http.Request) (*Viewer, error)
 	// ClientSeen reports an authenticated client's protocol-specific device ID.
 	ClientSeen func(deviceID string)

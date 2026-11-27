@@ -383,6 +383,18 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if s.forwardMissingPlexGrant(w, r, pr) {
 			return
 		}
+		if u := s.lanSignIn(r, pr); u != nil {
+			pr.User = u
+			if !s.forwardedOwnerPolicy(r, pr) {
+				writeHTTPError(w, http.StatusForbidden)
+				return
+			}
+			s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform)
+			s.recentClients.recordRequest(r, pr, s.now())
+			s.observePlaybackRequestStart(r, pr)
+			next.ServeHTTP(w, withAuthenticatedViewer(r, pr))
+			return
+		}
 		writeHTTPError(w, http.StatusUnauthorized)
 	})
 }

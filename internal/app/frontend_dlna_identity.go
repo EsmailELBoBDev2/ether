@@ -27,3 +27,20 @@ func (a *App) lanViewer(ctx context.Context, req *http.Request, settings fronten
 	}
 	return viewer, nil
 }
+
+// plexLANViewer signs a Plex request that carries no token in as the
+// owner-selected viewer, like Plex Media Server's "networks allowed without
+// auth": Plex Web on the local network then opens without a plex.tv sign-in.
+// A request relayed by a proxy Ether does not trust is refused, because its
+// real client cannot be told apart from the proxy's local address.
+func (a *App) plexLANViewer(ctx context.Context, req *http.Request, settings frontend.Settings) (*core.Viewer, error) {
+	trusted := identity.ProxyPrefixes(a.cfg.Read().Server.TrustedProxyCIDRs)
+	if !identity.TrustedPeer(req, trusted...) && forwardedRequest(req) {
+		return nil, core.ErrUnauthorized
+	}
+	return a.lanViewer(ctx, req, settings)
+}
+
+func forwardedRequest(r *http.Request) bool {
+	return r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-IP") != "" || r.Header.Get("Forwarded") != ""
+}

@@ -586,6 +586,7 @@ func parseXMLTV(r io.Reader, f guideFilter) (XMLGuide, bool, error) {
 			if len(p.Rating) > 0 {
 				item.Rating = p.Rating[0].Value
 			}
+			applyXMLTVEpisode(&item, p)
 			g.Programmes = append(g.Programmes, Programme{ID: stableID(p.Channel, p.Start), ChannelID: p.Channel, Start: start, End: end, Item: item})
 		}
 	}

@@ -86,6 +86,16 @@ func (i *instance) mutationRoutes() error {
 				return err
 			}
 		}
+		// Emby Web undoes a favorite, a played mark or a rating with POST
+		// .../Delete instead of DELETE, as Emby Server accepts.
+		kind := path.kind
+		if err := i.router.Handle("POST", path.pattern+"/Delete", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			undo := r.Clone(r.Context())
+			undo.Method = http.MethodDelete
+			i.mutate(w, undo, kind)
+		})); err != nil {
+			return err
+		}
 	}
 	return nil
 }

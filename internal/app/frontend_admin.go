@@ -160,7 +160,12 @@ func (f *frontendControl) Settings(_ context.Context, id frontend.Protocol) (fro
 	}
 	cfg := f.config.Read()
 	if frontendHostPolicy(id).MainListener {
-		return frontend.Settings{"port": float64(cfg.Server.Port)}, nil
+		out := frontend.Settings{"port": float64(cfg.Server.Port)}
+		// The viewer local Plex apps sign in as without a token.
+		if v, ok := cfg.Frontends[string(id)].Settings["viewerId"]; ok {
+			out["viewerId"] = v
+		}
+		return out, nil
 	}
 	settings := frontend.Settings{}
 	for k, v := range cfg.Frontends[string(id)].Settings {
@@ -252,14 +257,18 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 	}
 	if frontendHostPolicy(id).MainListener {
 		for key := range s {
-			if key != "port" {
+			if key != "port" && key != "viewerId" {
 				return fmt.Errorf("unsupported Plex setting %s", key)
 			}
 		}
-		if os.Getenv("ETHER_PORT") != "" {
-			return errors.New("ETHER_PORT controls the listening port")
-		}
 		oldPort := f.config.Get().Server.Port
+		if os.Getenv("ETHER_PORT") != "" {
+			// The environment owns the port; other Plex settings still save.
+			if port, ok := s["port"].(float64); ok && int(port) != oldPort {
+				return errors.New("ETHER_PORT controls the listening port")
+			}
+			delete(s, "port")
+		}
 		if port, ok := s["port"].(float64); ok && int(port) != oldPort {
 			ln, err := net.Listen("tcp", net.JoinHostPort(f.config.Get().Server.BindAddress, strconv.Itoa(int(port))))
 			if err != nil {
@@ -272,6 +281,23 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 				c.Server.Port = int(port)
 				c.Server.PortExplicit = true
 			}
+			// A save without viewerId turns local sign-in off.
+			if c.Frontends == nil {
+				c.Frontends = map[string]config.Frontend{}
+			}
+			v, ok := c.Frontends[string(id)]
+			if !ok {
+				v = config.Frontend{Enabled: true}
+			}
+			if viewer, has := s["viewerId"]; has {
+				if v.Settings == nil {
+					v.Settings = map[string]any{}
+				}
+				v.Settings["viewerId"] = viewer
+			} else {
+				delete(v.Settings, "viewerId")
+			}
+			c.Frontends[string(id)] = v
 			return nil
 		})
 		if err == nil && oldPort != f.config.Get().Server.Port && f.portChanged != nil {

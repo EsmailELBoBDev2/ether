@@ -98,6 +98,12 @@ func (r *dvrRecorder) run(parent context.Context) {
 		r.fail(bg, "the account that scheduled this recording is gone")
 		return
 	}
+	if r.job.RecordingID == "" {
+		if reason := r.d.preflight(ctx, r.job); reason != "" {
+			r.fail(bg, reason)
+			return
+		}
+	}
 	rec, f, err := r.open(bg)
 	if err != nil {
 		log.Warn("dvr cannot write recording", "error", err)
@@ -113,7 +119,7 @@ func (r *dvrRecorder) run(parent context.Context) {
 	if prog.bytes > 0 {
 		prog.firstData = rec.Created
 	}
-	writeErr := r.pull(ctx, user, f, &prog, log)
+	writeErr := r.pull(ctx, user, f, &rec, &prog, log)
 	closeErr := f.Close()
 	if writeErr == nil {
 		writeErr = closeErr
@@ -171,7 +177,7 @@ func (r *dvrRecorder) open(ctx context.Context) (dvr.Recording, *os.File, error)
 
 // pull copies segments until the window ends or the job is stopped. Only
 // a write error is returned; stream trouble is retried and counted.
-func (r *dvrRecorder) pull(ctx context.Context, user *core.User, f *os.File, prog *dvrProgress, log interface {
+func (r *dvrRecorder) pull(ctx context.Context, user *core.User, f *os.File, rec *dvr.Recording, prog *dvrProgress, log interface {
 	Warn(string, ...any)
 }) error {
 	s := r.d.s
@@ -203,6 +209,16 @@ func (r *dvrRecorder) pull(ctx context.Context, user *core.User, f *os.File, pro
 				return nil
 			}
 			leaseAt = now
+			// Checkpoint the size so storage limits see this recording.
+			rec.SizeBytes, rec.DurationMS, rec.Gaps = prog.bytes, prog.duration.Milliseconds(), prog.gaps
+			if err := r.d.store.SaveRecording(bg, rec); err != nil {
+				log.Warn("dvr progress save failed", "error", err)
+			}
+			if r.d.diskFull(bg) {
+				prog.lastErr = "the disk filled up"
+				prog.gaps++
+				return nil
+			}
 		}
 		if sessionID == "" {
 			caps := dvrCaps

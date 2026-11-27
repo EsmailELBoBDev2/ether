@@ -1,6 +1,7 @@
 package authhdr
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -84,4 +85,28 @@ func FuzzMediaBrowser(f *testing.F) {
 	f.Add(`Emby Client="TV", Token="abc"`)
 	f.Add("")
 	f.Fuzz(func(t *testing.T, s string) { _, _ = MediaBrowser(s) })
+}
+
+func TestMediaBrowserTokenFromEmbyWebQuery(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"/emby/Users/1?X-Emby-Client=Emby+Web&X-Emby-Device-Id=d1&X-Emby-Token=abc", "abc"},
+		{"/emby/Users/1?x-emby-token=abc", "abc"},
+		{"/emby/Users/1?api_key=abc&X-Emby-Token=abc", "abc"},
+		{"/emby/Users/1?api_key=abc&X-Emby-Token=other", ""},
+		{"/emby/Users/1?X-Emby-Token=a&X-Emby-Token=b", ""},
+	} {
+		r := httptest.NewRequest(http.MethodGet, tc.raw, nil)
+		if got := MediaBrowserToken(r); got != tc.want {
+			t.Errorf("MediaBrowserToken(%s) = %q, want %q", tc.raw, got, tc.want)
+		}
+		if tc.want != "" && !MediaBrowserCredentialSupplied(r) {
+			t.Errorf("MediaBrowserCredentialSupplied(%s) = false", tc.raw)
+		}
+	}
+	// A header still wins over the query.
+	r := httptest.NewRequest(http.MethodGet, "/emby/Users/1?X-Emby-Token=query", nil)
+	r.Header.Set("X-Emby-Token", "header")
+	if got := MediaBrowserToken(r); got != "header" {
+		t.Fatalf("header credential lost to the query: %q", got)
+	}
 }

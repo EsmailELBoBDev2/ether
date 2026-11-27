@@ -244,6 +244,27 @@ func (s *State) notStarted(offset, dur time.Duration) bool {
 	return notStartedWith(offset, dur, s.ResumeAfter())
 }
 
+// tooEarlyToResume reports a stored video position no save path would keep
+// today: under the owner's threshold, or (without one) at most a minute in
+// and before the started point. Rows saved before that rule, or by an older client path,
+// still hold such tiny offsets; listing them filled Continue Watching with
+// titles opened for a few seconds. Reading progress is judged by its own
+// fraction and is never dropped here.
+func (s *State) tooEarlyToResume(ws core.WatchStatus) bool {
+	if ws.Reading != nil && ws.Reading.Fraction > 0 {
+		return false
+	}
+	if after := s.ResumeAfter(); after > 0 {
+		return ws.ViewOffset < after
+	}
+	// Both save paths keep some short positions on purpose: 5% of a short
+	// title, or past a minute (Infuse direct play). Only a position that
+	// meets neither is the "opened for a few seconds" kind.
+	// A row saved without the title's length cannot show it is past 5%, so a
+	// position of a minute or less there is the same few-seconds open.
+	return ws.ViewOffset <= time.Minute && (ws.Duration <= 0 || notStartedWith(ws.ViewOffset, ws.Duration, 0))
+}
+
 // Generation changes when watch progress, played state, or a rating is saved.
 func (s *State) Generation() uint64 {
 	if s == nil {
@@ -1176,6 +1197,9 @@ func (s *State) InProgress(ctx context.Context, userID int64, limit int) ([]core
 		}
 		if upd > 0 {
 			ws.UpdatedAt = time.Unix(0, upd).UTC()
+		}
+		if s.tooEarlyToResume(ws) {
+			continue
 		}
 		out = append(out, ws)
 	}

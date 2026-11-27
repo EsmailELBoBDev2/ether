@@ -489,3 +489,38 @@ func TestWatchedEpisodesOfReadsOnlyTheListedShows(t *testing.T) {
 		t.Fatalf("all watched = %v, %v", all, err)
 	}
 }
+
+func TestInProgressSkipsStoredPositionsTooEarlyToResume(t *testing.T) {
+	s, _ := newTestState(t)
+	hour := int64(time.Hour)
+	rows := []struct {
+		key      core.RatingKey
+		off, dur int64
+	}{
+		// Opened for seconds; past a minute but under 5%; a real resume point;
+		// no duration known but past a minute; no duration known, seconds in.
+		{core.MovieKey(1), int64(20 * time.Second), 2 * hour},
+		{core.MovieKey(2), int64(2 * time.Minute), 2 * hour},
+		{core.MovieKey(3), int64(30 * time.Minute), 2 * hour},
+		{core.MovieKey(4), int64(90 * time.Second), 0},
+		{core.MovieKey(5), int64(18 * time.Second), 0},
+	}
+	for n, row := range rows {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO state_watch(user_id, rating_key, view_offset_ns, duration_ns, last_viewed_at, updated_at) VALUES(1, ?, ?, ?, ?, ?)`,
+			int64(row.key), row.off, row.dur, int64(n+1), int64(n+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ip, err := s.InProgress(ctx, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[core.RatingKey]bool{}
+	for _, ws := range ip {
+		got[ws.Key] = true
+	}
+	// Only the few-seconds open goes; past a minute is kept (Infuse's rule).
+	if got[core.MovieKey(1)] || got[core.MovieKey(5)] || !got[core.MovieKey(2)] || !got[core.MovieKey(3)] || !got[core.MovieKey(4)] {
+		t.Fatalf("in progress %v: want all but the title opened for seconds", got)
+	}
+}

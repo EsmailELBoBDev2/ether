@@ -48,7 +48,7 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = "jellyfin"
 	}
-	if target != "jellyfin" && target != "vela" {
+	if target != "jellyfin" && target != "vela" && target != "emby" {
 		writeError(w, 400, "invalid_app", "Unknown web player")
 		return
 	}
@@ -98,7 +98,9 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 			// The web client downloads on first use: /web answers a
 			// self-refreshing "Preparing" page meanwhile, so the button must
 			// not wait for an install nobody has triggered yet.
-			if info.Descriptor.ID != "jellyfin" || !info.Enabled || !info.Status.Mounted {
+			id := string(info.Descriptor.ID)
+			// Emby Web signs in the same way when the image carries it.
+			if (id != "jellyfin" && id != "emby") || !info.Enabled || !info.Status.Mounted {
 				continue
 			}
 			info = h.presentConnectURLs(r, info)
@@ -107,8 +109,8 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 			// addresses and reverse-proxy layouts). For a direct local HTTP
 			// console with no published address, prefer the native listener
 			// port on the browser's current host.
-			hasPublished := h.deps.Config != nil && len(frontendPublishedURLs(h.deps.Config.Get(), "jellyfin")) > 0
-			if path, ok := h.sameOriginAppPath(r, "jellyfin", "/jellyfin"); ok {
+			hasPublished := h.deps.Config != nil && len(frontendPublishedURLs(h.deps.Config.Get(), id)) > 0
+			if path, ok := h.sameOriginAppPath(r, id, "/"+id); ok {
 				origin = path
 			}
 			if origin == "" && !hasPublished && valid && reqOrigin.Scheme == "http" && !viaProxy(r) {
@@ -121,12 +123,12 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if origin == "" {
-				if u, e := h.resolveAppAddress(r.Context(), r, "jellyfin", "/jellyfin", false); e == nil {
+				if u, e := h.resolveAppAddress(r.Context(), r, id, "/"+id, false); e == nil {
 					origin = strings.TrimRight(u.String(), "/")
 				}
 			}
 			if origin == "" && valid {
-				origin = reqOrigin.BaseURL("/jellyfin")
+				origin = reqOrigin.BaseURL("/" + id)
 			}
 
 			if origin == "" {
@@ -139,7 +141,7 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if origin != "" {
-				origins["jellyfin"] = origin + "/web/ether-signin"
+				origins[id] = origin + "/web/ether-signin"
 			}
 		}
 	}
@@ -155,8 +157,8 @@ func (h *Handler) webPlayer(w http.ResponseWriter, r *http.Request) {
 		URL string `json:"url"`
 	}
 	players := func(code string) []player {
-		out := make([]player, 0, 2)
-		for _, id := range []string{"vela", "jellyfin"} {
+		out := make([]player, 0, 3)
+		for _, id := range []string{"vela", "jellyfin", "emby"} {
 			if origin := origins[id]; origin != "" {
 				if code != "" {
 					origin += "#code=" + url.QueryEscape(code)

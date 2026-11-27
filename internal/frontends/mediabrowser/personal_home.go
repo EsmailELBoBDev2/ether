@@ -20,6 +20,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,16 @@ func validatePersonalSettings(s frontend.Settings) error {
 		case "homeRowCount":
 			n, ok := value.(float64)
 			if !ok || n < 0 || n > personalRowMax || n != math.Trunc(n) {
+				return fmt.Errorf("invalid %s", key)
+			}
+		case "webTheme":
+			name, ok := value.(string)
+			if !ok || (name != "" && !slices.Contains(WebThemes, name)) {
+				return fmt.Errorf("invalid %s", key)
+			}
+		case "customCss":
+			css, ok := value.(string)
+			if !ok || len(css) > maxCustomCSS {
 				return fmt.Errorf("invalid %s", key)
 			}
 		default:

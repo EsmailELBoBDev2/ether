@@ -66,7 +66,7 @@ func TestSettingsSchemaJSON(t *testing.T) {
 	if err := json.Unmarshal(out, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.SettingsSchema.SignInHelp || len(decoded.SettingsSchema.Sections) != 2 {
+	if !decoded.SettingsSchema.SignInHelp || len(decoded.SettingsSchema.Sections) != 3 {
 		t.Fatalf("schema did not round trip: %s", out)
 	}
 }

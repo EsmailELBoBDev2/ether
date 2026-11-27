@@ -83,7 +83,7 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 		}
 		current.LoginHint = inst.loginHint
 		return current
-	}, inst.publicViewers, host.ClientIP, host.Origin, host.SurfaceURL, inst.webClient); err != nil {
+	}, inst.publicViewers, host.ClientIP, host.Origin, host.SurfaceURL, inst.webClient, inst.brandingCSS); err != nil {
 		return nil, err
 	}
 

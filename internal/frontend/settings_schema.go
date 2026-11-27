@@ -69,6 +69,12 @@ func MediaBrowserSchema(quickConnect bool) SettingsSchema {
 			{Key: "home", Fields: []SettingsField{
 				{Key: "homeRowCount", Kind: "number", Min: intp(0), Max: intp(12)},
 			}},
+			// The web app's look: an Ether theme (Emby Web) and the owner's
+			// own CSS, served as the server's custom CSS.
+			{Key: "look", Fields: []SettingsField{
+				{Key: "webTheme", Kind: "string", Options: []string{"", "ether", "amoled", "nord"}},
+				{Key: "customCss", Kind: "string", Max: intp(65536)},
+			}},
 			{Key: "find", Fields: find},
 		},
 	}

@@ -44,7 +44,10 @@ func requestRedirectPrefix(r *http.Request, originFn originResolver) string {
 	return clientnet.JoinPrefix(fwdPrefix, mountPrefix)
 }
 
-func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.HandlerFunc, clientIP func(*http.Request) (netip.Addr, bool), originFn originResolver, surfaceFn surfaceResolver, webClient *webclient.Installer) error {
+func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.HandlerFunc, clientIP func(*http.Request) (netip.Addr, bool), originFn originResolver, surfaceFn surfaceResolver, webClient *webclient.Installer, brandingCSS func() string) error {
+	if brandingCSS == nil {
+		brandingCSS = func() string { return "" }
+	}
 	if picker == nil {
 		picker = func(w http.ResponseWriter, _ *http.Request) { jsonReply(w, []any{}) }
 	}
@@ -70,7 +73,7 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 			}{info.ID, info.ServerName, address, info.Version, info.ProductName, "", true})
 		}},
 		{"GET", "/Branding/Configuration", func(w http.ResponseWriter, r *http.Request) {
-			out := map[string]any{}
+			out := map[string]any{"CustomCss": brandingCSS()}
 			if hint := getInfo().LoginHint; hint != nil {
 				if text := hint(r); text != "" {
 					out["LoginDisclaimer"] = text
@@ -78,14 +81,8 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 			}
 			jsonReply(w, out)
 		}},
-		{"GET", "/Branding/Css", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-		}},
-		{"GET", "/Branding/Css.css", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-		}},
+		{"GET", "/Branding/Css", func(w http.ResponseWriter, _ *http.Request) { writeBrandingCSS(w, brandingCSS()) }},
+		{"GET", "/Branding/Css.css", func(w http.ResponseWriter, _ *http.Request) { writeBrandingCSS(w, brandingCSS()) }},
 		{"POST", "/System/Ping", func(w http.ResponseWriter, _ *http.Request) { jsonReply(w, getInfo().ProductName) }},
 		{"GET", "/web/{path...}", func(w http.ResponseWriter, r *http.Request) {
 			if r.PathValue("path") == "ether-signin" {

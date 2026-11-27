@@ -6,6 +6,7 @@ import {
   SettingsSection,
   SearchSelect,
   Switch,
+  Textarea,
   confirmDialog,
 } from "@braedonsaunders/appkit-ui";
 import { AlertTriangle, FileUp, X } from "lucide-react";
@@ -75,6 +76,8 @@ type Settings = {
   livePreview?: VelaLivePreviewMode;
   appIcon?: VelaAppIcon | null;
   homeRowCount?: number;
+  webTheme?: string;
+  customCss?: string;
 };
 
 const VELA_MAX_APP_NAME_CHARS = 40;
@@ -1051,6 +1054,50 @@ function ProtocolSettings({
             <LANViewer
               value={draft.viewerId}
               onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
+            />
+          </SettingsSection>
+        ) : null}
+        {id === "jellyfin" || id === "emby" ? (
+          <SettingsSection
+            title={t("Web app look")}
+            description={t(
+              "Ether's own look for the {app} web app it serves, for every viewer. The app's own theme setting is not used.",
+              { app: protocolName(id) },
+            )}
+          >
+            {id === "emby" ? (
+              <SettingsRow
+                title={t("Theme")}
+                control={
+                  <SearchSelect
+                    ariaLabel={t("Theme")}
+                    value={draft.webTheme ?? ""}
+                    onChange={(next) => setDraft({ ...draft, webTheme: next || undefined })}
+                    clearable
+                    placeholder={t("App default")}
+                    options={[
+                      { value: "ether", label: t("Ether dark") },
+                      { value: "amoled", label: t("Black (AMOLED)") },
+                      { value: "nord", label: t("Nord") },
+                    ]}
+                  />
+                }
+              />
+            ) : null}
+            <SettingsRow
+              title={t("Custom CSS")}
+              description={t("Added after the theme, so these rules win.")}
+              control={
+                <Textarea
+                  aria-label={t("Custom CSS")}
+                  rows={6}
+                  className="font-mono text-xs"
+                  value={draft.customCss ?? ""}
+                  onChange={(e) =>
+                    setDraft({ ...draft, customCss: e.currentTarget.value || undefined })
+                  }
+                />
+              }
             />
           </SettingsSection>
         ) : null}

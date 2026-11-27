@@ -101,6 +101,9 @@ func (s *Server) routes() chi.Router {
 
 	pubGet, _ := bind(r)
 	pubGet("/identity", s.handleIdentity)
+	// A private build can carry the official Plex Web files (see web_bundle.go).
+	pubGet("/web", servePlexWeb)
+	pubGet("/web/*", servePlexWeb)
 	pubGet("/:/resources/*", func(w http.ResponseWriter, r *http.Request) { writeHTTPError(w, http.StatusNotFound) })
 
 	r.Group(func(r chi.Router) {

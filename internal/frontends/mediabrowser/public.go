@@ -81,6 +81,12 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 				webSigninPage(w, r)
 				return
 			}
+			if info := getInfo(); info.ProductName == "Emby Server" {
+				if dir := bundledWebDir(embyWebDirEnv, defaultEmbyWebDir); dir != "" {
+					serveBundledWeb(w, r, dir, r.PathValue("path"), originFn, info.Version)
+					return
+				}
+			}
 			serveWeb(w, r, getInfo().ProductName == "Emby Server", originFn, webClient)
 		}},
 		{"GET", "/Users/Public", picker},
@@ -91,8 +97,23 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 			jsonReply(w, getInfo().ProductName)
 		}},
 	}
+	// Real Emby sends the bare root to its web app. Ether does too when the
+	// image carries Emby Web; otherwise the root keeps its 404.
+	if getInfo().ProductName == "Emby Server" {
+		handlers = append(handlers, struct {
+			method, path string
+			handler      http.HandlerFunc
+		}{"GET", "/", func(w http.ResponseWriter, r *http.Request) {
+			if bundledWebDir(embyWebDirEnv, defaultEmbyWebDir) == "" {
+				http.NotFound(w, r)
+				return
+			}
+			target := clientnet.RedirectPath(requestRedirectPrefix(r, originFn), "", "/web/")
+			http.Redirect(w, r, target, http.StatusFound)
+		}})
+	}
 	// Real Jellyfin sends the bare root to the web client once it is
-	// installed. Emby never registers this route and keeps its 404.
+	// installed.
 	if getInfo().ProductName != "Emby Server" {
 		handlers = append(handlers, struct {
 			method, path string

@@ -1,0 +1,44 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-embyweb]
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l internal/)" || { gofmt -d internal/; exit 1; }
+      - name: vet
+        run: go vet ./internal/frontend/... ./internal/frontends/... ./internal/admin/... ./internal/identity/...
+      - name: test
+        shell: bash
+        run: |
+          go test -timeout 25m ./internal/frontend/... ./internal/frontends/... ./internal/admin/... ./internal/identity/... 2>&1 | grep -E '^(ok|FAIL|---|panic)|_test.go:[0-9]+' | head -80
+          exit ${PIPESTATUS[0]}
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: format and i18n
+        working-directory: web
+        run: pnpm format:check && pnpm i18n sync && git diff --exit-code
+      - name: typecheck
+        working-directory: web
+        run: pnpm typecheck
+      - name: test
+        working-directory: web
+        shell: bash
+        run: pnpm vitest run 2>&1 | grep -E 'FAIL|×|Tests |Test Files|Error|expected|Expected|Received' | head -80; exit ${PIPESTATUS[0]}

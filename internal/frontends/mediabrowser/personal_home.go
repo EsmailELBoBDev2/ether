@@ -82,6 +82,11 @@ func validatePersonalSettings(s frontend.Settings) error {
 			if !ok || (name != "" && !slices.Contains(WebThemes, name)) {
 				return fmt.Errorf("invalid %s", key)
 			}
+		case "screensaverMinutes":
+			n, ok := value.(float64)
+			if !ok || n < 0 || n > maxScreensaverMinutes || n != math.Trunc(n) {
+				return fmt.Errorf("invalid %s", key)
+			}
 		case "customCss":
 			css, ok := value.(string)
 			if !ok || len(css) > maxCustomCSS {

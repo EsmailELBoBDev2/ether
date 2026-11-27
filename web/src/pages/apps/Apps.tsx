@@ -78,6 +78,7 @@ type Settings = {
   homeRowCount?: number;
   webTheme?: string;
   customCss?: string;
+  screensaverMinutes?: number;
 };
 
 const VELA_MAX_APP_NAME_CHARS = 40;
@@ -1080,6 +1081,27 @@ function ProtocolSettings({
                       { value: "amoled", label: t("Black (AMOLED)") },
                       { value: "nord", label: t("Nord") },
                     ]}
+                  />
+                }
+              />
+            ) : null}
+            {id === "emby" ? (
+              <SettingsRow
+                title={<label htmlFor="emby-screensaver">{t("Screensaver after")}</label>}
+                description={t(
+                  "Minutes without input before Ether's screensaver shows backdrops from the viewer's libraries. 0 turns it off. Never during playback.",
+                )}
+                control={
+                  <Input
+                    id="emby-screensaver"
+                    aria-label={t("Screensaver after")}
+                    type="number"
+                    min={0}
+                    max={240}
+                    value={draft.screensaverMinutes ?? 0}
+                    onChange={(e) =>
+                      setDraft({ ...draft, screensaverMinutes: Number(e.currentTarget.value) })
+                    }
                   />
                 }
               />

@@ -89,6 +89,10 @@ func publicRoutes(r *route.Router, getInfo func() PublicInfo, picker http.Handle
 				webSigninPageFor(w, r, getInfo().ProductName == "Emby Server")
 				return
 			}
+			if r.PathValue("path") == "ether-extras.js" && getInfo().ProductName == "Emby Server" {
+				serveWebExtrasJS(w, r)
+				return
+			}
 			if info := getInfo(); info.ProductName == "Emby Server" {
 				if dir := bundledWebDir(embyWebDirEnv, defaultEmbyWebDir); dir != "" {
 					serveBundledWeb(w, r, dir, r.PathValue("path"), originFn, info.Version)

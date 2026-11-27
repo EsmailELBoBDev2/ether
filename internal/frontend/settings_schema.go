@@ -74,6 +74,7 @@ func MediaBrowserSchema(quickConnect bool) SettingsSchema {
 			{Key: "look", Fields: []SettingsField{
 				{Key: "webTheme", Kind: "string", Options: []string{"", "ether", "amoled", "nord"}},
 				{Key: "customCss", Kind: "string", Max: intp(65536)},
+				{Key: "screensaverMinutes", Kind: "number", Min: intp(0), Max: intp(240)},
 			}},
 			{Key: "find", Fields: find},
 		},

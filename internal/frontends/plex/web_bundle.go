@@ -1,6 +1,8 @@
 package plex
 
 import (
+	"bytes"
+	_ "embed"
 	"mime"
 	"net/http"
 	"os"
@@ -53,6 +55,13 @@ func servePlexWeb(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if rel == "ether-extras.js" {
+		w.Header().Del("Content-Security-Policy")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write(plexWebExtrasJS)
+		return
+	}
 	full := filepath.Join(dir, filepath.FromSlash(rel))
 	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
@@ -67,6 +76,14 @@ func servePlexWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	if rel == "index.html" {
 		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, rel, info.ModTime(), bytes.NewReader(withPlexWebExtras(raw)))
+		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// ServeContent, not ServeFile: ServeFile redirects .../index.html to the
@@ -78,4 +95,25 @@ func servePlexWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	http.ServeContent(w, r, rel, info.ModTime(), f)
+}
+
+// plexWebExtrasJS opens Plex Web's server settings in the Ether console.
+//
+//go:embed web_extras.js
+var plexWebExtrasJS []byte
+
+const plexWebExtrasTag = `<script src="/web/ether-extras.js" defer></script>`
+
+func withPlexWebExtras(page []byte) []byte {
+	if bytes.Contains(page, []byte("ether-extras.js")) {
+		return page
+	}
+	i := bytes.Index(bytes.ToLower(page), []byte("</head>"))
+	if i < 0 {
+		return page
+	}
+	out := make([]byte, 0, len(page)+len(plexWebExtrasTag))
+	out = append(out, page[:i]...)
+	out = append(out, plexWebExtrasTag...)
+	return append(out, page[i:]...)
 }

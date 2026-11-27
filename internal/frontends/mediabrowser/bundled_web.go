@@ -65,7 +65,7 @@ func serveBundledWeb(w http.ResponseWriter, r *http.Request, dir, rel string, or
 			return
 		}
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(withAppVersion(raw, version)))
+		http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(withWebExtras(withAppVersion(raw, version))))
 		return
 	}
 	w.Header().Set("Cache-Control", webCacheControl(rel))

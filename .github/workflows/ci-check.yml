@@ -1,0 +1,22 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-embyreg]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: extract Emby Server
+        run: |
+          docker create --name embyprobe emby/embyserver:4.10.2.0 >/dev/null
+          mkdir x && docker export embyprobe | tar -x -C x 2>/dev/null || true; find x -name '*.dll' -path '*system*' | head -3
+          find x -name "Emby*.dll" | head -5
+      - name: licence strings in order
+        run: |
+          cd "$(dirname "$(find x -name Emby.Server.Implementations.dll | head -1)")"
+          strings -n 2 -el Emby.Server.Implementations.dll > u.txt
+          n=$(grep -n 'registration/validate' u.txt | head -1 | cut -d: -f1)
+          sed -n "$((n-40)),$((n+40))p" u.txt
+          echo ==== register
+          n=$(grep -n 'appstore/register' u.txt | head -1 | cut -d: -f1)
+          sed -n "$((n-25)),$((n+25))p" u.txt

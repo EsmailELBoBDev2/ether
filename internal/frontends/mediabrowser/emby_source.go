@@ -13,7 +13,7 @@ func (i *instance) embyMediaSourceDTO(source map[string]any, itemID string, medi
 		// the account credential in a query parameter. The same alias route
 		// backs Emby's direct-stream URL.
 		source["AddApiKeyToDirectStreamUrl"] = false
-		source["DirectStreamUrl"] = path
+		source["DirectStreamUrl"] = embyRelativeStreamPath(path)
 	}
 	if itemID != "" {
 		source["ItemId"] = itemID
@@ -97,4 +97,23 @@ func embySafeGrant(s string) bool {
 		}
 	}
 	return true
+}
+
+// embyRelativeStreamPath is the scoped media URL as a path under the Emby
+// mount, as Emby Server sends DirectStreamUrl: Emby clients pass it through
+// apiClient.getUrl, which prefixes the server address and /emby, so an
+// absolute URL became /emby/https://... and playback failed.
+func embyRelativeStreamPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	p := u.Path
+	if len(p) >= 5 && strings.EqualFold(p[:5], "/emby") && (len(p) == 5 || p[5] == '/') {
+		p = p[5:]
+	}
+	if p == "" {
+		return raw
+	}
+	return p
 }

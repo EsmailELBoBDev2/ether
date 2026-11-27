@@ -45,6 +45,24 @@ func TestEmbyDirectURLNeverRequiresAccountCredential(t *testing.T) {
 	}
 }
 
+func TestEmbyDirectStreamURLIsAPathUnderTheMount(t *testing.T) {
+	// Emby clients prefix the server address and /emby to DirectStreamUrl.
+	for raw, want := range map[string]string{
+		"https://ether.example/emby/sessions/media/session/token/file": "/sessions/media/session/token/file",
+		"https://ether.example/sessions/media/session/token/file":      "/sessions/media/session/token/file",
+		"/emby/sessions/lazy/token_1/file":                             "/sessions/lazy/token_1/file",
+	} {
+		source := map[string]any{"Path": raw}
+		(&instance{}).embyMediaSourceDTO(source, "item", frontend.MediaInfo{})
+		if source["DirectStreamUrl"] != want {
+			t.Errorf("%s: DirectStreamUrl %v, want %s", raw, source["DirectStreamUrl"], want)
+		}
+		if source["Path"] != raw {
+			t.Errorf("%s: Path changed to %v", raw, source["Path"])
+		}
+	}
+}
+
 func TestEmbySourceDefaultAudioUsesAuthoritativeDisposition(t *testing.T) {
 	yes, no := true, false
 	for _, tc := range []struct {

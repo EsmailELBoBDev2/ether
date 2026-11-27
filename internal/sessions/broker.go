@@ -1761,6 +1761,12 @@ func (b *Broker) ReportItemProgress(ctx context.Context, a frontend.SessionAcces
 	if frontend.ForeignMediaDuration(title.Runtime, t.Duration) {
 		return nil
 	}
+	// A report without a duration (Jellyfin Web's progress carries none)
+	// takes the title's runtime, so the resume rule measures the position
+	// against the title instead of keeping any position past a minute.
+	if t.Duration <= 0 && title.Runtime > 0 {
+		t.Duration = title.Runtime
+	}
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: a.Protocol, SessionID: t.PlaybackID, ClientID: a.Device.ID})
 	if err := RecordProgress(ctx, b.deps.Progress, viewer.ID, item, t.Position, t.Duration, t.State); err != nil {
 		return err

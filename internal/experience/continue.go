@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/state"
 )
 
 // Continue coordinates resume and next-episode selection using viewer-scoped dependencies.
@@ -330,6 +331,9 @@ func (c Continue) inProgressBatchMode(ctx context.Context, viewer *core.User, t 
 	}
 	titles := make([]core.Title, 0, len(candidates))
 	for i := range candidates {
+		if c.openedOnly(state[candidates[i].Key], candidates[i]) {
+			continue
+		}
 		allowed := unrestricted || c.Visible(ctx, viewer, &candidates[i])
 		if allowed {
 			titles = append(titles, candidates[i])
@@ -449,4 +453,23 @@ func (c Continue) Shelf(ctx context.Context, viewer *core.User, kind core.MediaT
 func (c Continue) WithoutFilter() frontend.Continue {
 	c.Filter = nil
 	return c
+}
+
+// openedOnly reports a stored video position saved without the title's length
+// that is under the default resume threshold (5% of the title's runtime). Such
+// a row was written from a report that carried no duration, so the state
+// could only apply its one-minute fallback; measured against the runtime it
+// is a title that was opened, not one to resume. An owner threshold, when
+// set, already decided in State and is left alone.
+func (c Continue) openedOnly(st core.WatchStatus, t core.Title) bool {
+	if st.Duration > 0 || st.ViewOffset <= 0 || t.Runtime <= 0 || (t.Type != core.TypeMovie && t.Type != core.TypeEpisode) {
+		return false
+	}
+	if st.Reading != nil && st.Reading.Fraction > 0 {
+		return false
+	}
+	if r, ok := c.State.(interface{ ResumeAfter() time.Duration }); ok && r.ResumeAfter() > 0 {
+		return false
+	}
+	return float64(st.ViewOffset) < state.StartedThreshold*float64(t.Runtime)
 }

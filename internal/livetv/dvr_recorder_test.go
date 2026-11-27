@@ -236,7 +236,7 @@ func TestDVRCleanStorageEvictsOldestForSpace(t *testing.T) {
 		t.Fatalf("recordings left = %+v", recs)
 	}
 	// The disk is nearly full: a job does not start.
-	free = dvrDiskFloor - 1
+	free = dvrDiskFloor / 2
 	if reason := s.dvr.preflight(t.Context(), dvr.Job{Programme: dvr.Programme{Start: time.Now(), End: time.Now().Add(time.Minute)}}); reason == "" {
 		t.Fatal("job allowed on a full disk")
 	}

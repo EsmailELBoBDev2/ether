@@ -43,6 +43,9 @@ type Service struct {
 	searchBuilding, searchReady, searchClosed bool
 	searchDone                                chan struct{}
 
+	// dvr runs scheduled recordings; nil when the app supplies no settings.
+	dvr *dvrRuntime
+
 	ownerGroupsMu        sync.Mutex
 	ownerGroupsIndex     *ownerGroupIndex
 	ownerGroupsIndexRev  int64
@@ -211,6 +214,7 @@ func New(o Options) (*Service, error) {
 	s.lifetimeStop = make(chan struct{})
 	s.lifetimeDone = make(chan struct{})
 	s.lifetimeWake = make(chan struct{}, 1)
+	s.dvr = newDVRRuntime(s)
 	var exists bool
 	if err := o.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM livetv_channels LIMIT 1)`).Scan(&exists); err != nil {
 		cancel()
@@ -322,6 +326,10 @@ func (s *Service) ReconcileEnabled() {
 	go s.maintain()
 	go s.refreshLoop()
 	go s.healthSweepLoop()
+	if s.dvr != nil {
+		s.wg.Add(1)
+		go s.dvrLoop()
+	}
 	s.history.start(s)
 }
 

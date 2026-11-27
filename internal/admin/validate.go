@@ -135,6 +135,15 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	if !config.ValidLiveTVStability(cfg.LiveTV.Stability) {
 		v.add("liveTV.stability", "must be fastest, balanced or rocksolid")
 	}
+	if dvr := cfg.LiveTV.DVR; dvr.Path != "" && !filepath.IsAbs(dvr.Path) {
+		v.add("liveTV.dvr.path", "must be an absolute folder path")
+	}
+	if dvr := cfg.LiveTV.DVR; dvr.PrePadSeconds < 0 || dvr.PrePadSeconds > 10800 || dvr.PostPadSeconds < 0 || dvr.PostPadSeconds > 10800 {
+		v.add("liveTV.dvr", "padding must be between 0 and 10800 seconds")
+	}
+	if dvr := cfg.LiveTV.DVR; dvr.MaxGB < 0 || dvr.MinFreeGB < -1 {
+		v.add("liveTV.dvr", "storage limits must not be negative")
+	}
 	if err := cfg.Posters.Validate(); err != nil {
 		v.add("posters", "%s", err.Error())
 	}

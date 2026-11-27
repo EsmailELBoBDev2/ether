@@ -482,6 +482,8 @@ type Options struct {
 	Kinds *KindRegistry
 	// Showcase adds and refreshes the shipped decade channels.
 	Showcase bool
+	// DVR supplies the recording settings. Nil turns scheduled recording off.
+	DVR func() DVRSettings
 }
 type SessionInfo struct {
 	ActiveSourceID string `json:"activeSourceId,omitempty"`

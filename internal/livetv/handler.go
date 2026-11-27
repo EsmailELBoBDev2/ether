@@ -354,6 +354,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 	})
 	s.guideRoutes(r)
 	s.previewRoutes(r, owner)
+	s.dvrRoutes(r)
 	r.Get("/guide.xml", func(w http.ResponseWriter, r *http.Request) { s.ServeXMLTV(w, r, owner) })
 	r.Get("/policies", func(w http.ResponseWriter, r *http.Request) { v, e := s.Policies(r.Context()); ownerResult(w, v, e) })
 	r.Get("/policies/{id}", func(w http.ResponseWriter, r *http.Request) {

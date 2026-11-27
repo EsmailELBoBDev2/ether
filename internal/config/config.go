@@ -934,6 +934,23 @@ type LiveTV struct {
 	// viewer. "fastest", "balanced" or "rocksolid"; empty means balanced.
 	// A channel may override it.
 	Stability string `json:"stability,omitempty"`
+	// DVR configures scheduled recordings.
+	DVR LiveTVDVR `json:"dvr,omitzero"`
+}
+
+// LiveTVDVR configures scheduled Live TV recordings.
+type LiveTVDVR struct {
+	// Path is the recordings folder; empty is <data dir>/recordings.
+	Path string `json:"path,omitempty"`
+	// PrePadSeconds and PostPadSeconds are the default padding for new
+	// rules and one-offs. Zero uses 60 and 120.
+	PrePadSeconds  int `json:"prePadSeconds,omitempty"`
+	PostPadSeconds int `json:"postPadSeconds,omitempty"`
+	// MaxGB caps the size of the recordings folder; 0 is no cap.
+	MaxGB int `json:"maxGb,omitempty"`
+	// MinFreeGB is the free disk space recordings leave; 0 uses 10 and a
+	// negative value keeps none.
+	MinFreeGB int `json:"minFreeGb,omitempty"`
 }
 
 const (

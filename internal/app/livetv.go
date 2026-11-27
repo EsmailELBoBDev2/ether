@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
@@ -89,6 +90,7 @@ func (a *App) buildLiveTV() error {
 	}, TimeshiftMinutes: func() int { return a.cfg.Read().LiveTV.EffectiveTimeshiftMinutes() },
 		TimeshiftBudgetBytes: func() int64 { return a.cfg.Read().EffectiveCache().BudgetBytes },
 		TimeshiftDir:         a.cfg.Read().Transcode.TempDir,
+		DVR:                  a.liveTVDVRSettings,
 	})
 	if err != nil {
 		return err
@@ -105,6 +107,34 @@ func (a *App) buildLiveTV() error {
 	a.onair.SetEnabled(svc.Enabled())
 	a.closers = append(a.closers, func() { svc.Close() })
 	return nil
+}
+
+// liveTVDVRSettings maps the owner's recording settings onto the Live TV
+// service. Recordings default to a folder in the data directory.
+func (a *App) liveTVDVRSettings() livetv.DVRSettings {
+	c := a.cfg.Read().LiveTV.DVR
+	dir := c.Path
+	if dir == "" {
+		dir = filepath.Join(a.opts.DataDir, "recordings")
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	const gb = int64(1) << 30
+	minFree := int64(10) * gb
+	switch {
+	case c.MinFreeGB < 0:
+		minFree = 0
+	case c.MinFreeGB > 0:
+		minFree = int64(c.MinFreeGB) * gb
+	}
+	return livetv.DVRSettings{
+		Dir:          dir,
+		PrePad:       time.Duration(c.PrePadSeconds) * time.Second,
+		PostPad:      time.Duration(c.PostPadSeconds) * time.Second,
+		MaxBytes:     int64(c.MaxGB) * gb,
+		MinFreeBytes: minFree,
+	}
 }
 
 // liveTVInputUser supplies source identity only after admin auth has admitted

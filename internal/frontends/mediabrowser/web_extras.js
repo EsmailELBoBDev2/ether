@@ -159,6 +159,24 @@
   });
 
   // Emby Web's router consumes hashchange, so watch the address instead.
+  // Jellyfin Web leaves a dashboard route within milliseconds, faster than
+  // the watcher below: check every hash change and history push at once.
+  function onNavigate() {
+    var r = route();
+    if (r === lastRoute) return;
+    lastRoute = r;
+    checkAdminRoute();
+  }
+  window.addEventListener("hashchange", onNavigate, true);
+  ["pushState", "replaceState"].forEach(function (name) {
+    var orig = history[name];
+    history[name] = function () {
+      var out = orig.apply(this, arguments);
+      onNavigate();
+      return out;
+    };
+  });
+
   // The app signs in after this script starts: keep asking for the
   // settings until a signed-in client gets them.
   var lastRoute = null;

@@ -15,6 +15,12 @@ func (i *instance) embyMediaSourceDTO(source map[string]any, itemID string, medi
 		source["AddApiKeyToDirectStreamUrl"] = false
 		source["DirectStreamUrl"] = embyRelativeStreamPath(path)
 	}
+	// Emby clients prefix the server address and /emby to TranscodingUrl as
+	// they do to DirectStreamUrl; a mount prefix already on it doubled to
+	// /emby/emby/... and the stream 404'd.
+	if transcoding, ok := source["TranscodingUrl"].(string); ok && strings.HasPrefix(transcoding, "/") {
+		source["TranscodingUrl"] = embyRelativeStreamPath(transcoding) + embyQuerySuffix(transcoding)
+	}
 	if itemID != "" {
 		source["ItemId"] = itemID
 	}
@@ -116,4 +122,12 @@ func embyRelativeStreamPath(raw string) string {
 		return raw
 	}
 	return p
+}
+
+// embyQuerySuffix keeps a relative URL's query string, if any.
+func embyQuerySuffix(raw string) string {
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		return raw[i:]
+	}
+	return ""
 }

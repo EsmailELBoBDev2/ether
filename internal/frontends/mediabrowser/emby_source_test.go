@@ -63,6 +63,21 @@ func TestEmbyDirectStreamURLIsAPathUnderTheMount(t *testing.T) {
 	}
 }
 
+func TestEmbyTranscodingURLHasNoMountPrefix(t *testing.T) {
+	for raw, want := range map[string]string{
+		"/emby/sessions/media/s/g/master.m3u8":       "/sessions/media/s/g/master.m3u8",
+		"/emby/sessions/media/s/g/master.m3u8?a=b":   "/sessions/media/s/g/master.m3u8?a=b",
+		"/sessions/media/s/g/master.m3u8":            "/sessions/media/s/g/master.m3u8",
+		"https://other.example/live/stream.m3u8?x=1": "https://other.example/live/stream.m3u8?x=1",
+	} {
+		source := map[string]any{"TranscodingUrl": raw}
+		(&instance{}).embyMediaSourceDTO(source, "item", frontend.MediaInfo{})
+		if source["TranscodingUrl"] != want {
+			t.Errorf("%s: %v, want %s", raw, source["TranscodingUrl"], want)
+		}
+	}
+}
+
 func TestEmbySourceDefaultAudioUsesAuthoritativeDisposition(t *testing.T) {
 	yes, no := true, false
 	for _, tc := range []struct {

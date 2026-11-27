@@ -72,7 +72,11 @@ func (i *instance) clientCompatibilityRoutes() error {
 			return err
 		}
 	}
-	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+	if err := i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding)); err != nil {
+		return err
+	}
+	// Emby Web stops a transcode with POST .../Delete, as Emby Server accepts.
+	return i.router.Handle("POST", "/Videos/ActiveEncodings/Delete", http.HandlerFunc(i.stopEncoding))
 }
 
 // encodingOptions exposes Jellyfin's encoding configuration contract with

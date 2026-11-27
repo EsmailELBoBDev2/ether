@@ -73,6 +73,10 @@ func device(r *http.Request) frontend.Device {
 		if values := route.Query(r.URL.Query(), key); len(values) == 1 {
 			return values[0]
 		}
+		// Emby Web sends its X-Emby-* fields as query parameters.
+		if values := route.Query(r.URL.Query(), header); len(values) == 1 {
+			return values[0]
+		}
 		return ""
 	}
 	client := get("Client", "X-Emby-Client")

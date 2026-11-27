@@ -127,15 +127,22 @@ func MediaBrowserCredentialSupplied(r *http.Request) bool {
 		}
 	}
 	for k := range r.URL.Query() {
-		if strings.EqualFold(k, "api_key") || strings.EqualFold(k, "ApiKey") {
+		if queryTokenKey(k) {
 			return true
 		}
 	}
 	return false
 }
 
-// MediaBrowserToken returns legacy header credentials before an ApiKey
-// query parameter. It does not interpret a query credential as Plex auth.
+// queryTokenKey reports a URL parameter that carries a MediaBrowser token:
+// api_key/ApiKey, or X-Emby-Token, which Emby Web sends in the query string
+// with its other X-Emby-* fields instead of as headers.
+func queryTokenKey(k string) bool {
+	return strings.EqualFold(k, "api_key") || strings.EqualFold(k, "ApiKey") || strings.EqualFold(k, "X-Emby-Token")
+}
+
+// MediaBrowserToken returns legacy header credentials before an ApiKey (or
+// X-Emby-Token) query parameter; two different query credentials are refused. It does not interpret a query credential as Plex auth.
 func MediaBrowserToken(r *http.Request) string {
 	for _, k := range []string{"X-Emby-Token", "X-MediaBrowser-Token"} {
 		if v := r.Header.Get(k); v != "" {
@@ -152,8 +159,8 @@ func MediaBrowserToken(r *http.Request) string {
 	var token string
 	found := false
 	for k, values := range r.URL.Query() {
-		if strings.EqualFold(k, "api_key") || strings.EqualFold(k, "ApiKey") {
-			if found || len(values) != 1 {
+		if queryTokenKey(k) {
+			if len(values) != 1 || (found && token != values[0]) {
 				return ""
 			}
 			found, token = true, values[0]

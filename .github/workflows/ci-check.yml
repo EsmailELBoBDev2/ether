@@ -1,0 +1,28 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-i18n]
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: format and i18n
+        working-directory: web
+        run: pnpm format:check && pnpm i18n sync && git diff --exit-code && pnpm i18n status
+      - name: typecheck
+        working-directory: web
+        run: pnpm typecheck
+      - name: test
+        working-directory: web
+        shell: bash
+        run: pnpm vitest run 2>&1 | grep -E 'FAIL|×|Tests |Test Files|missing|untranslated' | head -60; exit ${PIPESTATUS[0]}

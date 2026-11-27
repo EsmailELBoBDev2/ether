@@ -61,9 +61,8 @@
         var target = ADMIN[n][1];
         loadConfig().then(function (c) {
           if (!c || !c.console) return;
-          window.open(c.console.replace(/\/$/, "") + target.replace("APP", c.app || "emby"), "_blank", "noopener");
-          if (history.length > 1) history.back();
-          else location.hash = c.app === "jellyfin" ? "#/home" : "#!/home";
+          // Same tab: a new window from a timer is a blocked popup.
+          location.assign(c.console.replace(/\/$/, "") + target.replace("APP", c.app || "emby"));
         });
         return;
       }

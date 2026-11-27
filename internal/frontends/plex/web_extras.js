@@ -31,9 +31,8 @@
       }
     }
     if (!target) return;
-    window.open("/ether" + target, "_blank", "noopener");
-    if (history.length > 1) history.back();
-    else location.hash = "#!/";
+    // Same tab: a new window from a timer is a blocked popup.
+    location.assign("/ether" + target);
   }
   // An app router may consume hashchange, so watch the address instead.
   var last = null;

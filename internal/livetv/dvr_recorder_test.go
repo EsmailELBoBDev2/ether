@@ -61,13 +61,23 @@ func TestDVRRecorderWritesSessionSegments(t *testing.T) {
 		s.mu.Unlock()
 		return ss.info, nil
 	}
-	now := time.Now()
-	p := dvr.Programme{ID: "c-1", ChannelID: "c", Start: now.Add(-time.Second), End: now.Add(6 * time.Second), Title: "Evening News", EpisodeTitle: "Friday"}
-	job, err := s.dvr.store.ScheduleOnce(t.Context(), owner.ID, p, 0, 0, 0)
+	c, err := s.SaveChannel(t.Context(), Channel{Name: "News", Number: "1", Kind: "iptv", Enabled: true, StreamURL: "http://example.invalid/live.ts"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now()
+	p := dvr.Programme{ID: "c-1", ChannelID: c.ID, Start: now.Add(-time.Second), End: now.Add(6 * time.Second), Title: "Evening News", EpisodeTitle: "Friday"}
+	// Saving a channel starts the service's own recorder loop. The job is
+	// marked active first so only this test's recorder runs it.
+	job := dvr.Job{ID: "job-under-test", UserID: owner.ID, Programme: p}
 	rec := &dvrRecorder{d: s.dvr, job: job}
+	s.dvr.mu.Lock()
+	s.dvr.active[job.ID] = rec
+	s.dvr.mu.Unlock()
+	if err := s.dvr.store.InsertJob(t.Context(), &rec.job); err != nil {
+		t.Fatal(err)
+	}
+	job = rec.job
 	rec.run(t.Context())
 
 	got, err := s.dvr.store.Job(t.Context(), job.ID)
@@ -170,5 +180,64 @@ func TestDVRNames(t *testing.T) {
 	}
 	if got := dvrUniquePath(first); got != filepath.Join(dir, "a (2).ts") {
 		t.Fatalf("unique = %q", got)
+	}
+}
+
+func TestDVRCleanStorageEvictsOldestForSpace(t *testing.T) {
+	dir := t.TempDir()
+	owner := &core.User{ID: 1, IsOwner: true}
+	s := testService(t, Options{
+		DVR:       func() DVRSettings { return DVRSettings{Dir: dir, MaxBytes: 25} },
+		InputUser: func(context.Context) (*core.User, error) { return owner, nil },
+	})
+	free := int64(1 << 40)
+	old := dvrDiskUsage
+	dvrDiskUsage = func(string) (int64, int64, error) { return free, free, nil }
+	t.Cleanup(func() { dvrDiskUsage = old })
+	var paths []string
+	for i, age := range []time.Duration{3 * time.Hour, 2 * time.Hour, time.Hour} {
+		path := filepath.Join(dir, "TV", "Show", fmt.Sprintf("e%d.ts", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, make([]byte, 10), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := dvr.Recording{UserID: 1, JobID: "j", MatchKey: path, Path: path, Status: dvr.JobCompleted, SizeBytes: 10, Created: time.Now().Add(-age)}
+		if err := s.dvr.store.SaveRecording(t.Context(), &rec); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	outside := dvr.Recording{UserID: 1, JobID: "j", MatchKey: "x", Path: "/etc/hostname", Status: dvr.JobCompleted, SizeBytes: 10, Created: time.Now().Add(-10 * time.Hour)}
+	if err := s.dvr.store.SaveRecording(t.Context(), &outside); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := s.dvr.cleanStorage(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 40 bytes stored against a 25 byte cap: the oldest file inside the
+	// folder goes first, then the next; the file outside is never touched.
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("oldest kept: %v", err)
+	}
+	if _, err := os.Stat(paths[1]); !os.IsNotExist(err) {
+		t.Fatalf("second oldest kept: %v", err)
+	}
+	if _, err := os.Stat(paths[2]); err != nil {
+		t.Fatalf("newest deleted: %v", err)
+	}
+	if sp.Used != 20 {
+		t.Fatalf("space = %+v", sp)
+	}
+	recs, _ := s.dvr.store.Recordings(t.Context(), 0)
+	if len(recs) != 2 {
+		t.Fatalf("recordings left = %+v", recs)
+	}
+	// The disk is nearly full: a job does not start.
+	free = dvrDiskFloor - 1
+	if reason := s.dvr.preflight(t.Context(), dvr.Job{Programme: dvr.Programme{Start: time.Now(), End: time.Now().Add(time.Minute)}}); reason == "" {
+		t.Fatal("job allowed on a full disk")
 	}
 }

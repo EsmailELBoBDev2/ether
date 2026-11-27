@@ -4,11 +4,12 @@ import { Check, ChevronDown, Tv } from "lucide-react";
 import { apiFetch } from "../lib/api";
 import { t } from "../i18n";
 
-type PlayerID = "vela" | "jellyfin";
+type PlayerID = "vela" | "jellyfin" | "emby";
 type Player = { id: PlayerID; url: string };
 type Players = { available: boolean; players: Player[]; url?: string };
 const preferenceKey = "ether.web-player";
-const playerName = (id: PlayerID) => (id === "vela" ? t("Vela") : t("Jellyfin web"));
+const playerName = (id: PlayerID) =>
+  id === "vela" ? t("Vela") : id === "emby" ? t("Emby web") : t("Jellyfin web");
 
 export function WatchButton({
   app,
@@ -22,7 +23,8 @@ export function WatchButton({
   const [players, setPlayers] = useState<Player[]>([]);
   const [preferred, setPreferred] = useState<PlayerID>(() => {
     try {
-      return localStorage.getItem(preferenceKey) === "jellyfin" ? "jellyfin" : "vela";
+      const saved = localStorage.getItem(preferenceKey);
+      return saved === "jellyfin" || saved === "emby" ? saved : "vela";
     } catch {
       return "vela";
     }

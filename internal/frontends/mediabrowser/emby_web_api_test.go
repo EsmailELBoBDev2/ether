@@ -33,6 +33,11 @@ func embyWebHost(t *testing.T) (call func(method, path string, body []byte) *htt
 		}},
 		Experience: frontendtest.Experience{ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
 			return []frontend.View{{ID: "1", Name: "Movies", Type: "movie"}, {ID: "2", Name: "TV", Type: "show"}}, nil
+		}, FacetsFunc: func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _, kind string) ([]frontend.FacetValue, error) {
+			if kind == "genre" {
+				return []frontend.FacetValue{{ID: "4", Title: "Action"}}, nil
+			}
+			return nil, nil
 		}},
 		Preferences: frontendtest.Preferences{
 			GetFunc: func(_ context.Context, _ *frontend.Viewer, client, key string) (json.RawMessage, error) {
@@ -138,6 +143,28 @@ func TestEmbyWebStartupListsAreEmptyNot404(t *testing.T) {
 	for _, p := range []string{"/emby/Features", "/emby/Sessions/PlayQueue", "/emby/OfficialRatings", "/emby/Tags", "/emby/StreamLanguages"} {
 		if w := call(http.MethodGet, p, nil); w.Code != 200 {
 			t.Fatalf("%s: %d", p, w.Code)
+		}
+	}
+}
+
+func TestEmbyWebLibraryTabsPrefixesAndGenrePages(t *testing.T) {
+	call, uid := embyWebHost(t)
+	movies, _ := ids.GUID(ids.View, 1)
+	w := call(http.MethodGet, "/emby/Users/"+uid+"/Items/"+movies, nil)
+	var lib struct{ Subviews []string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &lib) != nil || len(lib.Subviews) == 0 || lib.Subviews[0] != "movies" {
+		t.Fatalf("library without Subviews breaks Emby Web's tabs: %d %s", w.Code, w.Body)
+	}
+	w = call(http.MethodGet, "/emby/Items/Prefixes?ParentId="+movies, nil)
+	var prefixes []struct{ Name string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &prefixes) != nil || len(prefixes) != 27 || prefixes[1].Name != "A" {
+		t.Fatalf("prefixes: %d %s", w.Code, w.Body)
+	}
+	for _, p := range []string{"/emby/Users/" + uid + "/Items/4", "/emby/Genres/action"} {
+		w = call(http.MethodGet, p, nil)
+		var g struct{ Id, Name, Type string }
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &g) != nil || g.Name != "Action" || g.Type != "Genre" || g.Id != "4" {
+			t.Fatalf("%s: %d %s", p, w.Code, w.Body)
 		}
 	}
 }

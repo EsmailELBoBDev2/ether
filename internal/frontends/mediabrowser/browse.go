@@ -605,6 +605,9 @@ func (i *instance) browseRoutes() error {
 				if i.writePersonItem(w, r, v, wireID) {
 					return
 				}
+				if i.writeFacetItem(w, r, v, wireID) {
+					return
+				}
 				http.NotFound(w, r)
 				return
 			}
@@ -1498,7 +1501,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		// SortBy=Random: a bounded random window of the library, shuffled so
 		// the request stays O(1) independent of library size. The reply still
 		// reports the offset the app asked for.
-		pq := q
+		pq := i.embyAudiobookAlbums(r, v, id, q)
 		random := sortByRandom(r) && q.Limit > 0 && q.Offset == 0
 		if random {
 			probe := q

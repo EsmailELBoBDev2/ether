@@ -49,6 +49,10 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/AudioLayouts", i.emptyOptionalItems},
 		// Item detail extras Emby Web asks for; Ether has no critic reviews
 		// or editable external ids to show.
+		{"/Items/Prefixes", i.itemPrefixes},
+		{"/Genres/{name}", i.facetByName("genre", "Genre")},
+		{"/MusicGenres/{name}", i.facetByName("genre", "MusicGenre")},
+		{"/Studios/{name}", i.facetByName("studio", "Studio")},
 		{"/Items/{id}/CriticReviews", i.emptyOptionalItems},
 		{"/Items/{id}/ExternalIdInfos", i.emptyOptionalArray},
 		{"/Artists", i.artists(false)}, {"/Artists/AlbumArtists", i.artists(true)},
@@ -841,3 +845,19 @@ type bufferedResponse struct {
 func (b *bufferedResponse) Header() http.Header         { return b.header }
 func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
 func (b *bufferedResponse) WriteHeader(code int)        { b.code = code }
+
+// itemPrefixes answers GET /Items/Prefixes, the A-Z jump bar Emby Web draws
+// beside a library list. Ether offers the full alphabet; picking a letter
+// filters by NameStartsWith like any list.
+func (i *instance) itemPrefixes(w http.ResponseWriter, r *http.Request) {
+	if v, _, err := i.viewer(r); err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	out := make([]map[string]string, 0, 27)
+	out = append(out, map[string]string{"Name": "#"})
+	for c := 'A'; c <= 'Z'; c++ {
+		out = append(out, map[string]string{"Name": string(c)})
+	}
+	jsonReply(w, out)
+}

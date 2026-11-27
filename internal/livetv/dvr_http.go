@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -150,6 +151,42 @@ func (s *Service) dvrRoutes(r chi.Router) {
 	r.Get("/dvr/recordings", on(func(w http.ResponseWriter, r *http.Request) {
 		recs, err := d.store.Recordings(r.Context(), 0)
 		ownerResult(w, recs, err)
+	}))
+	r.Delete("/dvr/recordings/{id}", on(func(w http.ResponseWriter, r *http.Request) {
+		rec, err := d.store.Recording(r.Context(), chi.URLParam(r, "id"))
+		if err == nil && rec.Status == dvr.JobRecording {
+			err = fmt.Errorf("stop the recording before deleting it")
+		}
+		if err == nil {
+			err = d.removeRecording(r.Context(), d.settings().Dir, rec, "deleted by the owner")
+			if errors.Is(err, os.ErrPermission) {
+				err = fmt.Errorf("the file is outside the recordings folder")
+			}
+		}
+		ownerResult(w, map[string]bool{"ok": err == nil}, err)
+	}))
+	r.Patch("/dvr/recordings/{id}", on(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Protect *bool `json:"protect"`
+		}
+		if err := decodeOwnerJSON(r, &req); err != nil {
+			ownerResult(w, nil, err)
+			return
+		}
+		rec, err := d.store.Recording(r.Context(), chi.URLParam(r, "id"))
+		if err == nil && req.Protect != nil {
+			rec.Protect = *req.Protect
+			err = d.store.SaveRecording(r.Context(), &rec)
+		}
+		ownerResult(w, rec, err)
+	}))
+	r.Get("/dvr/storage", on(func(w http.ResponseWriter, r *http.Request) {
+		recs, err := d.store.Recordings(r.Context(), 0)
+		if err != nil {
+			ownerResult(w, nil, err)
+			return
+		}
+		ownerResult(w, d.diskSpace(d.settings(), dvr.UsedBytes(recs)), nil)
 	}))
 	r.Post("/dvr/plan", on(func(w http.ResponseWriter, r *http.Request) {
 		d.Replan()

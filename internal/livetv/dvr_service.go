@@ -44,6 +44,9 @@ type dvrRuntime struct {
 
 	// tune opens the live session a job records; tests replace it.
 	tune func(context.Context, *core.User, string, core.ClientCaps, string) (SessionInfo, error)
+	// watched reports a recording's watch state for retention; nil keeps
+	// "until watched" recordings.
+	watched dvr.WatchedFunc
 }
 
 func newDVRRuntime(s *Service) *dvrRuntime {
@@ -89,7 +92,7 @@ func (s *Service) dvrLoop() {
 	d := s.dvr
 	steps := s.maintenanceSteps()
 	ctx := s.serviceContext()
-	var planned time.Time
+	var planned, cleaned time.Time
 	timer := s.newTimer(0)
 	defer timer.Stop()
 	for {
@@ -112,6 +115,14 @@ func (s *Service) dvrLoop() {
 			})
 		}
 		steps("dvrStartDue", func() { d.startDue(ctx) })
+		if now.Sub(cleaned) >= dvrStorageEvery {
+			cleaned = now
+			steps("dvrStorage", func() {
+				if _, err := d.cleanStorage(ctx, 0); err != nil && ctx.Err() == nil {
+					s.logger().Warn("dvr storage check failed", "error", err)
+				}
+			})
+		}
 		if !timer.Stop() {
 			select {
 			case <-timer.C:

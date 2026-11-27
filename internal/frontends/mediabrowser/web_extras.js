@@ -189,7 +189,9 @@
       var r = el.getBoundingClientRect();
       if (r.width < 4 || r.height < 4) return false;
       var cs = getComputedStyle(el);
-      return cs.visibility !== "hidden" && cs.display !== "none" && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+      // Rows scroll sideways: a card off-screen to the side is still a
+      // stop. Vertically, stay within a few screens of the current one.
+      return cs.visibility !== "hidden" && cs.display !== "none" && r.bottom > -2 * innerHeight && r.top < 3 * innerHeight;
     }
 
     function candidates() {

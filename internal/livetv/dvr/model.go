@@ -15,9 +15,9 @@ import (
 	"unicode"
 )
 
-// Horizon is how far ahead rules are expanded. It matches the guide span
-// the Jellyfin and Emby frontends advertise in /LiveTv/GuideInfo.
-const Horizon = 14 * 24 * time.Hour
+// Horizon is how far ahead rules are expanded. The Live TV guide serves at
+// most seven days per read, and the planner also looks back half a day.
+const Horizon = 6 * 24 * time.Hour
 
 // DriftWindow is how far a guide may move an airing before a scheduled job
 // stops following it.

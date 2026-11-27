@@ -115,3 +115,46 @@ func TestStoreScheduleOnceAndGuideErrors(t *testing.T) {
 		t.Fatalf("missing job: %v", err)
 	}
 }
+
+func TestStoreRecordingsAndLeases(t *testing.T) {
+	ctx := context.Background()
+	clock := t0
+	st := NewStore(store.OpenTest(t), func() time.Time { return clock })
+	rec := Recording{UserID: 3, JobID: "j", MatchKey: "ep:x:1:1", Path: "/r/x.ts", Status: JobRecording}
+	if err := st.SaveRecording(ctx, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := st.RecordedKeys(ctx, 3); err != nil || keys["ep:x:1:1"] {
+		t.Fatalf("an unfinished recording counted as recorded: %v %v", keys, err)
+	}
+	rec.Status, rec.SizeBytes = JobCompleted, 42
+	if err := st.SaveRecording(ctx, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := st.RecordedKeys(ctx, 3); err != nil || !keys["ep:x:1:1"] {
+		t.Fatalf("recorded keys = %v %v", keys, err)
+	}
+	if got, err := st.Recording(ctx, rec.ID); err != nil || got.SizeBytes != 42 {
+		t.Fatalf("recording = %+v %v", got, err)
+	}
+
+	if ok, err := st.AcquireLease(ctx, "job", "a", clock.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("first lease: %v %v", ok, err)
+	}
+	if ok, _ := st.AcquireLease(ctx, "job", "b", clock.Add(time.Minute)); ok {
+		t.Fatal("a held lease was taken")
+	}
+	if ok, _ := st.AcquireLease(ctx, "job", "a", clock.Add(2*time.Minute)); !ok {
+		t.Fatal("the holder could not renew")
+	}
+	clock = clock.Add(3 * time.Minute)
+	if ok, _ := st.AcquireLease(ctx, "job", "b", clock.Add(time.Minute)); !ok {
+		t.Fatal("an expired lease was not taken over")
+	}
+	if err := st.DeleteRecording(ctx, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteRecording(ctx, rec.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
+	}
+}

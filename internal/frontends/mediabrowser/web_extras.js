@@ -160,12 +160,21 @@
   });
 
   // Emby Web's router consumes hashchange, so watch the address instead.
+  // The app signs in after this script starts: keep asking for the
+  // settings until a signed-in client gets them.
   var lastRoute = null;
+  var asking = false;
   setInterval(function () {
+    if (!config && !asking && api()) {
+      asking = true;
+      loadConfig().then(function (c) {
+        asking = false;
+        if (c) armIdle();
+      });
+    }
     var r = route();
     if (r === lastRoute) return;
     lastRoute = r;
     checkAdminRoute();
-    if (!config) loadConfig().then(armIdle);
   }, 500);
 })();

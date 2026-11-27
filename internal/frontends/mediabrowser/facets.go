@@ -212,3 +212,52 @@ func (i *instance) resolveFilters(r *http.Request, v *frontend.Viewer, q *fronte
 	}
 	return nil
 }
+
+// writeFacetItem answers an item request for a genre, music genre or studio
+// id, as listed by /Genres, /MusicGenres and /Studios. Emby Web opens such an
+// id as an item to title the page listing its titles; without it the genre
+// and studio pages 404. Only the name and type are known about a facet.
+func (i *instance) writeFacetItem(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, id string) bool {
+	if i.host.Experience == nil || id == "" || len(id) > 64 {
+		return false
+	}
+	for kind, typeName := range map[string]string{"genre": "Genre", "studio": "Studio"} {
+		facets, err := i.host.Experience.Facets(r.Context(), v, device(r), "", kind)
+		if err != nil {
+			continue
+		}
+		for _, facet := range facets {
+			if facet.ID == id {
+				jsonReply(w, map[string]any{"Id": facet.ID, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID, "IsFolder": true, "UserData": map[string]any{"IsFavorite": false, "Played": false, "PlaybackPositionTicks": 0}})
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// facetByName answers GET /Genres/{name} and /Studios/{name}.
+func (i *instance) facetByName(kind, typeName string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		v, _, err := i.viewer(r)
+		if err != nil || v == nil {
+			http.Error(w, "Unauthorized", 401)
+			return
+		}
+		if i.host.Experience == nil {
+			http.Error(w, "Unavailable", 503)
+			return
+		}
+		name := r.PathValue("name")
+		facets, err := i.host.Experience.Facets(r.Context(), v, device(r), "", kind)
+		if err == nil {
+			for _, facet := range facets {
+				if strings.EqualFold(facet.Title, name) {
+					jsonReply(w, map[string]any{"Id": facet.ID, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID, "IsFolder": true})
+					return
+				}
+			}
+		}
+		http.NotFound(w, r)
+	}
+}

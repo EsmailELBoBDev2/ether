@@ -1,9 +1,11 @@
 package mediabrowser
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -34,6 +36,17 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Localization/Options", i.emptyOptionalArray},
 		{"/System/WakeOnLanInfo", i.emptyOptionalArray},
 		{"/Users/{userId}/HomeSections", i.homeSections},
+		{"/Users/{userId}/Sections/{section}/Items", i.homeSectionItems},
+		// Emby Web on a 4.8+ server asks for these at startup and for its
+		// filter menus. Ether has no server features or codec/tag facets
+		// to offer here, so the lists are empty rather than 404.
+		{"/Features", i.emptyOptionalArray},
+		{"/Sessions/PlayQueue", i.emptyOptionalItems},
+		{"/OfficialRatings", i.emptyOptionalItems}, {"/Tags", i.emptyOptionalItems},
+		{"/Containers", i.emptyOptionalItems}, {"/AudioCodecs", i.emptyOptionalItems},
+		{"/VideoCodecs", i.emptyOptionalItems}, {"/SubtitleCodecs", i.emptyOptionalItems},
+		{"/StreamLanguages", i.emptyOptionalItems}, {"/ExtendedVideoTypes", i.emptyOptionalItems},
+		{"/AudioLayouts", i.emptyOptionalItems},
 		{"/Artists", i.artists(false)}, {"/Artists/AlbumArtists", i.artists(true)},
 		{"/Artists/{name}", i.artistByName},
 		{"/Items/{id}/InstantMix", i.emptyItemCompanions},
@@ -442,18 +455,78 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	views, err := i.host.Experience.Views(r.Context(), v)
+	sections, err := i.homeSectionList(r, v)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	items := []any{}
-	add := func(sectionType, collectionID string) {
-		section := map[string]any{"Id": homeSectionID(sectionType, collectionID), "SectionType": sectionType}
-		if collectionID != "" {
-			section["CollectionId"] = collectionID
+	web := embyWebClient(r)
+	items := make([]any, 0, len(sections))
+	for _, section := range sections {
+		if web {
+			items = append(items, section.webDTO())
+			continue
 		}
-		items = append(items, section)
+		dto := map[string]any{"Id": section.ID, "SectionType": section.Type}
+		if section.CollectionID != "" {
+			dto["CollectionId"] = section.CollectionID
+		}
+		items = append(items, dto)
+	}
+	jsonReply(w, i.queryResult(items, len(items), 0))
+}
+
+// homeSection is one row of the standard home layout.
+type homeSection struct {
+	ID, Type, CollectionID string
+	View                   *frontend.View
+	CollectionType         string
+}
+
+// webDTO is the section as Emby Web reads it from a 4.10 server: a lowercase
+// section type, a title and, for a library's latest row, the library.
+func (s homeSection) webDTO() map[string]any {
+	dto := map[string]any{"Id": s.ID}
+	switch s.Type {
+	case "SmallLibraryTiles":
+		dto["SectionType"], dto["Name"] = "userviews", "My Media"
+	case "Resume":
+		dto["SectionType"], dto["Name"] = "resume", "Continue Watching"
+	case "NextUp":
+		dto["SectionType"], dto["Name"] = "nextup", "Next Up"
+	case "LatestMedia":
+		dto["SectionType"] = "latestmedia"
+		if s.View != nil {
+			dto["Name"] = "Latest " + s.View.Name
+			dto["CollectionType"] = s.CollectionType
+			dto["ParentItem"] = map[string]any{"Id": s.CollectionID, "Name": s.View.Name, "CollectionType": s.CollectionType, "Type": "CollectionFolder", "IsFolder": true}
+		}
+	default:
+		dto["SectionType"] = strings.ToLower(s.Type)
+	}
+	return dto
+}
+
+// embyWebClient reports a request from Emby Web, which reads a different
+// HomeSections shape than the native Emby apps.
+func embyWebClient(r *http.Request) bool {
+	return strings.EqualFold(device(r).Client, "Emby Web")
+}
+
+// homeSectionList builds the standard home layout for v: library tiles,
+// Continue Watching, Next Up, then Latest Media per visible library.
+func (i *instance) homeSectionList(r *http.Request, v *frontend.Viewer) ([]homeSection, error) {
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return nil, err
+	}
+	var sections []homeSection
+	add := func(sectionType, collectionID string, view *frontend.View) {
+		section := homeSection{ID: homeSectionID(sectionType, collectionID), Type: sectionType, CollectionID: collectionID, View: view}
+		if view != nil {
+			section.CollectionType = mediaBrowserCollectionType(*view)
+		}
+		sections = append(sections, section)
 	}
 	var latestExcludedGUIDs map[string]bool
 	var redundant map[string]bool
@@ -477,10 +550,11 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 	} else {
 		redundant = i.redundantSubsetViews(r, v, views, true)
 	}
-	add("SmallLibraryTiles", "")
-	add("Resume", "")
-	add("NextUp", "")
-	for _, view := range views {
+	add("SmallLibraryTiles", "", nil)
+	add("Resume", "", nil)
+	add("NextUp", "", nil)
+	for idx := range views {
+		view := views[idx]
 		if view.Type == "livetv" || view.Type == "boxsets" {
 			continue
 		}
@@ -501,9 +575,88 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 		if latestExcludedGUIDs[strings.ToLower(strings.ReplaceAll(id, "-", ""))] {
 			continue
 		}
-		add("LatestMedia", id)
+		add("LatestMedia", id, &view)
 	}
-	jsonReply(w, i.queryResult(items, len(items), 0))
+	return sections, nil
+}
+
+// homeSectionItems answers GET /Users/{userId}/Sections/{id}/Items, which
+// Emby Web uses on a 4.10 server to fill each home row. The row is resolved
+// from the same layout HomeSections lists and answered by the endpoint that
+// already serves that kind of row, as a QueryResult.
+func (i *instance) homeSectionItems(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.host.Experience == nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	sections, err := i.homeSectionList(r, v)
+	if err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	want := r.PathValue("section")
+	var section *homeSection
+	for idx := range sections {
+		if strings.EqualFold(sections[idx].ID, want) {
+			section = &sections[idx]
+			break
+		}
+	}
+	if section == nil {
+		jsonReply(w, i.queryResult([]any{}, 0, 0))
+		return
+	}
+	user := r.PathValue("userId")
+	query := r.URL.Query()
+	query.Del("RandomSeed")
+	var target string
+	array := false
+	switch section.Type {
+	case "SmallLibraryTiles":
+		target = "/Users/" + user + "/Views"
+	case "Resume":
+		target = "/Users/" + user + "/Items/Resume"
+		if query.Get("MediaTypes") == "" {
+			query.Set("MediaTypes", "Video")
+		}
+	case "NextUp":
+		target = "/Shows/NextUp"
+		query.Set("UserId", user)
+	case "LatestMedia":
+		target = "/Users/" + user + "/Items/Latest"
+		query.Set("ParentId", section.CollectionID)
+		array = true
+	default:
+		jsonReply(w, i.queryResult([]any{}, 0, 0))
+		return
+	}
+	sub := r.Clone(r.Context())
+	// The router serves paths with the /emby mount already stripped.
+	sub.URL.Path = target
+	sub.URL.RawPath = ""
+	sub.URL.RawQuery = query.Encode()
+	sub.RequestURI = sub.URL.RequestURI()
+	if !array {
+		i.router.ServeHTTP(w, sub)
+		return
+	}
+	rec := &bufferedResponse{header: http.Header{}, code: http.StatusOK}
+	i.router.ServeHTTP(rec, sub)
+	if rec.code != http.StatusOK {
+		jsonReply(w, i.queryResult([]any{}, 0, 0))
+		return
+	}
+	var list []any
+	if json.Unmarshal(rec.body.Bytes(), &list) != nil {
+		jsonReply(w, i.queryResult([]any{}, 0, 0))
+		return
+	}
+	jsonReply(w, i.queryResult(list, len(list), 0))
 }
 
 // homeSectionID is a stable GUID-shaped id for one standard section. It is
@@ -664,3 +817,14 @@ func (i *instance) authorizedTheme(w http.ResponseWriter, r *http.Request) (fron
 	}
 	return frontend.ItemDetail{Title: *title}, true
 }
+
+// bufferedResponse captures an internal sub-request's reply.
+type bufferedResponse struct {
+	header http.Header
+	body   bytes.Buffer
+	code   int
+}
+
+func (b *bufferedResponse) Header() http.Header         { return b.header }
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufferedResponse) WriteHeader(code int)        { b.code = code }

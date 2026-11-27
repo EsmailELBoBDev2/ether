@@ -1,0 +1,142 @@
+package mediabrowser
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+)
+
+// embyWebHost mounts Emby with one viewer, two libraries and an in-memory
+// preference store, and calls it the way Emby Web does: credentials and
+// device fields in the query string.
+func embyWebHost(t *testing.T) (call func(method, path string, body []byte) *httptest.ResponseRecorder, uid string) {
+	t.Helper()
+	viewer := &frontend.Viewer{ID: 1, Username: "sam"}
+	var mu sync.Mutex
+	store := map[string]json.RawMessage{}
+	host := frontend.Host{
+		Identity: frontendtest.Identity{ResolveFunc: func(_ context.Context, token string) (*frontend.Viewer, error) {
+			if token != "valid" {
+				return nil, errors.New("denied")
+			}
+			return viewer, nil
+		}},
+		Experience: frontendtest.Experience{ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+			return []frontend.View{{ID: "1", Name: "Movies", Type: "movie"}, {ID: "2", Name: "TV", Type: "show"}}, nil
+		}},
+		Preferences: frontendtest.Preferences{
+			GetFunc: func(_ context.Context, _ *frontend.Viewer, client, key string) (json.RawMessage, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if doc, ok := store[client+"/"+key]; ok {
+					return doc, nil
+				}
+				return nil, frontend.ErrPreferencesNotFound
+			},
+			PutFunc: func(_ context.Context, _ *frontend.Viewer, client, key string, doc json.RawMessage) error {
+				mu.Lock()
+				defer mu.Unlock()
+				store[client+"/"+key] = doc
+				return nil
+			},
+		},
+	}
+	inst, err := (Emby{MachineID: "test"}).Mount(context.Background(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inst.Close(context.Background()) })
+	uid, _ = ids.GUID(ids.User, 1)
+	call = func(method, path string, body []byte) *httptest.ResponseRecorder {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		path += sep + "X-Emby-Client=Emby+Web&X-Emby-Device-Id=web1&X-Emby-Client-Version=4.10.2.0&X-Emby-Token=valid"
+		r := httptest.NewRequest(method, path, bytes.NewReader(body))
+		if body != nil {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		inst.Handler().ServeHTTP(w, r)
+		return w
+	}
+	return call, uid
+}
+
+func TestEmbyWebHomeSectionsAreNamedRows(t *testing.T) {
+	call, uid := embyWebHost(t)
+	w := call(http.MethodGet, "/emby/Users/"+uid+"/HomeSections", nil)
+	if w.Code != 200 {
+		t.Fatalf("HomeSections: %d %s", w.Code, w.Body)
+	}
+	var res struct {
+		Items []struct {
+			Id, SectionType, Name, CollectionType string
+			ParentItem                            *struct{ Id, Name string }
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	movies, _ := ids.GUID(ids.View, 1)
+	want := []struct{ typ, name string }{{"userviews", "My Media"}, {"resume", "Continue Watching"}, {"nextup", "Next Up"}, {"latestmedia", "Latest Movies"}, {"latestmedia", "Latest TV"}}
+	if len(res.Items) != len(want) {
+		t.Fatalf("sections %+v", res.Items)
+	}
+	for n, item := range res.Items {
+		if item.SectionType != want[n].typ || item.Name != want[n].name {
+			t.Fatalf("section %d: %+v", n, item)
+		}
+	}
+	if p := res.Items[3].ParentItem; p == nil || p.Id != movies || p.Name != "Movies" || res.Items[3].CollectionType != "movies" {
+		t.Fatalf("latest row library: %+v", res.Items[3])
+	}
+	// A row id that is not in the layout answers an empty result, not 404.
+	if w := call(http.MethodGet, "/emby/Users/"+uid+"/Sections/nope/Items", nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"TotalRecordCount":0`) {
+		t.Fatalf("unknown section: %d %s", w.Code, w.Body)
+	}
+	// My Media resolves to the library views.
+	tiles := res.Items[0].Id
+	if w := call(http.MethodGet, "/emby/Users/"+uid+"/Sections/"+tiles+"/Items", nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"Name":"Movies"`) {
+		t.Fatalf("My Media row: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestEmbyWebUserSettingsRoundTrip(t *testing.T) {
+	call, uid := embyWebHost(t)
+	if w := call(http.MethodPost, "/emby/usersettings/"+uid, []byte(`{"theme":"dark","subtitle":"en"}`)); w.Code != 204 {
+		t.Fatalf("save: %d %s", w.Code, w.Body)
+	}
+	if w := call(http.MethodPost, "/emby/usersettings/"+uid+"/Partial", []byte(`{"subtitle":"fr"}`)); w.Code != 204 {
+		t.Fatalf("partial: %d %s", w.Code, w.Body)
+	}
+	w := call(http.MethodGet, "/emby/usersettings/"+uid, nil)
+	var got map[string]any
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got["theme"] != "dark" || got["subtitle"] != "fr" {
+		t.Fatalf("read back: %d %s", w.Code, w.Body)
+	}
+	other, _ := ids.GUID(ids.User, 2)
+	if w := call(http.MethodGet, "/emby/usersettings/"+other, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("another viewer's settings: %d", w.Code)
+	}
+}
+
+func TestEmbyWebStartupListsAreEmptyNot404(t *testing.T) {
+	call, _ := embyWebHost(t)
+	for _, p := range []string{"/emby/Features", "/emby/Sessions/PlayQueue", "/emby/OfficialRatings", "/emby/Tags", "/emby/StreamLanguages"} {
+		if w := call(http.MethodGet, p, nil); w.Code != 200 {
+			t.Fatalf("%s: %d", p, w.Code)
+		}
+	}
+}

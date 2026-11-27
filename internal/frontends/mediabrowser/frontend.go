@@ -133,6 +133,14 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 			return nil, err
 		}
 	}
+	for _, method := range []string{"GET", "POST"} {
+		if err := r.Handle(method, "/usersettings/{userId}", http.HandlerFunc(inst.userSettings)); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.Handle("POST", "/usersettings/{userId}/Partial", http.HandlerFunc(inst.userSettings)); err != nil {
+		return nil, err
+	}
 	if err := r.Handle("GET", "/LiveTv/Info", http.HandlerFunc(inst.liveTVInfo)); err != nil {
 		return nil, err
 	}

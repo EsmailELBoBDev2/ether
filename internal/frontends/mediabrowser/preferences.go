@@ -7,6 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func (i *instance) displayPreferences(w http.ResponseWriter, r *http.Request) {
@@ -101,4 +102,64 @@ func (i *instance) writeDisplayPreferences(w http.ResponseWriter, r *http.Reques
 	}
 	i.applyHomeSectionDefaults(r, v, id, object)
 	jsonReply(w, object)
+}
+
+// userSettings answers /usersettings/{userId} and its /Partial update, which
+// Emby Web uses instead of DisplayPreferences on a 4.9+ server. They are the
+// CustomPrefs of the same stored document ("usersettings", client "emby") the
+// older endpoint reads, as a flat object.
+func (i *instance) userSettings(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if i.host.Preferences == nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	const client, key = "emby", "usersettings"
+	stored := map[string]any{}
+	if body, e := i.host.Preferences.Get(r.Context(), v, client, key); e == nil {
+		if json.Unmarshal(body, &stored) != nil || stored == nil {
+			stored = map[string]any{}
+		}
+	} else if !errors.Is(e, frontend.ErrPreferencesNotFound) {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	prefs, _ := stored["CustomPrefs"].(map[string]any)
+	if prefs == nil {
+		prefs = map[string]any{}
+	}
+	if r.Method != http.MethodPost {
+		object := map[string]any{"Id": key, "Client": client, "CustomPrefs": prefs}
+		i.applyHomeSectionDefaults(r, v, key, object)
+		out, _ := object["CustomPrefs"].(map[string]any)
+		if out == nil {
+			out = map[string]any{}
+		}
+		jsonReply(w, out)
+		return
+	}
+	body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+	var update map[string]any
+	if e != nil || json.Unmarshal(body, &update) != nil || update == nil {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/Partial") || strings.HasSuffix(r.URL.Path, "/partial") {
+		for k, val := range update {
+			prefs[k] = val
+		}
+	} else {
+		prefs = update
+	}
+	stored["Id"], stored["Client"], stored["CustomPrefs"] = key, client, prefs
+	doc, _ := json.Marshal(stored)
+	if e = i.host.Preferences.Put(r.Context(), v, client, key, doc); e != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	w.WriteHeader(204)
 }

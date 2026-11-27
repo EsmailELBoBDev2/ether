@@ -64,7 +64,7 @@ func minimalDeb(t *testing.T, files map[string]string) []byte {
 func installedWebClient(t *testing.T) *webclient.Installer {
 	t.Helper()
 	deb := minimalDeb(t, map[string]string{
-		"index.html":     `<html>jellyfin-web<script src="main.jellyfin.bundle.js?build"></script><script src="runtime.bundle.js?build"></script></html>`,
+		"index.html":     `<html><head></head>jellyfin-web<script src="main.jellyfin.bundle.js?build"></script><script src="runtime.bundle.js?build"></script></html>`,
 		"main.abc123.js": "console.log('x')",
 		"config.json":    "{}",
 	})
@@ -100,6 +100,9 @@ func TestJellyfinWebServesInstalledClient(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/jellyfin/web/", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfin-web") {
 		t.Fatalf("index: %d %q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "ether-extras.js") {
+		t.Fatalf("index lacks Ether's extras script: %q", w.Body.String())
 	}
 	if cc := w.Header().Get("Cache-Control"); cc != "no-cache" {
 		t.Fatalf("index cache-control %q", cc)

@@ -83,6 +83,9 @@ func serveWeb(w http.ResponseWriter, r *http.Request, emby bool, originFn origin
 			http.Error(w, "web player unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if rel == "index.html" {
+			raw = withWebExtras(raw)
+		}
 		// Revalidate across Ether upgrades even though upstream filenames are hashed.
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeContent(w, r, rel, time.Time{}, bytes.NewReader(raw))

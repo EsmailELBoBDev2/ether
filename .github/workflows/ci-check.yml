@@ -1,0 +1,21 @@
+name: CI check
+on:
+  push:
+    branches: [ci-check-cw]
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l internal/)" || { gofmt -d internal/; exit 1; }
+      - name: vet
+        run: go vet ./internal/sessions/... ./internal/experience/... ./internal/state/...
+      - name: test
+        shell: bash
+        run: |
+          go test -timeout 25m ./internal/sessions/... ./internal/experience/... ./internal/state/... ./internal/frontends/mediabrowser/... 2>&1 | grep -E '^(ok|FAIL|---|panic)|_test.go:[0-9]+' | head -60
+          exit ${PIPESTATUS[0]}

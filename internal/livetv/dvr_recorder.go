@@ -350,6 +350,7 @@ func (r *dvrRecorder) finish(ctx context.Context, rec dvr.Recording, prog dvrPro
 		log.Warn("dvr job update failed", "error", err)
 	}
 	log.Info("dvr recording finished", "status", status, "bytes", prog.bytes, "gaps", prog.gaps, "path", rec.Path)
+	r.d.recordingsChanged()
 }
 
 // finishInterrupted closes a job left recording by a process that stopped

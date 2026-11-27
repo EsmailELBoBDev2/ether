@@ -68,6 +68,7 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	if err := a.buildExtensibility(ctx, cfg); err != nil {
 		return err
 	}
+	a.buildDVRLibrary(ctx)
 	if a.transcoder != nil {
 		if a.subtitles != nil {
 			a.subtitles.SetFFmpeg(a.transcoder.FFmpegPath())

@@ -411,6 +411,9 @@ func (c *KindCatalog) Library(ctx context.Context, id core.LibraryID) (core.Libr
 // intentionally does NOT hide the library so synced items remain browsable
 // offline when a plugin fails at runtime.
 func (c *KindCatalog) IsPluginLibraryActive(ctx context.Context, lib core.Library) bool {
+	if c != nil && lib.Source == core.LibraryPlugin && lookupHostKind(lib.PluginID, lib.KindKey) != nil {
+		return true
+	}
 	if c == nil || c.mgr == nil || lib.Source != core.LibraryPlugin || lib.PluginID == "" || lib.KindKey == "" {
 		return false
 	}

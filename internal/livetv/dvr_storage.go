@@ -118,6 +118,7 @@ func (d *dvrRuntime) removeRecording(ctx context.Context, dir string, r dvr.Reco
 		return err
 	}
 	d.s.logger().Info("dvr recording deleted", "path", r.Path, "reason", why)
+	d.recordingsChanged()
 	return nil
 }
 

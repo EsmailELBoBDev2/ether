@@ -21,6 +21,23 @@ func (i *instance) artists(albumArtists bool) http.HandlerFunc {
 			http.Error(w, "Unauthorized", 401)
 			return
 		}
+		// Favorite artists are favorite MusicArtist items: answer through the
+		// item listing, which honours the viewer's favorites, instead of
+		// listing every artist.
+		if favoritesRequested(r) {
+			sub := r.Clone(r.Context())
+			query := r.URL.Query()
+			query.Del("IsFavorite")
+			query.Set("Filters", "IsFavorite")
+			query.Set("IncludeItemTypes", "MusicArtist")
+			query.Set("Recursive", "true")
+			sub.URL.Path = "/Items"
+			sub.URL.RawPath = ""
+			sub.URL.RawQuery = query.Encode()
+			sub.RequestURI = sub.URL.RequestURI()
+			i.router.ServeHTTP(w, sub)
+			return
+		}
 		offset := max(queryInt(r, "StartIndex", 0), 0)
 		limit := queryInt(r, "Limit", 100)
 		if limit <= 0 {

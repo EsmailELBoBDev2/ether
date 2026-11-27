@@ -45,6 +45,11 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 				return
 			}
 		}
+		// Ether keeps no favorites for people, genres or studios.
+		if favoritesRequested(r) {
+			jsonReply(w, i.queryResult([]any{}, 0, queryInt(r, "StartIndex", 0)))
+			return
+		}
 		queryKind := kind
 		if kind == "musicgenre" {
 			queryKind = "genre"
@@ -260,4 +265,24 @@ func (i *instance) facetByName(kind, typeName string) http.HandlerFunc {
 		}
 		http.NotFound(w, r)
 	}
+}
+
+// favoritesRequested reports a "favorites only" list: IsFavorite=true or
+// Filters=IsFavorite. Lists that cannot honour it must answer empty, not the
+// whole library (Emby Web's Favorites tab showed every person, artist,
+// channel and collection).
+func favoritesRequested(r *http.Request) bool {
+	for _, raw := range route.Query(r.URL.Query(), "IsFavorite") {
+		if b, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && b {
+			return true
+		}
+	}
+	for _, raw := range route.Query(r.URL.Query(), "Filters") {
+		for _, f := range strings.Split(raw, ",") {
+			if strings.EqualFold(strings.TrimSpace(f), "IsFavorite") {
+				return true
+			}
+		}
+	}
+	return false
 }

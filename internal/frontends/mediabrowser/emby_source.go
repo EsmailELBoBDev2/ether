@@ -21,6 +21,7 @@ func (i *instance) embyMediaSourceDTO(source map[string]any, itemID string, medi
 	if transcoding, ok := source["TranscodingUrl"].(string); ok && strings.HasPrefix(transcoding, "/") {
 		source["TranscodingUrl"] = embyRelativeStreamPath(transcoding) + embyQuerySuffix(transcoding)
 	}
+	embySubtitleDelivery(source)
 	if itemID != "" {
 		source["ItemId"] = itemID
 	}
@@ -130,4 +131,32 @@ func embyQuerySuffix(raw string) string {
 		return raw[i:]
 	}
 	return ""
+}
+
+// embySubtitleDelivery sets each subtitle track's delivery as Emby clients
+// read it. A text track's DeliveryUrl loses the /emby mount prefix (clients
+// add it through apiClient.getUrl). A track with no delivery method is one the
+// player cannot draw itself (an image subtitle such as PGS outside direct
+// play): "Encode", so Emby Web asks for it burned in when picked; without a
+// method it treated the pick as done and showed nothing.
+func embySubtitleDelivery(source map[string]any) {
+	streams, ok := source["MediaStreams"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range streams {
+		dto, ok := raw.(map[string]any)
+		if !ok || dto["Type"] != "Subtitle" {
+			continue
+		}
+		if u, ok := dto["DeliveryUrl"].(string); ok && strings.HasPrefix(u, "/") {
+			dto["DeliveryUrl"] = embyRelativeStreamPath(u) + embyQuerySuffix(u)
+		}
+		if method, _ := dto["DeliveryMethod"].(string); method == "" {
+			if codec, _ := dto["Codec"].(string); codec == "lrc" {
+				continue
+			}
+			dto["DeliveryMethod"] = "Encode"
+		}
+	}
 }

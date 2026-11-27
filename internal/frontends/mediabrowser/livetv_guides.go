@@ -26,8 +26,12 @@ func liveProgrammeMatches(r *http.Request, p frontend.LiveProgramme) bool {
 }
 func (i *instance) filterLiveChannels(r *http.Request, v *frontend.Viewer, cs []frontend.LiveChannel) ([]frontend.LiveChannel, error) {
 	tags := route.Query(r.URL.Query(), "Tags")
+	favoritesOnly := favoritesRequested(r)
 	filtered := []frontend.LiveChannel{}
 	for _, c := range cs {
+		if favoritesOnly && !c.Favorite {
+			continue
+		}
 		ok := len(tags) == 0 || i.protocol != "emby"
 		for _, raw := range tags {
 			for _, tag := range strings.Split(raw, "|") {

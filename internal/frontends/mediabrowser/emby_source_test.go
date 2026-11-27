@@ -104,3 +104,23 @@ func TestEmbySourceDefaultAudioUsesAuthoritativeDisposition(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbySubtitleDeliveryForEmbyClients(t *testing.T) {
+	source := map[string]any{"MediaStreams": []any{
+		map[string]any{"Type": "Video", "Index": 0},
+		map[string]any{"Type": "Subtitle", "Index": 2, "Codec": "pgs"},
+		map[string]any{"Type": "Subtitle", "Index": 3, "Codec": "subrip", "DeliveryMethod": "External", "DeliveryUrl": "/emby/sessions/media/s/g/subtitles/3.vtt"},
+		map[string]any{"Type": "Subtitle", "Index": 4, "Codec": "subrip", "DeliveryMethod": "Embed"},
+	}}
+	(&instance{}).embyMediaSourceDTO(source, "item", frontend.MediaInfo{})
+	streams := source["MediaStreams"].([]any)
+	if got := streams[1].(map[string]any)["DeliveryMethod"]; got != "Encode" {
+		t.Fatalf("image subtitle method %v, want Encode", got)
+	}
+	if got := streams[2].(map[string]any)["DeliveryUrl"]; got != "/sessions/media/s/g/subtitles/3.vtt" {
+		t.Fatalf("text subtitle url %v", got)
+	}
+	if got := streams[3].(map[string]any)["DeliveryMethod"]; got != "Embed" {
+		t.Fatalf("embedded subtitle method changed to %v", got)
+	}
+}

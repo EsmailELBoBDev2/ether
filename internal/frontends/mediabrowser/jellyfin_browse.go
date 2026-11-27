@@ -595,6 +595,10 @@ func (i *instance) writeBoxSets(w http.ResponseWriter, r *http.Request, viewer *
 		jsonReply(w, i.queryResult([]any{}, 0, q.Offset))
 		return
 	}
+	if q.Favorite != nil && *q.Favorite {
+		i.writeFavoriteBoxSets(w, r, viewer, q)
+		return
+	}
 	page, err := i.host.Experience.Collections(r.Context(), viewer, device(r), frontend.CollectionQuery{Query: q.Filter.Query, Offset: q.Offset, Limit: q.Limit})
 	if errors.Is(err, frontend.ErrNotAvailable) {
 		jsonReply(w, i.queryResult([]any{}, 0, q.Offset))
@@ -1660,4 +1664,38 @@ func (i *instance) rememberLibraryCollage(r *http.Request, viewID, secret string
 		return
 	}
 	cache[viewID] = libraryCollageHit{secret: secret, image: img, ok: ok}
+}
+
+// writeFavoriteBoxSets lists only the collections the viewer marked favorite.
+// The collection source has no favorite filter, so the viewer's collections
+// are checked against their user data (bounded) and paged here.
+func (i *instance) writeFavoriteBoxSets(w http.ResponseWriter, r *http.Request, viewer *frontend.Viewer, q frontend.ItemQuery) {
+	const scan = 5000
+	page, err := i.host.Experience.Collections(r.Context(), viewer, device(r), frontend.CollectionQuery{Query: q.Filter.Query, Limit: scan})
+	if err != nil {
+		jsonReply(w, i.queryResult([]any{}, 0, q.Offset))
+		return
+	}
+	keys := make([]frontend.RatingKey, 0, len(page.Items))
+	for _, c := range page.Items {
+		keys = append(keys, c.Key)
+	}
+	state, err := i.host.Experience.UserData(r.Context(), viewer, keys)
+	if err != nil {
+		jsonReply(w, i.queryResult([]any{}, 0, q.Offset))
+		return
+	}
+	var favorites []any
+	for _, c := range page.Items {
+		if state[c.Key].IsFavorite {
+			favorites = append(favorites, i.boxSetDTO(c))
+		}
+	}
+	total := len(favorites)
+	start := min(max(q.Offset, 0), total)
+	end := total
+	if q.Limit > 0 {
+		end = min(start+q.Limit, total)
+	}
+	jsonReply(w, i.queryResult(favorites[start:end], total, q.Offset))
 }

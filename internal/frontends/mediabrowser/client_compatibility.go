@@ -50,6 +50,7 @@ func (i *instance) clientCompatibilityRoutes() error {
 		// Item detail extras Emby Web asks for; Ether has no critic reviews
 		// or editable external ids to show.
 		{"/Items/Prefixes", i.itemPrefixes},
+		{"/LiveTV/Folder", i.liveTVFolder},
 		{"/Genres/{name}", i.facetByName("genre", "Genre")},
 		{"/MusicGenres/{name}", i.facetByName("genre", "MusicGenre")},
 		{"/Studios/{name}", i.facetByName("studio", "Studio")},
@@ -860,4 +861,20 @@ func (i *instance) itemPrefixes(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]string{"Name": string(c)})
 	}
 	jsonReply(w, out)
+}
+
+// liveTVFolder answers GET /LiveTV/Folder, the Live TV library item Emby Web
+// opens its Live TV page with (404 left the page empty).
+func (i *instance) liveTVFolder(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	item, ok := i.collectionFolder(r, v, frontend.View{ID: ids.Decimal(liveTVViewNumber), Name: "Live TV", Type: "livetv"})
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	jsonReply(w, item)
 }

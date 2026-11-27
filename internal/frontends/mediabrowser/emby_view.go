@@ -44,8 +44,12 @@ func embySubviews(collectionType string) []string {
 		return []string{"series", "episodes", "genres"}
 	case "music":
 		return []string{"albums", "artists", "genres"}
-	case "books", "audiobooks":
+	case "books":
 		return []string{"books", "genres"}
+	case "audiobooks":
+		// Emby Web opens audiobooks in its music view: "albums" is its Audio
+		// Books tab and "artists" its Authors tab.
+		return []string{"albums", "artists", "genres"}
 	case "homevideos", "photos", "musicvideos", "mixed":
 		return []string{"videos"}
 	default:

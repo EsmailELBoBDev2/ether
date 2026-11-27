@@ -11,7 +11,7 @@ import (
 func TestWebExtrasScriptAndConsoleAddress(t *testing.T) {
 	page := []byte("<html><head><title>Emby</title></head><body></body></html>")
 	got := string(withWebExtras(page))
-	if !strings.Contains(got, `<script src="ether-extras.js" defer></script></head>`) {
+	if !strings.Contains(got, webExtrasScriptTag+"</head>") {
 		t.Fatalf("script not added before </head>: %s", got)
 	}
 	if again := string(withWebExtras([]byte(got))); strings.Count(again, "ether-extras.js") != 1 {

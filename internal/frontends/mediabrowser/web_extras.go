@@ -2,7 +2,9 @@ package mediabrowser
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"math"
 	"net/http"
 	"net/url"
@@ -15,7 +17,14 @@ import (
 //go:embed web_extras.js
 var webExtrasJS []byte
 
-const webExtrasScriptTag = `<script src="ether-extras.js" defer></script>`
+// webExtrasScriptTag names the script with a hash of its content: a proxy
+// in front of Ether (Nginx Proxy Manager's asset caching) or the app's
+// service worker can keep a script for hours, and a new Ether build must
+// not run an old one.
+var webExtrasScriptTag = func() string {
+	sum := sha256.Sum256(webExtrasJS)
+	return `<script src="ether-extras.js?v=` + hex.EncodeToString(sum[:6]) + `" defer></script>`
+}()
 
 // withWebExtras loads Ether's extras script in the served Emby Web or
 // Jellyfin Web page.

@@ -2,7 +2,9 @@ package plex
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"mime"
 	"net/http"
 	"os"
@@ -102,7 +104,12 @@ func servePlexWeb(w http.ResponseWriter, r *http.Request) {
 //go:embed web_extras.js
 var plexWebExtrasJS []byte
 
-const plexWebExtrasTag = `<script src="/web/ether-extras.js" defer></script>`
+// plexWebExtrasTag names the script with a hash of its content, so a proxy's
+// asset cache never serves an older build's script.
+var plexWebExtrasTag = func() string {
+	sum := sha256.Sum256(plexWebExtrasJS)
+	return `<script src="/web/ether-extras.js?v=` + hex.EncodeToString(sum[:6]) + `" defer></script>`
+}()
 
 func withPlexWebExtras(page []byte) []byte {
 	if bytes.Contains(page, []byte("ether-extras.js")) {

@@ -1041,6 +1041,19 @@ function ProtocolSettings({
             />
           </SettingsSection>
         ) : null}
+        {id === "plex" ? (
+          <SettingsSection
+            title={t("Sign in without plex.tv")}
+            description={t(
+              "Plex Web and Plex apps on your local network open as this viewer, with no plex.tv sign-in. Leave it empty to require plex.tv. Apps outside your network always sign in.",
+            )}
+          >
+            <LANViewer
+              value={draft.viewerId}
+              onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
+            />
+          </SettingsSection>
+        ) : null}
         {lanViewer && id !== "dlna" ? (
           <SettingsSection title={t("Browse as")}>
             <LANViewer

@@ -290,13 +290,21 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		}
 		tickets, _ := identity.NewTicketService(a.db, id, grants, nil)
 		var lanViewer func(context.Context, *http.Request) (*core.Viewer, error)
+		credentialFree := false
 		if descriptor, ok := r.control.descriptor(id); ok && descriptor.Auth == "none_lan" {
+			credentialFree = true
 			lanViewer = func(ctx context.Context, req *http.Request) (*core.Viewer, error) {
 				return a.lanViewer(ctx, req, settings())
 			}
+		} else if id == "plex" {
+			// Plex signs local requests without a token in as the owner's
+			// chosen viewer, when one is chosen (off by default).
+			lanViewer = func(ctx context.Context, req *http.Request) (*core.Viewer, error) {
+				return a.plexLANViewer(ctx, req, settings())
+			}
 		}
 		var lanStreams frontend.LANLazyStreams
-		if lanViewer != nil {
+		if lanViewer != nil && credentialFree {
 			var err error
 			lanStreams, err = sessions.NewLANLazyStreams(a.db, r.broker, a.frontendClientIP, lanViewer, time.Hour)
 			if err != nil {

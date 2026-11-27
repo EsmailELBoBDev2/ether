@@ -39,7 +39,7 @@ type Frontend struct {
 }
 
 func (f Frontend) Describe() frontend.Descriptor {
-	return frontend.Descriptor{ID: "plex", Name: "Plex", DefaultPort: 32400, SettingsSchema: frontend.PortSchema()}
+	return frontend.Descriptor{ID: "plex", Name: "Plex", DefaultPort: 32400, SettingsSchema: settingsSchema()}
 }
 
 // HasRetainedServer reports whether this frontend has constructed an active server.
@@ -303,3 +303,12 @@ var (
 	_ frontend.DerivedPruner            = (*plexInstance)(nil)
 	_ frontend.PublishedLibraryProvider = (*plexInstance)(nil)
 )
+
+// settingsSchema is the port plus the viewer a local Plex app signs in as
+// when it sends no token (unset: every Plex request needs a plex.tv sign-in).
+func settingsSchema() frontend.SettingsSchema {
+	return frontend.SettingsSchema{Sections: []frontend.SettingsSection{{Key: "find", Fields: []frontend.SettingsField{
+		{Key: "port", Kind: "port", Min: frontend.Int(1), Max: frontend.Int(65535)},
+		{Key: "viewerId", Kind: "viewer"},
+	}}}}
+}

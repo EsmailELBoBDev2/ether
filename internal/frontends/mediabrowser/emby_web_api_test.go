@@ -80,14 +80,15 @@ func TestEmbyWebHomeSectionsAreNamedRows(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("HomeSections: %d %s", w.Code, w.Body)
 	}
+	// Emby Web splices its own rows into the list: a plain array.
 	var res struct {
 		Items []struct {
 			Id, SectionType, Name, CollectionType string
 			ParentItem                            *struct{ Id, Name string }
 		}
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal(w.Body.Bytes(), &res.Items); err != nil {
+		t.Fatalf("HomeSections is not an array: %s", w.Body)
 	}
 	movies, _ := ids.GUID(ids.View, 1)
 	want := []struct{ typ, name string }{{"userviews", "My Media"}, {"resume", "Continue Watching"}, {"nextup", "Next Up"}, {"latestmedia", "Latest Movies"}, {"latestmedia", "Latest TV"}}

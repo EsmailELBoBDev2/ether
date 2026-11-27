@@ -47,6 +47,10 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/VideoCodecs", i.emptyOptionalItems}, {"/SubtitleCodecs", i.emptyOptionalItems},
 		{"/StreamLanguages", i.emptyOptionalItems}, {"/ExtendedVideoTypes", i.emptyOptionalItems},
 		{"/AudioLayouts", i.emptyOptionalItems},
+		// Item detail extras Emby Web asks for; Ether has no critic reviews
+		// or editable external ids to show.
+		{"/Items/{id}/CriticReviews", i.emptyOptionalItems},
+		{"/Items/{id}/ExternalIdInfos", i.emptyOptionalArray},
 		{"/Artists", i.artists(false)}, {"/Artists/AlbumArtists", i.artists(true)},
 		{"/Artists/{name}", i.artistByName},
 		{"/Items/{id}/InstantMix", i.emptyItemCompanions},
@@ -472,6 +476,11 @@ func (i *instance) homeSections(w http.ResponseWriter, r *http.Request) {
 			dto["CollectionId"] = section.CollectionID
 		}
 		items = append(items, dto)
+	}
+	if web {
+		// Emby Web takes the rows as a plain array (it splices its own in).
+		jsonReply(w, items)
+		return
 	}
 	jsonReply(w, i.queryResult(items, len(items), 0))
 }

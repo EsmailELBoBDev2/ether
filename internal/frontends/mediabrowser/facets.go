@@ -3,6 +3,7 @@ package mediabrowser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
@@ -226,14 +227,20 @@ func (i *instance) writeFacetItem(w http.ResponseWriter, r *http.Request, v *fro
 	if i.host.Experience == nil || id == "" || len(id) > 64 {
 		return false
 	}
-	for kind, typeName := range map[string]string{"genre": "Genre", "studio": "Studio"} {
-		facets, err := i.host.Experience.Facets(r.Context(), v, device(r), "", kind)
+	for _, k := range []struct{ kind, typeName string }{{"genre", "Genre"}, {"studio", "Studio"}} {
+		// Emby item fields name a genre or studio by its compact number
+		// (GenreItems, Studios); Emby Web opens that number as an item.
+		facetID, err := i.resolveNamedFacetWireID(r.Context(), k.kind, id)
+		if err != nil || facetID == "" {
+			continue
+		}
+		facets, err := i.host.Experience.Facets(r.Context(), v, device(r), "", k.kind)
 		if err != nil {
 			continue
 		}
 		for _, facet := range facets {
-			if facet.ID == id {
-				jsonReply(w, map[string]any{"Id": facet.ID, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID, "IsFolder": true, "UserData": map[string]any{"IsFavorite": false, "Played": false, "PlaybackPositionTicks": 0}})
+			if facet.ID == facetID {
+				jsonReply(w, map[string]any{"Id": id, "Name": facet.Title, "Type": k.typeName, "ServerId": i.info.ID, "IsFolder": true, "UserData": map[string]any{"IsFavorite": false, "Played": false, "PlaybackPositionTicks": 0}})
 				return true
 			}
 		}
@@ -258,7 +265,11 @@ func (i *instance) facetByName(kind, typeName string) http.HandlerFunc {
 		if err == nil {
 			for _, facet := range facets {
 				if strings.EqualFold(facet.Title, name) {
-					jsonReply(w, map[string]any{"Id": facet.ID, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID, "IsFolder": true})
+					id := facet.ID
+					if wireID, ok := i.namedFacetWireID(r.Context(), kind, facet.ID); ok {
+						id = fmt.Sprint(wireID)
+					}
+					jsonReply(w, map[string]any{"Id": id, "Name": facet.Title, "Type": typeName, "ServerId": i.info.ID, "IsFolder": true})
 					return
 				}
 			}

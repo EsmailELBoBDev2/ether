@@ -130,4 +130,20 @@ func TestMarkerBridgeLogsSilentPathsOnce(t *testing.T) {
 			t.Fatalf("expected %q once, got %d in logs:\n%s", want, n, logs)
 		}
 	}
+
+	// A title that no longer exists leaves the refresh queue.
+	goneKey := core.MovieKey(504)
+	<-bridge.Schedule(goneKey, 10*time.Minute)
+	targets, err := svc.RefreshTargets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		if target.Key == goneKey {
+			t.Fatalf("missing title %v still queued: %+v", goneKey, targets)
+		}
+	}
+	if len(targets) != 3 {
+		t.Fatalf("targets = %+v, want the three existing titles", targets)
+	}
 }

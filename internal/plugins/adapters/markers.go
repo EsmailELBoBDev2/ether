@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -179,6 +180,18 @@ func (b *MarkerBridge) run(ctx context.Context) {
 }
 func (b *MarkerBridge) refresh(ctx context.Context, j markerJob) {
 	title, err := b.catalog.Get(ctx, j.key)
+	if errors.Is(err, core.ErrNotFound) {
+		// The title is gone: stop refreshing it every six hours.
+		b.mu.Lock()
+		for r := range b.recent {
+			if r.key == j.key {
+				delete(b.recent, r)
+			}
+		}
+		b.mu.Unlock()
+		_ = b.svc.ForgetRefreshTarget(ctx, j.key)
+		return
+	}
 	if err != nil || title == nil {
 		b.logOnce(slog.LevelDebug, j.key, "catalog-get", "marker refresh skipped: title unavailable", "key", j.key, "err", err)
 		return

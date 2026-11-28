@@ -116,6 +116,16 @@ func (s *Service) RememberRefreshTarget(ctx context.Context, key core.RatingKey,
 	_, err := s.o.DB.ExecContext(ctx, `INSERT INTO markers_refresh_queue VALUES(?,?,?) ON CONFLICT(rating_key,runtime_ms) DO UPDATE SET last_played=excluded.last_played`, int64(key), duration.Milliseconds(), now)
 	return err
 }
+
+// ForgetRefreshTarget drops a title that no longer exists from the queue.
+func (s *Service) ForgetRefreshTarget(ctx context.Context, key core.RatingKey) error {
+	if s.o.DB == nil {
+		return nil
+	}
+	_, err := s.o.DB.ExecContext(ctx, `DELETE FROM markers_refresh_queue WHERE rating_key=?`, int64(key))
+	return err
+}
+
 func (s *Service) RefreshTargets(ctx context.Context) ([]RefreshTarget, error) {
 	if s.o.DB == nil {
 		return nil, nil

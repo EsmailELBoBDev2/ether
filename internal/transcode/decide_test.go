@@ -226,6 +226,19 @@ func TestDecide(t *testing.T) {
 				container: ContainerMPEGTS, maxHeight: 800, burn: true, audioIdx: 1, reason: []string{"pgs subtitles must be burned in"}},
 		},
 		{
+			// Jellyfin Desktop renders PGS from the original file; an
+			// encode for its bitrate limit drops the track unless burned.
+			name: "PGS-capable client burns PGS when the video is encoded",
+			info: pgs, caps: core.ClientCaps{
+				Product: "Jellyfin Desktop", Platform: "Linux", MaxBitrateKbps: 1500,
+				VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "ac3", "eac3"},
+				Containers: []string{"mp4", "mkv", "mpegts"}, SubtitleCodecs: []string{"pgs", "srt"},
+			},
+			opts: func(o *core.DecideOptions) { o.SubtitleStream = 2 },
+			want: want{kind: core.DecisionTranscode, videoCodec: "h264", audioCodec: "aac",
+				container: ContainerMPEGTS, burn: true, audioIdx: 1},
+		},
+		{
 			name: "legacy text burn request stays sidecar",
 			info: pgs, caps: appleTV,
 			opts: func(o *core.DecideOptions) { o.SubtitleStream = 5; o.BurnSubtitles = true },

@@ -1056,6 +1056,12 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 	d.MaxHeight = height
 	d.BitrateKbps = videoKbps + audioKbps
 	d.Container = outputContainer(caps, opts, codec, audioCodec)
+	// A client that shows image subtitles (PGS, VobSub) only from inside
+	// the original file loses them once the video is encoded: the encoded
+	// stream carries no image subtitles, so the selected one is burned in.
+	if !d.BurnSubtitles && sub != nil && IsImageSubtitle(sub.Codec) && !carriesImageSubtitles(d.Container) {
+		d.BurnSubtitles = true
+	}
 
 	parts := []string{"transcode"}
 	if len(why) > 0 {
@@ -1267,4 +1273,10 @@ func supportsDVStream(caps core.ClientCaps, v *core.StreamInfo) bool {
 			(v.DolbyVisionELPresent == nil || !*v.DolbyVisionELPresent)
 	}
 	return false
+}
+
+// carriesImageSubtitles reports whether an encoded output keeps a selected
+// image subtitle track: only the progressive Matroska output maps one.
+func carriesImageSubtitles(container string) bool {
+	return container == ContainerMatroska
 }

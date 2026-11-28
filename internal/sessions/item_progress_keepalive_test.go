@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -197,7 +198,19 @@ func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
 			t.Fatalf("automatic subtitles started for %s/%v, want %s/42", s.ID, s.Item, opened.ID)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("a playing report without a PlaySessionId never started the automatic subtitle work")
+		_, cerr := b.CurrentSubtitleSession(ctx, access, opened.ID)
+		b.mu.Lock()
+		cur := b.sessions[opened.ID]
+		var diag string
+		if cur != nil {
+			diag = fmt.Sprintf("identity=%v queued=%v epoch=%d running=%d", cur.autoSubtitleIdentity != nil, cur.autoSubtitleQueued, cur.autoSubtitleEpoch, b.autoSubtitleRunning)
+		}
+		b.mu.Unlock()
+		var states []string
+		for _, ps := range p.Sessions() {
+			states = append(states, ps.ID+":"+ps.ViewerState+":"+core.SourceRevision(ps))
+		}
+		t.Fatalf("a playing report without a PlaySessionId never started the automatic subtitle work (current: %v; %s; sources %v)", cerr, diag, states)
 	}
 }
 

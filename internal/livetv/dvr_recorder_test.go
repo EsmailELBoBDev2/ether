@@ -45,11 +45,11 @@ func TestDVRRecorderWritesSessionSegments(t *testing.T) {
 		DVR:       func() DVRSettings { return DVRSettings{Dir: dir} },
 		InputUser: func(context.Context) (*core.User, error) { return owner, nil },
 	})
-	if s.dvr == nil {
+	if s.recorder == nil {
 		t.Fatal("dvr runtime missing")
 	}
 	tunes := 0
-	s.dvr.tune = func(ctx context.Context, u *core.User, channel string, caps core.ClientCaps, client string) (SessionInfo, error) {
+	s.recorder.tune = func(ctx context.Context, u *core.User, channel string, caps core.ClientCaps, client string) (SessionInfo, error) {
 		tunes++
 		if u.ID != owner.ID || caps.Product != "Ether DVR" || !strings.HasPrefix(client, "ether-dvr-") {
 			t.Errorf("tune for %+v with %+v", u, caps)
@@ -70,24 +70,24 @@ func TestDVRRecorderWritesSessionSegments(t *testing.T) {
 	// Saving a channel starts the service's own recorder loop. The job is
 	// marked active first so only this test's recorder runs it.
 	job := dvr.Job{ID: "job-under-test", UserID: owner.ID, Programme: p}
-	rec := &dvrRecorder{d: s.dvr, job: job}
-	s.dvr.mu.Lock()
-	s.dvr.active[job.ID] = rec
-	s.dvr.mu.Unlock()
-	if err := s.dvr.store.InsertJob(t.Context(), &rec.job); err != nil {
+	rec := &dvrRecorder{d: s.recorder, job: job}
+	s.recorder.mu.Lock()
+	s.recorder.active[job.ID] = rec
+	s.recorder.mu.Unlock()
+	if err := s.recorder.store.InsertJob(t.Context(), &rec.job); err != nil {
 		t.Fatal(err)
 	}
 	job = rec.job
 	rec.run(t.Context())
 
-	got, err := s.dvr.store.Job(t.Context(), job.ID)
+	got, err := s.recorder.store.Job(t.Context(), job.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != dvr.JobCompleted && got.Status != dvr.JobPartial {
 		t.Fatalf("job = %+v", got)
 	}
-	recs, err := s.dvr.store.Recordings(t.Context(), owner.ID)
+	recs, err := s.recorder.store.Recordings(t.Context(), owner.ID)
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("recordings = %+v, %v", recs, err)
 	}
@@ -124,20 +124,20 @@ func TestDVRRecorderFailsWithoutMedia(t *testing.T) {
 		DVR:       func() DVRSettings { return DVRSettings{Dir: t.TempDir()} },
 		InputUser: func(context.Context) (*core.User, error) { return owner, nil },
 	})
-	s.dvr.tune = func(context.Context, *core.User, string, core.ClientCaps, string) (SessionInfo, error) {
+	s.recorder.tune = func(context.Context, *core.User, string, core.ClientCaps, string) (SessionInfo, error) {
 		return SessionInfo{}, core.ErrNotAvailable
 	}
 	now := time.Now()
-	job, err := s.dvr.store.ScheduleOnce(t.Context(), owner.ID, dvr.Programme{ID: "x", ChannelID: "c", Start: now, End: now.Add(1500 * time.Millisecond), Title: "Nothing"}, 0, 0, 0)
+	job, err := s.recorder.store.ScheduleOnce(t.Context(), owner.ID, dvr.Programme{ID: "x", ChannelID: "c", Start: now, End: now.Add(1500 * time.Millisecond), Title: "Nothing"}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	(&dvrRecorder{d: s.dvr, job: job}).run(t.Context())
-	got, _ := s.dvr.store.Job(t.Context(), job.ID)
+	(&dvrRecorder{d: s.recorder, job: job}).run(t.Context())
+	got, _ := s.recorder.store.Job(t.Context(), job.ID)
 	if got.Status != dvr.JobFailed || !strings.Contains(got.Reason, "tuning failed") {
 		t.Fatalf("job = %+v", got)
 	}
-	if recs, _ := s.dvr.store.Recordings(t.Context(), 0); len(recs) != 0 {
+	if recs, _ := s.recorder.store.Recordings(t.Context(), 0); len(recs) != 0 {
 		t.Fatalf("empty recording kept: %+v", recs)
 	}
 }
@@ -204,16 +204,16 @@ func TestDVRCleanStorageEvictsOldestForSpace(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := dvr.Recording{UserID: 1, JobID: "j", MatchKey: path, Path: path, Status: dvr.JobCompleted, SizeBytes: 10, Created: time.Now().Add(-age)}
-		if err := s.dvr.store.SaveRecording(t.Context(), &rec); err != nil {
+		if err := s.recorder.store.SaveRecording(t.Context(), &rec); err != nil {
 			t.Fatal(err)
 		}
 		paths = append(paths, path)
 	}
 	outside := dvr.Recording{UserID: 1, JobID: "j", MatchKey: "x", Path: "/etc/hostname", Status: dvr.JobCompleted, SizeBytes: 10, Created: time.Now().Add(-10 * time.Hour)}
-	if err := s.dvr.store.SaveRecording(t.Context(), &outside); err != nil {
+	if err := s.recorder.store.SaveRecording(t.Context(), &outside); err != nil {
 		t.Fatal(err)
 	}
-	sp, err := s.dvr.cleanStorage(t.Context(), 0)
+	sp, err := s.recorder.cleanStorage(t.Context(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,13 +231,13 @@ func TestDVRCleanStorageEvictsOldestForSpace(t *testing.T) {
 	if sp.Used != 20 {
 		t.Fatalf("space = %+v", sp)
 	}
-	recs, _ := s.dvr.store.Recordings(t.Context(), 0)
+	recs, _ := s.recorder.store.Recordings(t.Context(), 0)
 	if len(recs) != 2 {
 		t.Fatalf("recordings left = %+v", recs)
 	}
 	// The disk is nearly full: a job does not start.
 	free = dvrDiskFloor / 2
-	if reason := s.dvr.preflight(t.Context(), dvr.Job{Programme: dvr.Programme{Start: time.Now(), End: time.Now().Add(time.Minute)}}); reason == "" {
+	if reason := s.recorder.preflight(t.Context(), dvr.Job{Programme: dvr.Programme{Start: time.Now(), End: time.Now().Add(time.Minute)}}); reason == "" {
 		t.Fatal("job allowed on a full disk")
 	}
 }

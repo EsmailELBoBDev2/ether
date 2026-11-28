@@ -56,10 +56,10 @@ type dvrRuntime struct {
 // SetDVRRecordingsChanged registers the callback the recordings library
 // uses to follow finished and deleted recordings.
 func (s *Service) SetDVRRecordingsChanged(fn func()) {
-	if s == nil || s.dvr == nil {
+	if s == nil || s.recorder == nil {
 		return
 	}
-	s.dvr.changed.Store(&fn)
+	s.recorder.changed.Store(&fn)
 }
 
 func (d *dvrRuntime) recordingsChanged() {
@@ -108,7 +108,7 @@ func (d *dvrRuntime) Wake() { dvrSignal(d.wake) }
 // partial; the next start resumes jobs whose airing has not ended.
 func (s *Service) dvrLoop() {
 	defer s.wg.Done()
-	d := s.dvr
+	d := s.recorder
 	steps := s.maintenanceSteps()
 	ctx := s.serviceContext()
 	var planned, cleaned time.Time

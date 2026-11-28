@@ -42,7 +42,7 @@ func decodeOwnerJSON(r *http.Request, v any) error {
 // dvrRoutes is the owner API for recordings: /dvr/jobs (Timers), /dvr/rules
 // (SeriesTimers) and /dvr/recordings.
 func (s *Service) dvrRoutes(r chi.Router) {
-	d := s.dvr
+	d := s.recorder
 	on := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if d == nil {
@@ -197,7 +197,7 @@ func (s *Service) dvrRoutes(r chi.Router) {
 // dvrRuleDefaults gives a new rule the server's default padding and an
 // any-time slot when the request left them out.
 func (s *Service) dvrRuleDefaults(rule *dvr.Rule) {
-	set := s.dvr.settings()
+	set := s.recorder.settings()
 	if rule.PrePad == 0 {
 		rule.PrePad = set.PrePad
 	}
@@ -213,7 +213,7 @@ const dvrMaxInstantMinutes = 12 * 60
 
 func (s *Service) dvrScheduleOnce(r *http.Request, owner *core.User, req dvrJobRequest) (dvr.Job, error) {
 	ctx := r.Context()
-	set := s.dvr.settings()
+	set := s.recorder.settings()
 	pre, post := set.PrePad, set.PostPad
 	if req.PrePadSeconds != nil {
 		pre = time.Duration(*req.PrePadSeconds) * time.Second
@@ -258,7 +258,7 @@ func (s *Service) dvrScheduleOnce(r *http.Request, owner *core.User, req dvrJobR
 	default:
 		return dvr.Job{}, fmt.Errorf("give a programmeId, or a channelId and minutes")
 	}
-	return s.dvr.store.ScheduleOnce(ctx, owner.ID, p, pre, post, 100)
+	return s.recorder.store.ScheduleOnce(ctx, owner.ID, p, pre, post, 100)
 }
 
 // dvrFindProgramme looks a guide programme up by ID in the planner's window.

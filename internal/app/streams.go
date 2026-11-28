@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -230,8 +231,13 @@ func lookupPlaySession(p playSessionFinder, surface string, userID int64, client
 		return nil
 	}
 	if sessionSurface(surface) != "" {
-		if sess, ok := p.SessionForSurfaceClient(surface, userID, clientID, key); ok && sess != nil && !sess.PreparedOnly {
-			return sess
+		// The broker opens a Jellyfin or Emby play under the protocol-scoped
+		// client key (len:protocol+device), not the raw device id adapters
+		// hand in.
+		for _, id := range []string{clientID, fmt.Sprintf("%d:%s%s", len(surface), surface, clientID)} {
+			if sess, ok := p.SessionForSurfaceClient(surface, userID, id, key); ok && sess != nil && !sess.PreparedOnly {
+				return sess
+			}
 		}
 		return nil
 	}

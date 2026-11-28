@@ -230,3 +230,26 @@ func TestPrePlayDownloadedSubtitleAlignsOnPlaybackOpenWithoutPrefetch(t *testing
 		t.Fatalf("last cue = %s, want %s", alignedCues[len(alignedCues)-1].Start, ref[len(ref)-1].Start)
 	}
 }
+
+type clientKeyedFinder struct{ want string }
+
+func (f clientKeyedFinder) SessionFor(int64, string, core.RatingKey) (*core.PlaySession, bool) {
+	return nil, false
+}
+
+func (f clientKeyedFinder) SessionForSurfaceClient(_ string, _ int64, client string, key core.RatingKey) (*core.PlaySession, bool) {
+	if client != f.want {
+		return nil, false
+	}
+	return &core.PlaySession{ID: "live", UserID: 7, ClientID: client, Key: key}, true
+}
+
+// A Jellyfin play is opened under the broker's protocol-scoped client key;
+// a subtitle download hands in the raw device id and must still find it.
+func TestLookupPlaySessionFindsJellyfinPlayByDeviceID(t *testing.T) {
+	key := core.MovieKey(101)
+	got := lookupPlaySession(clientKeyedFinder{want: "8:jellyfindesktop-1"}, "jellyfin", 7, "desktop-1", key)
+	if got == nil || got.ID != "live" {
+		t.Fatalf("Jellyfin play not found by device id: %+v", got)
+	}
+}

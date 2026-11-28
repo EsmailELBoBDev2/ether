@@ -218,7 +218,7 @@ func (s *Service) raceSteadyInputsSeed(ctx context.Context, c Channel, candidate
 		}
 		last = r.err
 		failures = append(failures, inputFailure(r.src.ID, r.err))
-		if !errors.Is(r.err, ErrProviderBusy) && !errors.Is(r.err, ErrProviderPaced) && life.Err() == nil {
+		if !errors.Is(r.err, ErrProviderBusy) && !errors.Is(r.err, ErrProviderPaced) && !errors.Is(r.err, ErrProviderAccountInactive) && life.Err() == nil {
 			s.recordSourceHealth(c.ID, r.src, r.err, false)
 		}
 	}

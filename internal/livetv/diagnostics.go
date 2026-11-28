@@ -48,6 +48,8 @@ func (e *TuneError) Error() string {
 	switch e.Code {
 	case "provider_busy":
 		return "All connections allowed by this Live TV provider are in use."
+	case "provider_account_inactive":
+		return "The Live TV provider reports this account as disabled or expired."
 	case "provider_paced":
 		return "This Live TV source has reached its configured stream-start limit."
 	case "source_cooldown":
@@ -102,6 +104,8 @@ func Diagnose(stage string, err error) *TuneError {
 		e.Code = "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		e.Code, e.RetryAfter = "timeout", time.Second
+	case errors.Is(err, ErrProviderAccountInactive):
+		e.Code = "provider_account_inactive"
 	case errors.Is(err, ErrProviderBusy):
 		e.Code, e.RetryAfter = "provider_busy", 5*time.Second
 	case errors.Is(err, ErrProviderPaced):

@@ -146,6 +146,10 @@ const tapBusyHeader = "X-Ether-Provider-Busy"
 // use by other channels.
 var ErrProviderBusy = fmt.Errorf("every connection this IPTV provider allows is in use: %w", core.ErrStreamLimit)
 
+// ErrProviderAccountInactive reports that the provider says every login
+// of this source is disabled or expired, so no connection can open.
+var ErrProviderAccountInactive = fmt.Errorf("the IPTV provider reports this account as disabled or expired: %w", core.ErrNotAvailable)
+
 // ErrProviderPaced reports that the source's hourly allowance of new
 // provider streams is spent.
 var ErrProviderPaced = fmt.Errorf("this IPTV source has started as many streams this hour as its owner allows: %w", core.ErrStreamLimit)

@@ -252,17 +252,26 @@ func (s *Service) leaseLogin(ctx context.Context, source, raw string, headers ht
 			delete(p.failed, key)
 		}
 	}
+	// inactive stays true while every login considered is one the provider
+	// reports disabled or expired: then no connection is free because none
+	// exists, and the tune says so instead of "all connections in use".
+	inactive := true
 	for _, candidate := range candidates {
 		if strings.HasPrefix(raw, "vod:") && candidate.ID != "primary" {
 			continue
 		}
-		if candidate.Error != "" || now.Before(p.failed[source+"\x00"+candidate.ID]) {
+		if now.Before(p.failed[source+"\x00"+candidate.ID]) {
+			inactive = false
+			continue
+		}
+		if candidate.Error != "" {
 			continue
 		}
 		a := candidate.Account
 		if a != nil && ((a.Status != "" && !strings.EqualFold(a.Status, "active")) || (a.ExpiresAt != nil && !now.Before(*a.ExpiresAt))) {
 			continue
 		}
+		inactive = false
 		target := raw
 		h := headers.Clone()
 		if candidate.ID != "primary" {
@@ -344,6 +353,9 @@ func (s *Service) leaseLogin(ctx context.Context, source, raw string, headers ht
 			go s.renewLogin(run, l)
 			return l, nil
 		}
+	}
+	if inactive {
+		return nil, ErrProviderAccountInactive
 	}
 	return nil, ErrProviderBusy
 }

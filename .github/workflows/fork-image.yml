@@ -54,11 +54,17 @@ jobs:
         # Copied from the official Emby Server and Plex Media Server images at
         # build time. Never committed: this repository is public, the image is
         # private.
+        #
+        # Pinned like Jellyfin Web (internal/webclient): one exact version,
+        # checked by digest, so a build never picks up a new Emby or Plex
+        # release by itself. Upgrading is a deliberate edit of the two lines
+        # below. Emby Web must match the Emby version Ether reports
+        # ("4.10.2.0"), because it picks endpoints by server version.
         run: |
           set -euo pipefail
           ctx="$RUNNER_TEMP/web-clients"
           mkdir -p "$ctx/emby-web" "$ctx/plex-web" "$RUNNER_TEMP/x"
-          emby_image=emby/embyserver:4.10.2.0
+          emby_image=emby/embyserver:4.10.2.0@sha256:7082c63b10a2fcb3805a7eaebba407d5723bc57c085c9f0b29b7d0a702765cc1
           docker pull -q "$emby_image"
           cid=$(docker create "$emby_image")
           docker export "$cid" | tar -x -C "$RUNNER_TEMP/x" --wildcards '*dashboard-ui/*'
@@ -79,7 +85,7 @@ jobs:
           docker rm -f emby-web-src >/dev/null
           test -s "$ctx/emby-web/index.html" && test -s "$ctx/emby-web/modules/apphost.js"
           rm -rf "$RUNNER_TEMP/x" && mkdir -p "$RUNNER_TEMP/x"
-          plex_image=plexinc/pms-docker:latest
+          plex_image=plexinc/pms-docker:1.43.5.11079-b3b13e506@sha256:6d778d41daae68f89115aa87a44ae14a96b23e71a2093da173b5a9aac4091336
           docker pull -q "$plex_image"
           cid=$(docker create "$plex_image")
           docker export "$cid" | tar -x -C "$RUNNER_TEMP/x" --wildcards '*WebClient.bundle/Contents/Resources/*'

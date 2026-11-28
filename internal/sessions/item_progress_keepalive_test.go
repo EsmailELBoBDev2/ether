@@ -186,7 +186,7 @@ func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
 	}
 	p.mu.Lock()
 	for _, ps := range p.sessions {
-		ps.Source = &revisionSource{Reader: bytes.NewReader(nil), id: "release-1", name: "movie.mp4"}
+		ps.Source = &revisionSource{Reader: bytes.NewReader(nil), id: "release-1", name: "movie.mp4", size: 1 << 30}
 	}
 	p.mu.Unlock()
 	if err := b.ReportItemProgress(ctx, access, core.MovieKey(42), frontend.Timeline{Position: time.Minute, Duration: time.Hour, State: "playing"}); err != nil {

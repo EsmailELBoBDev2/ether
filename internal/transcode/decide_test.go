@@ -235,7 +235,7 @@ func TestDecide(t *testing.T) {
 				Containers: []string{"mp4", "mkv", "mpegts"}, SubtitleCodecs: []string{"pgs", "srt"},
 			},
 			opts: func(o *core.DecideOptions) { o.SubtitleStream = 2 },
-			want: want{kind: core.DecisionTranscode, videoCodec: "h264", audioCodec: "aac",
+			want: want{kind: core.DecisionTranscode, audioCopy: true, videoCodec: "h264", audioCodec: "aac",
 				container: ContainerMPEGTS, burn: true, audioIdx: 1},
 		},
 		{

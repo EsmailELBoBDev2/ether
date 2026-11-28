@@ -197,6 +197,9 @@ var tierUntouchedTables = []string{
 	"collections_names", "collections_defaults", "collections_meta", "release_observations", "release_probes", "vault_tracks", "availability_",
 	"cachefill_shared", "plex_ultrablur", "plex_shelf_generations", "onair_", "xtream_vod", "xtream_vod_refresh", "experience_row_",
 	"mediabrowser_personal_home", "segcache_", "debrid_", "newznab_", "cardigann_",
+	// DVR rules, jobs and recordings name channels and guide programmes,
+	// not catalogue titles.
+	"livetv_dvr_",
 	"livetv_programmes", "livetv_guide_", "livetv_group_", "livetv_owner_groups", "livetv_search_", "livetv_numbers", "livetv_sources", "livetv_policies",
 	"livetv_channel_epoch", "livetv_plex_guide_gate", "livetv_source_history", "livetv_login_", "artwork_image_",
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",

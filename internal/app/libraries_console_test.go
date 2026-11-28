@@ -421,6 +421,7 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	experiences := map[core.Protocol]frontend.Experience{}
+	var dvrIDs []string // Ether's own recordings libraries, deleted with the rest
 	for _, protocol := range []core.Protocol{"plex", "jellyfin", "emby", "stremio", "silo", "vela", "xtream", "dlna", "webdav", "m3u"} {
 		exp, err := a.newSurfaceExperience(protocol)
 		if err != nil {
@@ -428,6 +429,14 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 		}
 		experiences[protocol] = exp
 		views, err := exp.Views(ctx, owner)
+		if protocol == "plex" {
+			for _, v := range views {
+				if v.PluginID == dvrLibraryPlugin {
+					dvrIDs = append(dvrIDs, strconv.FormatInt(int64(v.LibraryID), 10))
+				}
+			}
+		}
+		views = withoutDVRViews(views)
 		if err != nil || len(views) != 2 {
 			t.Fatalf("%s seed views: %+v %v", protocol, views, err)
 		}
@@ -441,7 +450,7 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := (&librariesConsole{app: a}).handler()
-	for _, id := range []string{"1", "2"} {
+	for _, id := range append([]string{"1", "2"}, dvrIDs...) {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("DELETE", "/"+id, nil))
 		if w.Code != 204 {
@@ -453,6 +462,7 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 	}
 	for protocol, exp := range experiences {
 		views, err := exp.Views(ctx, owner)
+		views = withoutDVRViews(views)
 		if err != nil || len(views) != 0 {
 			t.Fatalf("%s deleted views: %+v %v", protocol, views, err)
 		}
@@ -754,4 +764,16 @@ func TestLibrariesConsoleFieldValuesAPI(t *testing.T) {
 	if code != 200 || pq.More || len(pq.Values) != 1 || pq.Values[0].Value != "Café" || pq.Values[0].Count != 0 {
 		t.Fatalf("folded query = %d %+v", code, pq)
 	}
+}
+
+// withoutDVRViews leaves out the Recorded TV and Recorded Movies libraries
+// Ether adds by itself; the lifecycle test is about the owner's sections.
+func withoutDVRViews(views []frontend.View) []frontend.View {
+	out := views[:0:0]
+	for _, v := range views {
+		if v.PluginID != dvrLibraryPlugin {
+			out = append(out, v)
+		}
+	}
+	return out
 }

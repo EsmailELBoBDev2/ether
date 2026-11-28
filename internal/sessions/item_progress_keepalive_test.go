@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"testing"
@@ -139,11 +140,11 @@ func TestReportItemProgressKeepsOpenSessionActive(t *testing.T) {
 // names the session does, or a viewer who wants English subtitles gets none.
 func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
 	ctx := context.Background()
-	p := &progressKeepPlayback{livenessFakePlayback: livenessFakePlayback{
+	p := &timelinePlayback{progressKeepPlayback: &progressKeepPlayback{livenessFakePlayback: livenessFakePlayback{
 		fakePlayback: fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 4},
 		active:       map[string]bool{},
 		stopped:      map[string]bool{},
-	}}
+	}}}
 	tr := &progressKeepTranscoder{outputs: map[string]*progressKeepOutput{}}
 	active := func(_ context.Context, id int64) (*core.Viewer, error) {
 		return &core.Viewer{ID: id, IsOwner: true}, nil
@@ -182,6 +183,11 @@ func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.mu.Lock()
+	for _, ps := range p.sessions {
+		ps.Source = &revisionSource{Reader: bytes.NewReader(nil), id: "release-1", name: "movie.mp4"}
+	}
+	p.mu.Unlock()
 	if err := b.ReportItemProgress(ctx, access, core.MovieKey(42), frontend.Timeline{Position: time.Minute, Duration: time.Hour, State: "playing"}); err != nil {
 		t.Fatal(err)
 	}
@@ -192,5 +198,21 @@ func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a playing report without a PlaySessionId never started the automatic subtitle work")
+	}
+}
+
+// timelinePlayback records the client's timeline state on its sessions, as
+// the playback manager does.
+type timelinePlayback struct {
+	*progressKeepPlayback
+}
+
+func (p *timelinePlayback) PlaybackProgress(user int64, _ string, key core.RatingKey, _ time.Duration, state string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ps := range p.sessions {
+		if ps.UserID == user && ps.Key == key {
+			ps.ViewerState = state
+		}
 	}
 }

@@ -315,6 +315,12 @@ func (s subtitleSurface) Download(ctx context.Context, viewer *core.Viewer, devi
 		sess = s.app.playSessionOn(s.surface, viewer.ID, device.ID, key)
 	}
 	s.app.startSubtitleCorrection(ctx, &detail.Title, info.ExternalURL, sess)
+	// A download during playback joins the open play: Jellyfin and Emby
+	// read the track list from it, so without this the new subtitle only
+	// shows on the next play.
+	if published, ok := s.app.publishOnPlay(ctx, sess, info); ok {
+		return published.Index, nil
+	}
 	embedded := []core.StreamInfo{}
 	if s.app.playback != nil {
 		embedded = s.app.playback.Estimate(ctx, &detail.Title, core.ClientCaps{ClientID: device.ID, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, Version: device.Version}).Streams
@@ -344,4 +350,24 @@ func (s extraSurface) OpenCachedExtra(ctx context.Context, key core.RatingKey) (
 	}
 	f, err := s.extras.OpenCachedTrailer(cached)
 	return f, cached.MIMEType, err
+}
+
+// publishOnPlay adds a downloaded sidecar to the viewer's open play, as the
+// automatic subtitle work does. False when nothing is playing.
+func (a *App) publishOnPlay(ctx context.Context, sess *core.PlaySession, track core.StreamInfo) (core.StreamInfo, bool) {
+	if a == nil || a.playback == nil || sess == nil {
+		return core.StreamInfo{}, false
+	}
+	lease, err := a.playback.LeaseSubtitleSource(ctx, sess.ID, core.SourceRevision(sess))
+	if err != nil {
+		return core.StreamInfo{}, false
+	}
+	defer lease.Close()
+	var published core.StreamInfo
+	err = lease.WithPublication(ctx, func(attach func(core.StreamInfo) (core.StreamInfo, error)) error {
+		var err error
+		published, err = attach(track)
+		return err
+	})
+	return published, err == nil
 }

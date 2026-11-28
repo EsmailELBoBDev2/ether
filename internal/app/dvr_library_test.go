@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/livetv/dvr"
+	"github.com/braedonsaunders/ether/internal/pluginitems"
 )
 
 func TestDVRLibraryItems(t *testing.T) {
@@ -32,6 +33,18 @@ func TestDVRLibraryItems(t *testing.T) {
 	// "Show" and "show!" are one show; News is grouped by its year.
 	if levels["show"] != 2 || levels["season"] != 2 || levels["episode"] != 3 || ids["rec-e"] {
 		t.Fatalf("tv = %+v", tv)
+	}
+	// A recording's length is its runtime in every app; unknown stays empty.
+	kinds := dvrKinds()
+	for _, it := range tv {
+		if it.ID == "rec-a" {
+			if got := pluginitems.Project(it, kinds[0], kinds[0].Present).Runtime; got != time.Minute {
+				t.Fatalf("rec-a runtime = %v, want 1m", got)
+			}
+		}
+		if it.ID == "rec-b" && it.Fields != nil {
+			t.Fatalf("rec-b without a length has fields %v", it.Fields)
+		}
 	}
 	srcs, err := dvrResolve(t.Context(), tv[len(tv)-1])
 	if err == nil || len(srcs) != 0 {

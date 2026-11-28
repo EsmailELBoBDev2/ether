@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ func dvrKinds() []plugins.MediaKindMeta {
 		Label:   "Recorded TV",
 		Media:   "video",
 		Library: plugins.KindLibraryDecl{Name: "Recorded TV", DateDisplay: "date"},
+		Fields:  dvrFields(),
 		Levels: []plugins.KindLevel{
 			{Key: "show", Label: "Show", Role: "show"},
 			{Key: "season", Label: "Season"},
@@ -49,6 +51,7 @@ func dvrKinds() []plugins.MediaKindMeta {
 		Label:   "Recorded Movies",
 		Media:   "video",
 		Library: plugins.KindLibraryDecl{Name: "Recorded Movies"},
+		Fields:  dvrFields(),
 		Levels:  []plugins.KindLevel{{Key: "movie", Label: "Movie", Role: "item", Playable: true}},
 		Present: core.Presentations{
 			Plex:         &core.PlexPresentation{Base: "movie"},
@@ -58,6 +61,20 @@ func dvrKinds() []plugins.MediaKindMeta {
 		Sync:   plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
 	}
 	return []plugins.MediaKindMeta{tv, movies}
+}
+
+// dvrFields declares each recording's length in seconds, which becomes the
+// item's runtime in every app.
+func dvrFields() []plugins.KindField {
+	return []plugins.KindField{{Key: "duration", Type: "duration", Label: "Duration"}}
+}
+
+// dvrDurationFields carries a recording's length; nil when it is unknown.
+func dvrDurationFields(ms int64) map[string]json.RawMessage {
+	if ms < 1000 {
+		return nil
+	}
+	return map[string]json.RawMessage{"duration": json.RawMessage(strconv.FormatInt(ms/1000, 10))}
 }
 
 // dvrHints is what an item carries to find its file again.
@@ -199,7 +216,7 @@ func dvrLibraryItems(recs []dvr.Recording) (tv, movies []core.KindItem) {
 			if title == "" {
 				title = "Recording"
 			}
-			movies = append(movies, core.KindItem{ID: "rec-" + r.ID, Level: "movie", Title: title, Summary: p.Summary, Year: p.Year(), Released: released, Playable: true, Art: dvrArt("poster", p.Thumb), Hints: hints})
+			movies = append(movies, core.KindItem{ID: "rec-" + r.ID, Level: "movie", Title: title, Summary: p.Summary, Year: p.Year(), Released: released, Playable: true, Art: dvrArt("poster", p.Thumb), Fields: dvrDurationFields(r.DurationMS), Hints: hints})
 			continue
 		}
 		show := p.Show()
@@ -225,7 +242,7 @@ func dvrLibraryItems(recs []dvr.Recording) (tv, movies []core.KindItem) {
 		if title == "" {
 			title = show + " " + p.Start.Local().Format("2006-01-02 15:04")
 		}
-		episodes = append(episodes, core.KindItem{ID: "rec-" + r.ID, Level: "episode", ParentID: seasonID, Index: p.Episode, Title: title, Summary: p.Summary, Year: p.Start.Local().Year(), Released: released, Playable: true, Art: dvrArt("thumb", p.Thumb), Hints: hints})
+		episodes = append(episodes, core.KindItem{ID: "rec-" + r.ID, Level: "episode", ParentID: seasonID, Index: p.Episode, Title: title, Summary: p.Summary, Year: p.Start.Local().Year(), Released: released, Playable: true, Art: dvrArt("thumb", p.Thumb), Fields: dvrDurationFields(r.DurationMS), Hints: hints})
 	}
 	tv = append(append(shows, seasons...), episodes...)
 	return tv, movies

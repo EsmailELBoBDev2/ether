@@ -92,7 +92,7 @@ func (i *instance) embyWebSigninRoute() error {
 // device id Emby Web uses (_deviceId2), then opens the app.
 const embySigninScript = `
  let browser=localStorage.getItem('_deviceId2');
- if(!browser||browser.length<16){ browser=crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join(''); localStorage.setItem('_deviceId2',browser); }
+ if(!browser||browser.length<16||browser.length>128){ browser=crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join(''); localStorage.setItem('_deviceId2',browser); }
  const res=await fetch(base+'/Ether/WebSignIn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({Code:code,Browser:browser}),credentials:'omit'});
  if(!res.ok)throw Error();
  const entry=await res.json();
@@ -141,9 +141,11 @@ func webSigninPageFor(w http.ResponseWriter, r *http.Request, emby bool) {
 }
 
 // jellyfinSigninScript stores the grant where Jellyfin Web keeps its servers.
+// Jellyfin Web's own device id (base64 of the user agent and a timestamp) can
+// run past the 128 characters a grant allows; such an id is replaced.
 const jellyfinSigninScript = `
  let browser=localStorage.getItem('_deviceId2');
- if(!browser){ const bytes=new Uint8Array(24);crypto.getRandomValues(bytes);browser=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');localStorage.setItem('_deviceId2',browser); }
+ if(!browser||browser.length<16||browser.length>128){ const bytes=new Uint8Array(24);crypto.getRandomValues(bytes);browser=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');localStorage.setItem('_deviceId2',browser); }
  let credentials;try{credentials=JSON.parse(localStorage.getItem('jellyfin_credentials')||'{}');}catch{credentials={};}
  const servers=Array.isArray(credentials.Servers)?credentials.Servers:[];
  const old=servers.find(s=>s.ManualAddress===base||s.LocalAddress===base);

@@ -1729,6 +1729,11 @@ func (b *Broker) keepItemSessionsActive(viewerID int64, a frontend.SessionAccess
 			toucher.Touch(s.playID)
 		}
 		NotifyTranscodeActivity(b.deps.Transcoder, s.public.ID, state)
+		// A client that reports progress without its play session id
+		// (Jellyfin Desktop) still gets the viewer's automatic subtitle.
+		if state == "playing" && s.public.Protocol != "vela" {
+			b.enqueueSubtitleWork(s)
+		}
 	}
 }
 

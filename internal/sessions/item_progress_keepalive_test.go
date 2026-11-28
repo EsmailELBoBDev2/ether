@@ -133,3 +133,64 @@ func TestReportItemProgressKeepsOpenSessionActive(t *testing.T) {
 		t.Fatalf("an unrelated report touched outputs %v", tr.asked)
 	}
 }
+
+// Jellyfin Desktop reports progress without a PlaySessionId too. Its
+// playing report must start the automatic subtitle work, as a report that
+// names the session does, or a viewer who wants English subtitles gets none.
+func TestReportItemProgressStartsAutomaticSubtitles(t *testing.T) {
+	ctx := context.Background()
+	p := &progressKeepPlayback{livenessFakePlayback: livenessFakePlayback{
+		fakePlayback: fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 4},
+		active:       map[string]bool{},
+		stopped:      map[string]bool{},
+	}}
+	tr := &progressKeepTranscoder{outputs: map[string]*progressKeepOutput{}}
+	active := func(_ context.Context, id int64) (*core.Viewer, error) {
+		return &core.Viewer{ID: id, IsOwner: true}, nil
+	}
+	events := NewEventBus(nil, active)
+	defer events.Close()
+	started := make(chan PlayingSubtitleSession, 4)
+	b, err := NewBroker(BrokerDeps{SurfacePolicy: testSessionPolicy,
+		Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) (*core.Title, error) {
+			return &core.Title{Key: k}, nil
+		},
+		Playback:     p,
+		Transcoder:   tr,
+		Progress:     &fakeProgress{},
+		ActiveViewer: active,
+		CanPlay:      func(*core.Viewer, bool, time.Time) bool { return true },
+		BitrateLimit: func(*core.Viewer) int { return 0 },
+		OnTimeline:   func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {},
+		OnActualPlaying: func(_ context.Context, _ *Broker, s PlayingSubtitleSession) {
+			started <- s
+		},
+		Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+	dev := core.Device{ID: "jellyfin-desktop"}
+	access := frontend.SessionAccess{Viewer: viewer, Device: dev, Protocol: "jellyfin", Owner: true}
+	plan, err := b.Plan(ctx, frontend.PlanRequest{Viewer: viewer, Device: dev, Protocol: "jellyfin", Item: core.MovieKey(42),
+		Caps: core.ClientCaps{ClientID: "jellyfin-desktop"}, Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := b.Open(ctx, frontend.OpenRequest{Viewer: viewer, Device: dev, Protocol: "jellyfin", PlanID: plan.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ReportItemProgress(ctx, access, core.MovieKey(42), frontend.Timeline{Position: time.Minute, Duration: time.Hour, State: "playing"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-started:
+		if s.ID != opened.ID || s.Item != core.MovieKey(42) {
+			t.Fatalf("automatic subtitles started for %s/%v, want %s/42", s.ID, s.Item, opened.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a playing report without a PlaySessionId never started the automatic subtitle work")
+	}
+}
